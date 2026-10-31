@@ -23,7 +23,59 @@ id dcontroller >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr
 install -d -m 0755 "$opt"
 install -d -m 0750 -o root -g dcontroller "$etc"
 
+bind=""
 created_cfg=0
+healthy() {   # the service answers /api/version within ~15 s
+    local i
+    for i in $(seq 1 30); do
+        if systemctl is-active -q dcontroller.service \
+            && curl -fsS -m 2 "http://$bind/api/version" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.5
+    done
+    return 1
+}
+
+had_old=0
+swapped=0
+[ -x "$opt/dcontroller" ] && had_old=1
+
+step() { "$@" || echo "rollback step failed: $*" >&2; }
+
+rolled=0
+rollback() {
+    [ "$rolled" = 1 ] && exit 1
+    rolled=1
+    trap - ERR
+    trap '' INT TERM HUP   # finish the restore even if signalled again
+    set +e
+    echo "install failed; rolling back" >&2
+    if [ "$had_old" = 1 ] && [ "$swapped" = 0 ]; then
+        echo "failed before the swap; the running version is untouched" >&2
+    elif [ "$had_old" = 1 ]; then
+        [ -e "$opt/dcontroller.old" ] && step mv -f "$opt/dcontroller.old" "$opt/dcontroller"
+        if [ -d "$opt/web.old" ]; then step rm -rf "$opt/web"; step mv "$opt/web.old" "$opt/web"; fi
+        [ -e "$unit.old" ] && step mv -f "$unit.old" "$unit"
+        step systemctl daemon-reload
+        systemctl reset-failed dcontroller.service 2>/dev/null
+        step systemctl restart dcontroller.service
+        if [ -z "$bind" ]; then echo "previous version restarted" >&2
+        elif healthy; then echo "previous version restored and answering" >&2
+        else echo "previous version NOT answering" >&2; fi
+    else
+        systemctl disable --now -q dcontroller.service 2>/dev/null
+        step rm -rf "$opt/dcontroller" "$opt/web" "$opt/web.old" "$unit"
+        [ "$created_cfg" = 1 ] && step rm -f "$cfg"
+        step systemctl daemon-reload
+        systemctl reset-failed dcontroller.service 2>/dev/null
+        echo "first install removed" >&2
+    fi
+    rm -rf "$opt/dcontroller.new" "$opt/web.new" "$unit.new"
+    exit 1
+}
+trap rollback ERR INT TERM HUP
+
 if [ ! -f "$cfg" ]; then
     : "${DC_BIND:?set DC_BIND for the first install}" "${DC_IFACE:?set DC_IFACE for the first install}"
     re='^(\[[0-9a-fA-F:]+\]|[0-9.]+):[0-9]+$'
@@ -40,62 +92,19 @@ chown root:dcontroller "$cfg" && chmod 0640 "$cfg"
 # The new binary must accept the config; it also tells us where to probe.
 if ! bind=$("$src/dcontroller" --check-config "$cfg"); then
     echo "config $cfg refused by the new version" >&2
+    trap - ERR INT TERM HUP
     [ "$created_cfg" = 1 ] && rm -f "$cfg"
     exit 1
 fi
-
-healthy() {   # the service answers /api/version within ~15 s
-    local i
-    for i in $(seq 1 30); do
-        if systemctl is-active -q dcontroller.service \
-            && curl -fsS -m 2 "http://$bind/api/version" >/dev/null 2>&1; then
-            return 0
-        fi
-        sleep 0.5
-    done
-    return 1
-}
 
 # Stage the new release next to the live one.
 install -m 0755 "$src/dcontroller" "$opt/dcontroller.new"
 rm -rf "$opt/web.new" && cp -r "$src/web" "$opt/web.new" && chmod -R a+rX "$opt/web.new"
 install -m 0644 "$src/dcontroller.service" "$unit.new"
 
-had_old=0
-[ -x "$opt/dcontroller" ] && had_old=1
-
-step() { "$@" || echo "rollback step failed: $*" >&2; }
-
-rolled=0
-rollback() {
-    [ "$rolled" = 1 ] && exit 1
-    rolled=1
-    trap - ERR INT TERM HUP
-    set +e
-    echo "install failed; rolling back" >&2
-    if [ "$had_old" = 1 ]; then
-        [ -e "$opt/dcontroller.old" ] && step mv -f "$opt/dcontroller.old" "$opt/dcontroller"
-        if [ -d "$opt/web.old" ]; then step rm -rf "$opt/web"; step mv "$opt/web.old" "$opt/web"; fi
-        [ -e "$unit.old" ] && step mv -f "$unit.old" "$unit"
-        step systemctl daemon-reload
-        systemctl reset-failed dcontroller.service 2>/dev/null
-        step systemctl restart dcontroller.service
-        if healthy; then echo "previous version restored and answering" >&2
-        else echo "previous version NOT answering" >&2; fi
-    else
-        systemctl disable --now -q dcontroller.service 2>/dev/null
-        step rm -rf "$opt/dcontroller" "$opt/web" "$opt/web.old" "$unit"
-        [ "$created_cfg" = 1 ] && step rm -f "$cfg"
-        step systemctl daemon-reload
-        systemctl reset-failed dcontroller.service 2>/dev/null
-        echo "first install removed" >&2
-    fi
-    rm -rf "$opt/dcontroller.new" "$opt/web.new" "$unit.new"
-    exit 1
-}
-trap rollback ERR INT TERM HUP
 
 # Swap: keep the previous release as *.old until the new one answers.
+swapped=1
 rm -rf "$opt/web.old" "$opt/dcontroller.old" "$unit.old"
 if [ "$had_old" = 1 ]; then
     cp -p "$opt/dcontroller" "$opt/dcontroller.old"
