@@ -1,0 +1,10 @@
+/target
+/crates/web/dist
+/e2e/node_modules
+/e2e/test-results
+/e2e/playwright-report
+.env
+*.env.local
+*.pem
+*.key
+/e2e/.run

@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  TRUNK_VERSION: v0.21.14
+  # Pinned here, not read from the release: a tampered release must not pass.
+  TRUNK_SHA256: f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b
+
+jobs:
+  version-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: dev version must be higher than main
+        run: |
+          set -euo pipefail
+          ver() { sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' | head -1; }
+          head_v=$(ver < Cargo.toml)
+          git rev-parse --verify -q origin/main >/dev/null || { echo "origin/main missing"; exit 1; }
+          if git cat-file -e origin/main:Cargo.toml 2>/dev/null; then
+            base_v=$(git show origin/main:Cargo.toml | ver)
+            test -n "$base_v" || { echo "no version in main's Cargo.toml"; exit 1; }
+          else
+            base_v=""   # main predates the Cargo workspace
+          fi
+          echo "head=$head_v main=${base_v:-none}"
+          test -n "$head_v"
+          if [ -n "$base_v" ]; then
+            top=$(printf '%s\n%s\n' "$base_v" "$head_v" | sort -V | tail -1)
+            [ "$top" = "$head_v" ] && [ "$head_v" != "$base_v" ] || { echo "bump the version: $head_v <= $base_v"; exit 1; }
+          fi
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy -p dcontroller-web --target wasm32-unknown-unknown -- -D warnings
+      - run: cargo test --workspace
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install trunk
+        run: |
+          set -euo pipefail
+          base=https://github.com/trunk-rs/trunk/releases/download/$TRUNK_VERSION
+          curl -fsSL -o trunk.tgz "$base/trunk-x86_64-unknown-linux-gnu.tar.gz"
+          echo "$TRUNK_SHA256  trunk.tgz" | sha256sum -c -
+          tar xzf trunk.tgz -C /usr/local/bin trunk
+          trunk --version
+      - name: Build web (trunk)
+        working-directory: crates/web
+        run: trunk build
+      - name: Build server
+        run: cargo build -p dcontroller
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install Playwright
+        working-directory: e2e
+        run: npm ci && npx playwright install --with-deps chromium
+      - name: E2E
+        working-directory: e2e
+        run: npx playwright test

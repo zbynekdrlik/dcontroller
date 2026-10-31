@@ -1,0 +1,9 @@
+[workspace]
+resolver = "3"
+members = ["crates/buildver", "crates/server", "crates/web"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/zbynekdrlik/dcontroller"

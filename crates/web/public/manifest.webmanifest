@@ -1,0 +1,13 @@
+{
+  "name": "dcontroller",
+  "short_name": "dcontroller",
+  "description": "Web Dante controller",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#1b2430",
+  "theme_color": "#1b2430",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
