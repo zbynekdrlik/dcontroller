@@ -23,7 +23,8 @@ install -d -m 0750 -o root -g dcontroller "$etc"
 
 if [ ! -f "$cfg" ]; then
     : "${DC_BIND:?set DC_BIND for the first install}" "${DC_IFACE:?set DC_IFACE for the first install}"
-    [[ "$DC_BIND" =~ ^[0-9A-Za-z.:\[\]]+:[0-9]+$ ]] || { echo "bad DC_BIND: $DC_BIND" >&2; exit 1; }
+    re='^(\[[0-9a-fA-F:]+\]|[0-9.]+):[0-9]+$'
+    [[ "$DC_BIND" =~ $re ]] || { echo "bad DC_BIND: $DC_BIND" >&2; exit 1; }
     [[ "$DC_IFACE" =~ ^[A-Za-z0-9._-]+$ ]] && [ -e "/sys/class/net/$DC_IFACE" ] \
         || { echo "no such interface: $DC_IFACE" >&2; exit 1; }
     tmp=$(mktemp "$etc/.config.XXXXXX")
