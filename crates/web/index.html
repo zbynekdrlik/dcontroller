@@ -11,7 +11,8 @@
     <link data-trunk rel="copy-file" href="public/icon.svg" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
-    <link data-trunk rel="rust" data-bin="dcontroller-web" />
+    <!-- No SRI on the wasm/js preloads: Chromium ignores integrity on fetch preloads and warns in the console; the assets are same-origin. -->
+    <link data-trunk rel="rust" data-bin="dcontroller-web" data-integrity="none" />
     <script>
       if ("serviceWorker" in navigator) {
         navigator.serviceWorker.register("/sw.js");
