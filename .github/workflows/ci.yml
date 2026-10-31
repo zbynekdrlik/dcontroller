@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -13,6 +16,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   TRUNK_VERSION: v0.21.14
+  # Pinned here, not read from the release: a tampered release must not pass.
+  TRUNK_SHA256: f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b
 
 jobs:
   version-check:
@@ -27,7 +32,13 @@ jobs:
           set -euo pipefail
           ver() { sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' | head -1; }
           head_v=$(ver < Cargo.toml)
-          base_v=$(git show origin/main:Cargo.toml 2>/dev/null | ver || true)
+          git rev-parse --verify -q origin/main >/dev/null || { echo "origin/main missing"; exit 1; }
+          if git cat-file -e origin/main:Cargo.toml 2>/dev/null; then
+            base_v=$(git show origin/main:Cargo.toml | ver)
+            test -n "$base_v" || { echo "no version in main's Cargo.toml"; exit 1; }
+          else
+            base_v=""   # main predates the Cargo workspace
+          fi
           echo "head=$head_v main=${base_v:-none}"
           test -n "$head_v"
           if [ -n "$base_v" ]; then
@@ -59,8 +70,7 @@ jobs:
           set -euo pipefail
           base=https://github.com/trunk-rs/trunk/releases/download/$TRUNK_VERSION
           curl -fsSL -o trunk.tgz "$base/trunk-x86_64-unknown-linux-gnu.tar.gz"
-          curl -fsSL -o trunk.sha "$base/trunk-x86_64-unknown-linux-gnu.tar.gz.sha256"
-          echo "$(awk '{print $1}' trunk.sha)  trunk.tgz" | sha256sum -c -
+          echo "$TRUNK_SHA256  trunk.tgz" | sha256sum -c -
           tar xzf trunk.tgz -C /usr/local/bin trunk
           trunk --version
       - name: Build web (trunk)

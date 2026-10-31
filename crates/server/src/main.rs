@@ -24,12 +24,7 @@ async fn main() -> anyhow::Result<()> {
     let cfg = Config::load(&path)?;
     info!(version = VERSION, config = %path.display(), bind = %cfg.bind,
         web_dir = %cfg.web_dir.display(), dante_interface = ?cfg.dante_interface, "starting");
-    if !cfg.web_dir.join("index.html").is_file() {
-        anyhow::bail!(
-            "web_dir {} has no index.html (build the web app first)",
-            cfg.web_dir.display()
-        );
-    }
+    cfg.validate()?;
     let listener = tokio::net::TcpListener::bind(cfg.bind)
         .await
         .with_context(|| format!("bind {}", cfg.bind))?;

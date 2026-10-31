@@ -4,8 +4,9 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use axum::Router;
+use axum::http::StatusCode;
 use axum::http::{HeaderValue, header};
-use axum::routing::get;
+use axum::routing::{any, get};
 use serde::{Deserialize, Serialize};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -26,6 +27,11 @@ pub struct Config {
     /// Network interface on the Dante network (used once Dante features land).
     #[serde(default)]
     pub dante_interface: Option<String>,
+    /// Allow a non-loopback `bind`. The server has no login of its own: it
+    /// must sit behind Cloudflare Access (cloudflared on the same box reaches
+    /// it on loopback), so a public bind is refused unless set explicitly.
+    #[serde(default)]
+    pub allow_remote: bool,
 }
 
 fn default_bind() -> SocketAddr {
@@ -35,7 +41,26 @@ fn default_bind() -> SocketAddr {
 impl Config {
     /// Parses a config file's text.
     pub fn parse(text: &str) -> anyhow::Result<Self> {
-        Ok(toml::from_str(text)?)
+        let cfg: Self = toml::from_str(text)?;
+        if !cfg.bind.ip().is_loopback() && !cfg.allow_remote {
+            anyhow::bail!(
+                "bind {} is not loopback; the server has no login of its own and must sit behind \
+                 Cloudflare Access (set allow_remote = true only if something else guards it)",
+                cfg.bind
+            );
+        }
+        Ok(cfg)
+    }
+
+    /// Checks what parsing cannot: the web build is present.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if !self.web_dir.join("index.html").is_file() {
+            anyhow::bail!(
+                "web_dir {} has no index.html (build the web app first)",
+                self.web_dir.display()
+            );
+        }
+        Ok(())
     }
 
     /// Reads and parses the config file at `path`.
@@ -57,6 +82,10 @@ async fn version() -> &'static str {
     VERSION
 }
 
+async fn api_not_found() -> StatusCode {
+    StatusCode::NOT_FOUND
+}
+
 async fn healthz() -> axum::Json<Health> {
     axum::Json(Health {
         status: "ok".into(),
@@ -64,18 +93,20 @@ async fn healthz() -> axum::Json<Health> {
     })
 }
 
-/// The whole HTTP app: API routes, then the PWA from `web_dir` with
-/// `index.html` as the fallback for client-side routes.
+/// The whole HTTP app: API routes (unknown `/api/*` is 404), then the PWA
+/// from `web_dir` with `index.html` as the fallback for client-side routes.
+/// Nothing is cached by the browser, so a deploy shows at once.
 pub fn app(web_dir: &Path) -> Router {
     let index = web_dir.join("index.html");
     let spa = ServeDir::new(web_dir).fallback(ServeFile::new(index));
     Router::new()
         .route("/api/version", get(version))
+        .route("/api/{*rest}", any(api_not_found))
         .route("/healthz", get(healthz))
+        .fallback_service(spa)
         .layer(SetResponseHeaderLayer::overriding(
             header::CACHE_CONTROL,
             HeaderValue::from_static("no-store"),
         ))
-        .fallback_service(spa)
         .layer(TraceLayer::new_for_http())
 }

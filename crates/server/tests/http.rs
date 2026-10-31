@@ -65,8 +65,9 @@ async fn serves_static_files_and_spa_fallback() {
     let d = web();
     let (s, body, _) = get(d.path(), "/manifest.webmanifest").await;
     assert_eq!((s, body.as_str()), (StatusCode::OK, "{\"name\":\"x\"}"));
-    let (s, body, _) = get(d.path(), "/").await;
+    let (s, body, cache) = get(d.path(), "/").await;
     assert_eq!((s, body.as_str()), (StatusCode::OK, "<html>shell</html>"));
+    assert_eq!(cache.as_deref(), Some("no-store"));
     let (s, body, _) = get(d.path(), "/devices/some-route").await;
     assert_eq!((s, body.as_str()), (StatusCode::OK, "<html>shell</html>"));
 }
@@ -76,10 +77,40 @@ fn config_defaults_and_rejects_unknown_keys() {
     let c = Config::parse("web_dir = \"/srv/web\"").unwrap();
     assert_eq!(c.bind.to_string(), "127.0.0.1:8080");
     assert_eq!(c.dante_interface, None);
-    let c = Config::parse("web_dir = \"d\"\nbind = \"0.0.0.0:9000\"\ndante_interface = \"eth1\"")
+    let c = Config::parse("web_dir = \"d\"\nbind = \"127.0.0.1:9000\"\ndante_interface = \"eth1\"")
         .unwrap();
-    assert_eq!(c.bind.to_string(), "0.0.0.0:9000");
+    assert_eq!(c.bind.to_string(), "127.0.0.1:9000");
     assert_eq!(c.dante_interface.as_deref(), Some("eth1"));
     assert!(Config::parse("web_dir = \"d\"\ntypo = 1").is_err());
-    assert!(Config::parse("bind = \"0.0.0.0:1\"").is_err());
+    assert!(Config::parse("bind = \"127.0.0.1:1\"").is_err());
+}
+
+#[tokio::test]
+async fn unknown_api_path_is_404_not_the_shell() {
+    let d = web();
+    let (s, body, _) = get(d.path(), "/api/nope").await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert!(!body.contains("shell"));
+    let (s, _, _) = get(d.path(), "/api/a/b").await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[test]
+fn public_bind_needs_allow_remote() {
+    let e = Config::parse("web_dir = \"d\"\nbind = \"0.0.0.0:9000\"").unwrap_err();
+    assert!(e.to_string().contains("not loopback"), "{e}");
+    let c = Config::parse("web_dir = \"d\"\nbind = \"0.0.0.0:9000\"\nallow_remote = true").unwrap();
+    assert!(c.allow_remote);
+    assert!(Config::parse("web_dir = \"d\"\nbind = \"[::1]:9000\"").is_ok());
+}
+
+#[test]
+fn validate_requires_built_web_dir() {
+    let empty = tempfile::tempdir().unwrap();
+    let c = Config::parse(&format!("web_dir = {:?}", empty.path())).unwrap();
+    let e = c.validate().unwrap_err();
+    assert!(e.to_string().contains("no index.html"), "{e}");
+    let d = web();
+    let c = Config::parse(&format!("web_dir = {:?}", d.path())).unwrap();
+    c.validate().unwrap();
 }

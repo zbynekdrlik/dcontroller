@@ -43,4 +43,27 @@ test.describe("dashboard", () => {
     expect(scope).toBe(new URL("/", page.url()).href);
     expect(console_msgs).toEqual([]);
   });
+
+  test("service worker serves the shell offline and never caches /api", async ({ page, context }) => {
+    await page.goto("/");
+    await page.evaluate(() => navigator.serviceWorker.ready);
+    // Second load goes through the now-controlling worker, which fills the cache.
+    await page.reload();
+    await expect(page.getByTestId("version")).toHaveText(VERSION_RE);
+    expect(await page.evaluate(() => navigator.serviceWorker.controller !== null)).toBe(true);
+    await page.evaluate(() => fetch("/api/version").then((r) => r.text()));
+    const online = (await page.getByTestId("version").textContent())?.trim();
+
+    await context.setOffline(true);
+    await page.reload();
+    await expect(page.getByTestId("version")).toHaveText(online!);
+    const cachedPaths = await page.evaluate(async () => {
+      const c = await caches.open("dcontroller-v1");
+      return (await c.keys()).map((r) => new URL(r.url).pathname);
+    });
+    expect(cachedPaths).toContain("/");
+    expect(cachedPaths.filter((p) => p.startsWith("/api/"))).toEqual([]);
+    await context.setOffline(false);
+    expect(console_msgs).toEqual([]);
+  });
 });
