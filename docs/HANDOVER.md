@@ -10,7 +10,9 @@ Dante protocol APIs requested in priority order: zbynekdrlik/dstack#16.
 
 ## Machines
 
-Claude works in the `dcontroller` account on dev1. dev1 has no access to the Dante network, so the server must run on a box on that network. The owner has not chosen the box yet.
+Claude works in the `dcontroller` account on dev1. dev1 has no access to the Dante network, so the server runs on a box on that network: the companion/presenter N100 mini PC (owner 31.10.2026: it goes to every event and is always on; dev1 stays at the church). Reached over the `linux-presenter` MCP; details in the private `~/.config/dcontroller/SITE.md`.
+
+Deploy: `deploy/package.sh` builds `target/bundle/dcontroller-<ver>.tar.gz` (CI job `package` builds the same bundle, installs it as a systemd service on the runner and uploads it as an artifact). On the box: unpack, `sudo DC_BIND=127.0.0.1:<port> DC_IFACE=<dante nic> ./install.sh` the first time, `sudo ./install.sh` after. The service runs as the `dcontroller` system user on loopback only; Cloudflare Access fronts it (credential: airuleset#1278).
 
 ## What else acts on the machines
 
@@ -19,7 +21,7 @@ Dante Controller on Windows PCs and every Dante consumer (iemmixer, dasio, SongP
 ## How to run a test
 
 - Rust: `cargo test --workspace`; lint `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and the same clippy with `-p dcontroller-web --target wasm32-unknown-unknown`.
-- E2E: `cd crates/web && trunk build`, `cargo build -p dcontroller`, `cd e2e && npm ci && npx playwright test` (starts the real server on 127.0.0.1:18080). trunk on dev1 is requested system-wide in zbynekdrlik/airuleset#1275; CI installs its own.
+- E2E: `cd crates/web && trunk build`, `cargo build -p dcontroller`, `cd e2e && npm ci && npx playwright test` (starts the real server on 127.0.0.1:18080). trunk is system-wide on dev1 (airuleset#1275); CI installs its own. dev1's shared Playwright browsers lag 1.64.1 (airuleset#1277).
 - Server config: `~/.config/dcontroller/config.toml` with `web_dir`, optional `bind` and `dante_interface`.
 
 Dante tests: not defined yet. A read-only test against real devices comes first: mDNS discovery and ARC reads through dstack. A test that changes a device needs the owner's approval, unless the device is ours.
