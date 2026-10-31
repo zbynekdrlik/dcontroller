@@ -172,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "buildver"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "bumpalo"
@@ -319,7 +319,7 @@ dependencies = [
 
 [[package]]
 name = "dcontroller"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -338,7 +338,7 @@ dependencies = [
 
 [[package]]
 name = "dcontroller-web"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "buildver",
  "console_error_panic_hook",

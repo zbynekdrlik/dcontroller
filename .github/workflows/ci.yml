@@ -87,3 +87,85 @@ jobs:
       - name: E2E
         working-directory: e2e
         run: npx playwright test
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install trunk
+        run: |
+          set -euo pipefail
+          base=https://github.com/trunk-rs/trunk/releases/download/$TRUNK_VERSION
+          curl -fsSL -o trunk.tgz "$base/trunk-x86_64-unknown-linux-gnu.tar.gz"
+          echo "$TRUNK_SHA256  trunk.tgz" | sha256sum -c -
+          tar xzf trunk.tgz -C /usr/local/bin trunk
+      - name: Build release bundle
+        id: bundle
+        run: |
+          set -euo pipefail
+          path=$(deploy/package.sh)
+          test -f "$path"
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+      - name: Install the bundle as a systemd service and check it
+        run: |
+          set -euo pipefail
+          dir=$(mktemp -d)
+          tar -xzf "${{ steps.bundle.outputs.path }}" -C "$dir"
+          rel=$(echo "$dir"/dcontroller-*)
+          url=http://127.0.0.1:8790
+          sudo DC_BIND=127.0.0.1:8790 DC_IFACE=lo "$rel/install.sh"
+          ver=$(curl -fsS "$url/api/version")
+          echo "served: $ver"
+          [[ "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-dev\.[0-9]+)?\ \([0-9a-f]{7}\)$ ]]
+          curl -fsS -o "$dir/index.html" "$url/"
+          grep -q 'manifest.webmanifest' "$dir/index.html"
+          pid=$(systemctl show -p MainPID --value dcontroller)
+          test "$(stat -c %U "/proc/$pid")" = dcontroller
+          test "$(sudo stat -c '%a %U %G' /etc/dcontroller/config.toml)" = "640 root dcontroller"
+          cfg_sum=$(sudo sha256sum /etc/dcontroller/config.toml)
+
+          # Update path: keeps the config, really restarts, still serves.
+          sudo "$rel/install.sh"
+          test "$(curl -fsS "$url/api/version")" = "$ver"
+          test "$(systemctl show -p MainPID --value dcontroller)" != "$pid"
+          test "$(sudo sha256sum /etc/dcontroller/config.toml)" = "$cfg_sum"
+
+          # Rollback 1: a binary that accepts the config but cannot serve.
+          bad="$dir/bad-bin" && cp -r "$rel" "$bad"
+          printf '#!/bin/sh\n[ "$1" = --check-config ] && { echo 127.0.0.1:8790; exit 0; }\nexit 3\n' > "$bad/dcontroller"
+          chmod +x "$bad/dcontroller"
+          if sudo "$bad/install.sh"; then echo "broken binary installed"; exit 1; fi
+          test "$(curl -fsS "$url/api/version")" = "$ver"
+          cmp "$rel/dcontroller" /opt/dcontroller/dcontroller
+          diff -r "$rel/web" /opt/dcontroller/web
+
+          # Rollback 2: a unit that cannot start the service.
+          bad="$dir/bad-unit" && cp -r "$rel" "$bad"
+          sed -i 's|^ExecStart=.*|ExecStart=/nonexistent/dcontroller|' "$bad/dcontroller.service"
+          if sudo "$bad/install.sh"; then echo "broken unit installed"; exit 1; fi
+          test "$(curl -fsS "$url/api/version")" = "$ver"
+          cmp "$rel/dcontroller.service" /etc/systemd/system/dcontroller.service
+
+          # A config the new version refuses is never trusted.
+          sudo cp /etc/dcontroller/config.toml "$dir/config.keep"
+          echo 'typo = 1' | sudo tee -a /etc/dcontroller/config.toml >/dev/null
+          if sudo "$rel/install.sh"; then echo "refused config accepted"; exit 1; fi
+          sudo cp "$dir/config.keep" /etc/dcontroller/config.toml
+
+          # Failed first install leaves nothing behind.
+          sudo systemctl disable --now dcontroller.service
+          sudo rm -rf /opt/dcontroller /etc/dcontroller /etc/systemd/system/dcontroller.service
+          sudo systemctl daemon-reload
+          if sudo DC_BIND=127.0.0.1:8790 DC_IFACE=lo "$dir/bad-bin/install.sh"; then echo "broken first install"; exit 1; fi
+          test ! -e /opt/dcontroller/dcontroller
+          test ! -e /etc/systemd/system/dcontroller.service
+          test ! -e /etc/dcontroller/config.toml
+          if systemctl is-enabled -q dcontroller.service 2>/dev/null; then echo "unit left enabled"; exit 1; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dcontroller-bundle
+          path: ${{ steps.bundle.outputs.path }}
+          if-no-files-found: error

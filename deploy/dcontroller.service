@@ -1,0 +1,34 @@
+[Unit]
+Description=dcontroller web Dante controller
+Documentation=https://github.com/zbynekdrlik/dcontroller
+Wants=network-online.target
+After=network-online.target
+# Keep retrying a crash loop instead of parking in "failed" (trade-off: a
+# broken config retries every RestartSec and logs each try; the installer
+# refuses such a config and rolls back, so this only follows a hand edit).
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=dcontroller
+Group=dcontroller
+ExecStart=/opt/dcontroller/dcontroller /etc/dcontroller/config.toml
+Restart=on-failure
+RestartSec=2
+Environment=RUST_LOG=info,tower_http=info
+# Control traffic only (mDNS, ARC); no audio, no realtime priority.
+Nice=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target
