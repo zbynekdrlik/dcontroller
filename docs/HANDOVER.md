@@ -4,7 +4,9 @@ Request: zbynekdrlik/airuleset#1273, owner 30.10.2026 and 31.10.2026.
 
 ## Status
 
-New project, no code yet. The first job is the usual Rust web app foundation: version on the dashboard, Playwright E2E, PWA, Cloudflare tunnel with Access and e-mail authorization.
+Foundation in progress (#1): Cargo workspace with `crates/server` (axum: PWA, `/api/version`, `/healthz`), `crates/web` (Leptos CSR, built by trunk, PWA manifest + service worker), `crates/buildver` (one version string from git for both). Cloudflare tunnel with Access waits for the box on the Dante network.
+
+Dante protocol APIs requested in priority order: zbynekdrlik/dstack#16.
 
 ## Machines
 
@@ -16,7 +18,11 @@ Dante Controller on Windows PCs and every Dante consumer (iemmixer, dasio, SongP
 
 ## How to run a test
 
-Not defined yet. A read-only test against real devices comes first: mDNS discovery and ARC reads through dstack. A test that changes a device needs the owner's approval, unless the device is ours.
+- Rust: `cargo test --workspace`; lint `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and the same clippy with `-p dcontroller-web --target wasm32-unknown-unknown`.
+- E2E: `cd crates/web && trunk build`, `cargo build -p dcontroller`, `cd e2e && npm ci && npx playwright test` (starts the real server on 127.0.0.1:18080). trunk on dev1 is requested system-wide in zbynekdrlik/airuleset#1275; CI installs its own.
+- Server config: `~/.config/dcontroller/config.toml` with `web_dir`, optional `bind` and `dante_interface`.
+
+Dante tests: not defined yet. A read-only test against real devices comes first: mDNS discovery and ARC reads through dstack. A test that changes a device needs the owner's approval, unless the device is ours.
 
 ## Site facts
 

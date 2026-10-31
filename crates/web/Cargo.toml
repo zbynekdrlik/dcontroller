@@ -1,0 +1,14 @@
+[package]
+name = "dcontroller-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "dcontroller dashboard: Leptos CSR PWA, built to wasm by trunk."
+
+[dependencies]
+leptos = { version = "0.8", features = ["csr"] }
+console_error_panic_hook = "0.1"
+
+[build-dependencies]
+buildver = { path = "../buildver" }
