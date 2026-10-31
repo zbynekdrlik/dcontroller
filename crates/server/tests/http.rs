@@ -91,8 +91,11 @@ async fn unknown_api_path_is_404_not_the_shell() {
     let (s, body, _) = get(d.path(), "/api/nope").await;
     assert_eq!(s, StatusCode::NOT_FOUND);
     assert!(!body.contains("shell"));
-    let (s, _, _) = get(d.path(), "/api/a/b").await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
+    for uri in ["/api/a/b", "/api", "/api/"] {
+        let (s, body, _) = get(d.path(), uri).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{uri}");
+        assert!(!body.contains("shell"), "{uri}");
+    }
 }
 
 #[test]

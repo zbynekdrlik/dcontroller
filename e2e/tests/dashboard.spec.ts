@@ -54,8 +54,16 @@ test.describe("dashboard", () => {
     await page.evaluate(() => fetch("/api/version").then((r) => r.text()));
     const online = (await page.getByTestId("version").textContent())?.trim();
 
+    expect(console_msgs).toEqual([]);
+
     await context.setOffline(true);
-    await page.reload();
+    // Proof the network is down for the page: /api/ bypasses the worker, so it must fail.
+    const probe = await page.evaluate(() =>
+      fetch("/api/version").then(() => "reached", () => "rejected"),
+    );
+    expect(probe).toBe("rejected");
+    const reloaded = await page.reload();
+    expect(reloaded?.fromServiceWorker()).toBe(true);
     await expect(page.getByTestId("version")).toHaveText(online!);
     const cachedPaths = await page.evaluate(async () => {
       const c = await caches.open("dcontroller-v1");
@@ -64,6 +72,8 @@ test.describe("dashboard", () => {
     expect(cachedPaths).toContain("/");
     expect(cachedPaths.filter((p) => p.startsWith("/api/"))).toEqual([]);
     await context.setOffline(false);
-    expect(console_msgs).toEqual([]);
+    // The only console line allowed offline is the probe's own failed request.
+    const probeLine = /Failed to load resource: net::ERR_INTERNET_DISCONNECTED/;
+    expect(console_msgs.filter((m) => !probeLine.test(m))).toEqual([]);
   });
 });

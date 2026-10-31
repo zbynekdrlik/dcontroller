@@ -101,6 +101,8 @@ pub fn app(web_dir: &Path) -> Router {
     let spa = ServeDir::new(web_dir).fallback(ServeFile::new(index));
     Router::new()
         .route("/api/version", get(version))
+        .route("/api", any(api_not_found))
+        .route("/api/", any(api_not_found))
         .route("/api/{*rest}", any(api_not_found))
         .route("/healthz", get(healthz))
         .fallback_service(spa)
