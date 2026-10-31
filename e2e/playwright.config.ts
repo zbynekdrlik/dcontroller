@@ -5,8 +5,9 @@ import { resolve } from "node:path";
 // The real server binary serves the real trunk build; nothing is mocked.
 const root = resolve(__dirname, "..");
 const port = 18080;
-mkdirSync(resolve(__dirname, "test-results"), { recursive: true });
-const config = resolve(__dirname, "test-results", "config.toml");
+// Not under test-results: Playwright empties that directory when it starts.
+mkdirSync(resolve(__dirname, ".run"), { recursive: true });
+const config = resolve(__dirname, ".run", "config.toml");
 writeFileSync(config, `bind = "127.0.0.1:${port}"\nweb_dir = "${resolve(root, "crates/web/dist")}"\n`);
 
 export default defineConfig({

@@ -7,3 +7,4 @@
 *.env.local
 *.pem
 *.key
+/e2e/.run
