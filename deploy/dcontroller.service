@@ -3,7 +3,9 @@ Description=dcontroller web Dante controller
 Documentation=https://github.com/zbynekdrlik/dcontroller
 Wants=network-online.target
 After=network-online.target
-# Keep retrying a crash loop instead of parking in "failed".
+# Keep retrying a crash loop instead of parking in "failed" (trade-off: a
+# broken config retries every RestartSec and logs each try; the installer
+# refuses such a config and rolls back, so this only follows a hand edit).
 StartLimitIntervalSec=0
 
 [Service]

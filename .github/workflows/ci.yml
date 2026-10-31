@@ -133,13 +133,37 @@ jobs:
           test "$(systemctl show -p MainPID --value dcontroller)" != "$pid"
           test "$(sudo sha256sum /etc/dcontroller/config.toml)" = "$cfg_sum"
 
-          # Rollback: a release whose binary cannot start must fail the install
-          # and leave the previous version answering.
-          bad="$dir/bad" && cp -r "$rel" "$bad"
-          printf '#!/bin/sh\nexit 3\n' > "$bad/dcontroller" && chmod +x "$bad/dcontroller"
-          if sudo "$bad/install.sh"; then echo "broken release installed"; exit 1; fi
+          # Rollback 1: a binary that accepts the config but cannot serve.
+          bad="$dir/bad-bin" && cp -r "$rel" "$bad"
+          printf '#!/bin/sh\n[ "$1" = --check-config ] && { echo 127.0.0.1:8790; exit 0; }\nexit 3\n' > "$bad/dcontroller"
+          chmod +x "$bad/dcontroller"
+          if sudo "$bad/install.sh"; then echo "broken binary installed"; exit 1; fi
           test "$(curl -fsS "$url/api/version")" = "$ver"
           cmp "$rel/dcontroller" /opt/dcontroller/dcontroller
+          diff -r "$rel/web" /opt/dcontroller/web
+
+          # Rollback 2: a unit that cannot start the service.
+          bad="$dir/bad-unit" && cp -r "$rel" "$bad"
+          sed -i 's|^ExecStart=.*|ExecStart=/nonexistent/dcontroller|' "$bad/dcontroller.service"
+          if sudo "$bad/install.sh"; then echo "broken unit installed"; exit 1; fi
+          test "$(curl -fsS "$url/api/version")" = "$ver"
+          cmp "$rel/dcontroller.service" /etc/systemd/system/dcontroller.service
+
+          # A config the new version refuses is never trusted.
+          sudo cp /etc/dcontroller/config.toml "$dir/config.keep"
+          echo 'typo = 1' | sudo tee -a /etc/dcontroller/config.toml >/dev/null
+          if sudo "$rel/install.sh"; then echo "refused config accepted"; exit 1; fi
+          sudo cp "$dir/config.keep" /etc/dcontroller/config.toml
+
+          # Failed first install leaves nothing behind.
+          sudo systemctl disable --now dcontroller.service
+          sudo rm -rf /opt/dcontroller /etc/dcontroller /etc/systemd/system/dcontroller.service
+          sudo systemctl daemon-reload
+          if sudo DC_BIND=127.0.0.1:8790 DC_IFACE=lo "$dir/bad-bin/install.sh"; then echo "broken first install"; exit 1; fi
+          test ! -e /opt/dcontroller/dcontroller
+          test ! -e /etc/systemd/system/dcontroller.service
+          test ! -e /etc/dcontroller/config.toml
+          ! systemctl is-enabled -q dcontroller.service
       - uses: actions/upload-artifact@v4
         with:
           name: dcontroller-bundle
