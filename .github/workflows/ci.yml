@@ -163,7 +163,7 @@ jobs:
           test ! -e /opt/dcontroller/dcontroller
           test ! -e /etc/systemd/system/dcontroller.service
           test ! -e /etc/dcontroller/config.toml
-          ! systemctl is-enabled -q dcontroller.service
+          if systemctl is-enabled -q dcontroller.service 2>/dev/null; then echo "unit left enabled"; exit 1; fi
       - uses: actions/upload-artifact@v4
         with:
           name: dcontroller-bundle
