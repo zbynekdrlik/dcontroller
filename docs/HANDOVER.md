@@ -10,7 +10,7 @@ Dante protocol APIs requested in priority order: zbynekdrlik/dstack#16.
 
 ## Machines
 
-Claude works in the `dcontroller` account on dev1. dev1 has no access to the Dante network, so the server runs on a box on that network: the companion/presenter N100 mini PC (owner 31.10.2026: it goes to every event and is always on; dev1 stays at the church). Reached over the `linux-presenter` MCP; details in the private `~/.config/dcontroller/SITE.md`.
+Claude works in the `dcontroller` account on dev1. dev1 has no access to the Dante network, so the server runs on a box on that network, chosen by the owner 31.10.2026. Which box, how to reach it and its interface are in the private `~/.config/dcontroller/SITE.md`.
 
 Deploy: `deploy/package.sh` builds `target/bundle/dcontroller-<ver>.tar.gz` (CI job `package` builds the same bundle, installs it as a systemd service on the runner and uploads it as an artifact). On the box: unpack, `sudo DC_BIND=127.0.0.1:<port> DC_IFACE=<dante nic> ./install.sh` the first time, `sudo ./install.sh` after. The service runs as the `dcontroller` system user on loopback only; Cloudflare Access fronts it (credential: airuleset#1278).
 

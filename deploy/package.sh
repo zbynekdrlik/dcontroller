@@ -4,8 +4,8 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
-(cd crates/web && trunk build --release >&2)
-cargo build --release -p dcontroller >&2
+(cd crates/web && trunk build --release --locked >&2)
+cargo build --release --locked -p dcontroller >&2
 ver=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' Cargo.toml | head -1)
 test -n "$ver"
 out="$root/target/bundle/dcontroller-$ver"

@@ -3,6 +3,8 @@ Description=dcontroller web Dante controller
 Documentation=https://github.com/zbynekdrlik/dcontroller
 Wants=network-online.target
 After=network-online.target
+# Keep retrying a crash loop instead of parking in "failed".
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
