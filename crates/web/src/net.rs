@@ -60,17 +60,16 @@ pub fn summary(rows: &[Row]) -> (String, bool) {
         .filter(|r| r.warn)
         .map(|r| r.device.as_str())
         .collect();
+    let who = if read == 1 {
+        "1 device reports its network".to_owned()
+    } else {
+        format!("{read} devices report their network")
+    };
     if slow.is_empty() {
-        (
-            format!("{read} devices report their network · all at 1 Gbit/s or more"),
-            false,
-        )
+        (format!("{who} · every link at its platform's speed"), false)
     } else {
         (
-            format!(
-                "{read} devices report their network · below 1 Gbit/s: {}",
-                slow.join(", ")
-            ),
+            format!("{who} · slow or no link: {}", slow.join(", ")),
             true,
         )
     }
@@ -162,6 +161,31 @@ mod tests {
     }
 
     #[test]
+    fn summary_claims_no_gigabit_for_an_ultimo_at_100_mbit() {
+        // Seen live on v0.1.17: two Ultimo devices at 100 Mbit/s and a
+        // summary saying "all at 1 Gbit/s or more".
+        let d = Devices {
+            devices: vec![Device {
+                name: "mic".into(),
+                network: Some(vec![port(100, "10.0.0.9")]),
+                info: Some(dcontroller_api::Info {
+                    platform: Some("UltimoX2".into()),
+                    ..dcontroller_api::Info::default()
+                }),
+                ..Device::default()
+            }],
+            ..Devices::default()
+        };
+        assert_eq!(
+            summary(&rows(&d)),
+            (
+                "1 device reports its network · every link at its platform's speed".to_owned(),
+                false
+            )
+        );
+    }
+
+    #[test]
     fn rows_split_primary_and_secondary_and_flag_a_slow_primary() {
         let r = rows(&site());
         assert_eq!(r[0].primary.as_ref().map(|p| p.link_mbit), Some(1000));
@@ -175,14 +199,14 @@ mod tests {
         assert_eq!(
             summary(&r),
             (
-                "2 devices report their network · below 1 Gbit/s: mic".to_owned(),
+                "2 devices report their network · slow or no link: mic".to_owned(),
                 true
             )
         );
         assert_eq!(
             summary(&r[..1]),
             (
-                "1 devices report their network · all at 1 Gbit/s or more".to_owned(),
+                "1 device reports its network · every link at its platform's speed".to_owned(),
                 false
             )
         );
