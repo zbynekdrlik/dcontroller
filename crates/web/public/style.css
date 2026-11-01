@@ -98,3 +98,14 @@ table.clock tr.lead td { color: #7fd18b; }
 table.clock tr.warn td { color: #e8b84a; }
 table.clock tr.none td { color: #8a94a3; }
 .clock-wrap { overflow-x: auto; }
+.meter-cols { display: flex; flex-wrap: wrap; gap: 1.5rem; }
+.meters { flex: 1 1 18rem; min-width: 0; }
+.mrow { display: grid; grid-template-columns: minmax(4rem, 9rem) 1fr 4.5rem; gap: 0.5rem; align-items: center; font-size: 0.8rem; margin: 0.15rem 0; }
+.mlabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mbar { height: 0.6rem; background: #1b2430; border-radius: 2px; overflow: hidden; }
+.mbar .meter { display: block; height: 100%; }
+.meter.ok { background: #3fb67a; }
+.meter.hot { background: #e8b84a; }
+.meter.clip { background: #e05a5a; }
+.meter.mute, .meter.none { background: transparent; }
+.mval { text-align: right; color: #aab4c3; font-variant-numeric: tabular-nums; }

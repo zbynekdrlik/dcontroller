@@ -8,8 +8,8 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use dcontroller_api::{
-    ChangeEntry, ChangeResult, Device, Devices, Info, LatencyReport, Rename, RenameTarget,
-    RxChannel, SettingChange, Settings, Source, SubscriptionChange,
+    ChangeEntry, ChangeResult, ChannelLevel, Device, Devices, Info, LatencyReport, MeterReport,
+    Rename, RenameTarget, RxChannel, SettingChange, Settings, Source, SubscriptionChange,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -17,6 +17,7 @@ use leptos::task::spawn_local;
 mod clock;
 mod lat;
 mod matrix;
+mod mtr;
 mod net;
 mod settings;
 use matrix::{Grid, affected, cell, elsewhere};
@@ -78,6 +79,31 @@ fn App() -> impl IntoView {
     };
     poll_latency();
     let _ = set_interval_with_handle(poll_latency, LAT_POLL);
+    let mtr = Mtr {
+        device: RwSignal::new(hash_device("#meters/")),
+        report: RwSignal::new(None),
+    };
+    provide_context(mtr);
+    // The chosen device's levels, often while the meters view is open.
+    let poll_meters = move || {
+        if view_now.get_untracked() != View::Meters {
+            return;
+        }
+        let Some(dev) = mtr.device.get_untracked() else {
+            return;
+        };
+        spawn_local(async move {
+            let r = fetch_meters(&dev).await;
+            if mtr.device.get_untracked().as_deref() == Some(dev.as_str()) {
+                mtr.report.set(Some(r));
+            }
+        });
+    };
+    let _ = set_interval_with_handle(poll_meters, MTR_POLL);
+    Effect::new(move |_| {
+        let _ = (mtr.device.get(), view_now.get());
+        poll_meters();
+    });
     // A new choice or opening the view asks at once.
     Effect::new(move |_| {
         let _ = (lat.device.get(), view_now.get());
@@ -103,6 +129,9 @@ fn App() -> impl IntoView {
                 <a href="#latency" data-testid="tab-latency"
                     class=move || if view_now.get() == View::Latency { "tab on" } else { "tab" }
                     on:click=move |_| view_now.set(View::Latency)>"Latency"</a>
+                <a href="#meters" data-testid="tab-meters"
+                    class=move || if view_now.get() == View::Meters { "tab on" } else { "tab" }
+                    on:click=move |_| view_now.set(View::Meters)>"Meters"</a>
                 <a href="#clock" data-testid="tab-clock"
                     class=move || if view_now.get() == View::Clock { "tab on" } else { "tab" }
                     on:click=move |_| view_now.set(View::Clock)>"Clock"</a>
@@ -123,6 +152,7 @@ fn App() -> impl IntoView {
                     View::Routing => view! { <Routing d=d/> }.into_any(),
                     View::Changes => view! { <ChangeLog/> }.into_any(),
                     View::Latency => view! { <LatencyView d=d/> }.into_any(),
+                    View::Meters => view! { <MeterView d=d/> }.into_any(),
                     View::Clock => view! { <ClockView d=d/> }.into_any(),
                     View::Network => view! { <NetworkView d=d/> }.into_any(),
                 },
@@ -142,6 +172,7 @@ enum View {
     Devices,
     Changes,
     Latency,
+    Meters,
     Clock,
     Network,
 }
@@ -155,6 +186,7 @@ impl View {
             "#clock" => View::Clock,
             "#network" => View::Network,
             h if h.starts_with("#latency") => View::Latency,
+            h if h.starts_with("#meters") => View::Meters,
             _ => View::Routing,
         }
     }
@@ -171,8 +203,13 @@ struct Lat {
 }
 
 fn lat_device_from_hash() -> Option<String> {
+    hash_device("#latency/")
+}
+
+/// The device named in the hash after `prefix` (`#latency/<name>`).
+fn hash_device(prefix: &str) -> Option<String> {
     let hash = window().location().hash().unwrap_or_default();
-    let name = hash.strip_prefix("#latency/")?;
+    let name = hash.strip_prefix(prefix)?;
     js_sys::decode_uri_component(name)
         .ok()
         .map(String::from)
@@ -234,6 +271,111 @@ fn LatencyView(d: Devices) -> impl IntoView {
             (Some(_), Some(Ok(r))) => latency_report_view(r),
         }}
     }
+}
+
+/// How often the meters view asks for the chosen device's levels.
+const MTR_POLL: Duration = Duration::from_millis(300);
+
+/// The meters view's device (kept in the hash `#meters/<name>`) and its last report.
+#[derive(Clone, Copy)]
+struct Mtr {
+    device: RwSignal<Option<String>>,
+    report: RwSignal<Option<Result<MeterReport, String>>>,
+}
+
+async fn fetch_meters(device: &str) -> Result<MeterReport, String> {
+    let url = format!(
+        "/api/meters/{}",
+        String::from(js_sys::encode_uri_component(device))
+    );
+    let res = gloo_net::http::Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.ok() {
+        return Err(format!("server answered {}", res.status()));
+    }
+    res.json::<MeterReport>().await.map_err(|e| e.to_string())
+}
+
+/// The meters view: pick a device, see its TX and RX channels' levels.
+#[component]
+fn MeterView(d: Devices) -> impl IntoView {
+    let mtr = expect_context::<Mtr>();
+    let names: Vec<String> = d
+        .devices
+        .iter()
+        .filter(|dev| {
+            dev.channels
+                .as_ref()
+                .is_some_and(|c| !c.tx.is_empty() || !c.rx.is_empty())
+        })
+        .map(|dev| dev.name.clone())
+        .collect();
+    view! {
+        <div class="receivers">
+            {names.into_iter().map(|name| {
+                let n = name.clone();
+                let href = format!("#meters/{}", String::from(js_sys::encode_uri_component(&name)));
+                let on = {
+                    let n = name.clone();
+                    move || mtr.device.get().as_deref() == Some(n.as_str())
+                };
+                view! {
+                    <a href=href data-testid="mtr-device" data-name=name.clone()
+                        class=move || if on() { "tab on" } else { "tab" }
+                        on:click=move |_| {
+                            mtr.report.set(None);
+                            mtr.device.set(Some(n.clone()));
+                        }>{name.clone()}</a>
+                }
+            }).collect_view()}
+        </div>
+        {move || match (mtr.device.get(), mtr.report.get()) {
+            (None, _) => view! { <p class="status">"Pick a device."</p> }.into_any(),
+            (Some(_), None) => view! { <p class="status" data-testid="mtr-wait">"Subscribing…"</p> }.into_any(),
+            (Some(_), Some(Err(e))) => view! { <p class="status error">{format!("Not readable: {e}")}</p> }.into_any(),
+            (Some(_), Some(Ok(r))) => meter_report_view(r),
+        }}
+    }
+}
+
+fn meter_column(title: &'static str, id: &'static str, levels: Vec<ChannelLevel>) -> impl IntoView {
+    view! {
+        <div class="meters" data-testid=id>
+            <h3>{title}</h3>
+            {levels.into_iter().map(|l| {
+                let style = format!("width: {:.1}%", mtr::fill(&l));
+                view! {
+                    <div class="mrow" data-testid="mtr-channel">
+                        <span class="mlabel">{l.label.clone()}</span>
+                        <span class="mbar"><span class=mtr::class(&l) style=style></span></span>
+                        <span class="mval" data-testid="mtr-value">{mtr::text(&l)}</span>
+                    </div>
+                }
+            }).collect_view()}
+        </div>
+    }
+}
+
+fn meter_report_view(r: MeterReport) -> AnyView {
+    let head = match r.age_ms {
+        Some(a) => format!("{} · {} frames · last {} ms ago", r.device, r.frames, a),
+        None => format!("{} · waiting for the first meter frame", r.device),
+    };
+    let error = r
+        .error
+        .clone()
+        .map(|e| view! { <p class="error" data-testid="mtr-error">{e}</p> });
+    view! {
+        <p class="status" data-testid="mtr-head">{head}</p>
+        {error}
+        <div class="meter-cols">
+            {meter_column("Transmit", "mtr-tx", r.tx)}
+            {meter_column("Receive", "mtr-rx", r.rx)}
+        </div>
+    }
+    .into_any()
 }
 
 fn latency_report_view(r: LatencyReport) -> AnyView {

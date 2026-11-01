@@ -264,6 +264,33 @@ pub struct ChangeEntry {
     pub message: String,
 }
 
+/// `GET /api/meters/{device}`: the device's channel levels, as Dante
+/// Controller's meters show them, from the frames it sends while someone
+/// watches.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MeterReport {
+    pub device: String,
+    /// Milliseconds since the last frame; `None` before the first.
+    pub age_ms: Option<u64>,
+    pub frames: u64,
+    pub tx: Vec<ChannelLevel>,
+    pub rx: Vec<ChannelLevel>,
+    /// Why there are no levels, when there are none.
+    pub error: Option<String>,
+}
+
+/// One channel's level in a meter frame.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ChannelLevel {
+    /// From 1.
+    pub channel: u16,
+    pub label: String,
+    /// dBFS (0 when clipping); `None` muted or not sent.
+    pub dbfs: Option<f32>,
+    pub clip: bool,
+    pub muted: bool,
+}
+
 /// `GET /api/latency/{device}`: the receiver's packet latency per RX flow,
 /// as Dante Controller's Latency tab shows it, gathered from its heartbeats
 /// while someone watches.
