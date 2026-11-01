@@ -183,6 +183,18 @@ impl State {
             .is_some_and(|e| e.info.is_none())
     }
 
+    /// The Dante interface's name, when discovery runs on one.
+    pub fn interface(&self) -> Option<String> {
+        self.interface.clone().filter(|_| self.enabled)
+    }
+
+    /// The last read channels of the listed device `name`.
+    pub fn channels(&self, name: &str) -> Option<api::Channels> {
+        self.devices
+            .get(&name.to_ascii_lowercase())
+            .and_then(|e| e.channels.clone())
+    }
+
     /// The last read settings and info of the listed device `name`.
     pub fn known(&self, name: &str) -> (Option<api::Settings>, Option<api::Info>) {
         self.devices
