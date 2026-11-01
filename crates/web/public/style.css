@@ -91,3 +91,10 @@ svg.spark .limit { stroke: #e05a5a; stroke-dasharray: 4 3; stroke-width: 1; vect
 svg.spark .peaks { fill: none; stroke: #3fb67a; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 table.settings { font-size: 0.8rem; border-collapse: collapse; margin: 0 0 0.6rem; }
 table.settings th { text-align: left; font-weight: normal; color: #aab4c3; padding: 0.1rem 1rem 0.1rem 0; }
+table.clock { font-size: 0.85rem; border-collapse: collapse; width: 100%; }
+table.clock th { text-align: left; font-weight: normal; color: #aab4c3; padding: 0.2rem 0.8rem 0.2rem 0; }
+table.clock td { padding: 0.2rem 0.8rem 0.2rem 0; border-top: 1px solid #2a3240; }
+table.clock tr.lead td { color: #7fd18b; }
+table.clock tr.warn td { color: #e8b84a; }
+table.clock tr.none td { color: #8a94a3; }
+.clock-wrap { overflow-x: auto; }

@@ -34,6 +34,10 @@ pub struct Device {
     /// What the device says it is (product and board info, encoding);
     /// `None` until it answers.
     pub info: Option<Info>,
+    /// Its clock status at the last read; `None` before it or when it did
+    /// not answer (`clock_error` says why).
+    pub clock: Option<Clock>,
+    pub clock_error: Option<String>,
     /// Unix seconds of the last complete read.
     pub read_at: Option<u64>,
     /// The last read's error, when it failed (the previous read stays).
@@ -68,6 +72,31 @@ pub struct Info {
     pub platform_hardware: Option<String>,
     /// Bits per sample, shared by all its TX channels.
     pub encoding_bits: Option<u32>,
+}
+
+/// A device's clock status (UDP 8700, Dante's clock stats). States the
+/// stack has no name for read as their code (`state 4`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Clock {
+    /// Some PTP port leads.
+    pub leader: bool,
+    /// The device is the grandmaster.
+    pub grandmaster: bool,
+    /// The clock state: `disciplined`, `undisciplined`.
+    pub state: String,
+    /// The servo state: `synchronized`, `none`.
+    pub sync: String,
+    pub stratum: u8,
+    pub frequency_ppb: i32,
+    pub max_drift_ppb: u32,
+    /// Clock ids as MACs, `aa:bb:cc:dd:ee:ff`.
+    pub id: String,
+    pub master: String,
+    pub grandmaster_id: String,
+    /// Each PTP port's state: `leader`, `follower`, `disabled`.
+    pub ports: Vec<String>,
+    /// `none`, `valid`, `unknown`; `None` when the device does not say.
+    pub word_clock: Option<String>,
 }
 
 /// A device's channels, read over ARC.
@@ -266,6 +295,12 @@ mod tests {
                     encoding_bits: Some(24),
                     ..Info::default()
                 }),
+                clock: Some(Clock {
+                    leader: true,
+                    ports: vec!["leader".into()],
+                    ..Clock::default()
+                }),
+                clock_error: None,
                 read_at: Some(1),
                 error: None,
             }],
