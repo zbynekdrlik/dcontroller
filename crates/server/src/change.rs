@@ -175,6 +175,7 @@ impl Changes {
                 let entry = api::ChangeEntry {
                     at: now(),
                     user: user.to_owned(),
+                    kind: "subscription".into(),
                     rx_device: device.name.clone(),
                     rx_channel: req.rx_channel,
                     rx_label: String::new(),
@@ -183,6 +184,7 @@ impl Changes {
                     after: None,
                     ok: false,
                     message: message.clone(),
+                    ..api::ChangeEntry::default()
                 };
                 (
                     entry,
@@ -219,6 +221,7 @@ impl Changes {
                 let entry = api::ChangeEntry {
                     at: now(),
                     user: user.to_owned(),
+                    kind: "subscription".into(),
                     rx_device: device.name.clone(),
                     rx_channel: req.rx_channel,
                     rx_label: before.label.clone(),
@@ -227,6 +230,7 @@ impl Changes {
                     after: after_src,
                     ok,
                     message: message.clone(),
+                    ..api::ChangeEntry::default()
                 };
                 (
                     entry,
@@ -241,6 +245,170 @@ impl Changes {
         info!(%user, rx_device = %entry.rx_device, rx_channel = entry.rx_channel, rx_label = %entry.rx_label,
             before = ?entry.before, requested = ?entry.requested, after = ?entry.after,
             ok = entry.ok, message = %entry.message, "change: done");
+        if let Err(e) = self.append(&entry) {
+            warn!(error = %e, "changes log: entry not written (it is in the journal above)");
+        }
+        result
+    }
+}
+
+/// A rename's reads: the name before, after, and the device's refusal if any.
+type NamesRead = (Option<String>, Option<String>, Option<String>);
+
+/// Checks a rename before anything is sent: channel from 1, a name Dante accepts.
+pub fn validate_rename(req: &api::Rename) -> Result<(), String> {
+    match (req.target, &req.name) {
+        (api::RenameTarget::Tx(0) | api::RenameTarget::Rx(0), _) => {
+            Err("channel numbers start at 1".into())
+        }
+        (api::RenameTarget::Device, None) => Err("a device needs a name".into()),
+        (api::RenameTarget::Device, Some(n)) if !valid_device_name(n) => Err(format!(
+            "not a Dante device name: {n:?} (1 to 31 of A-Z a-z 0-9 and -, no - at either end)"
+        )),
+        (_, Some(n))
+            if !matches!(req.target, api::RenameTarget::Device) && !valid_channel_name(n) =>
+        {
+            Err(format!(
+                "not a Dante channel name: {n:?} (1 to 31 characters, none of = . @)"
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
+impl Changes {
+    /// Runs one confirmed rename by `user`: reads the name, sends the new
+    /// one, reads it back, logs it and makes the device due for a fresh read.
+    pub fn rename(&self, dante: &Shared, user: &str, req: &api::Rename) -> api::ChangeResult {
+        let _one = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        info!(%user, device = %req.device, target = ?req.target, name = ?req.name, "rename: asked");
+        let refuse = |message: String| {
+            warn!(%user, %message, "rename: refused before sending");
+            api::ChangeResult {
+                ok: false,
+                message,
+                channel: None,
+            }
+        };
+        if let Err(m) = validate_rename(req) {
+            return refuse(m);
+        }
+        let target = dante::State::target(
+            &dante.read().unwrap_or_else(|e| e.into_inner()),
+            &req.device,
+        );
+        let Some((ip, device)) = target else {
+            return refuse(format!(
+                "{} is not listed (discovery off or device gone)",
+                req.device
+            ));
+        };
+        let seq = AtomicU16::new(1);
+        let requests = Requests::default();
+        let stop = AtomicBool::new(false);
+        let (what, channel) = match req.target {
+            api::RenameTarget::Tx(c) => ("tx", c),
+            api::RenameTarget::Rx(c) => ("rx", c),
+            api::RenameTarget::Device => ("device", 0),
+        };
+        let read = |udp: &mut Udp<'_>| -> Result<Option<String>, String> {
+            match req.target {
+                api::RenameTarget::Device => control::device_name(udp)
+                    .map(Some)
+                    .map_err(|e| e.to_string()),
+                api::RenameTarget::Tx(c) => control::labels(udp)
+                    .map(|l| l.get(control::Dir::Tx, c).map(str::to_owned))
+                    .map_err(|e| e.to_string()),
+                api::RenameTarget::Rx(c) => control::labels(udp)
+                    .map(|l| l.get(control::Dir::Rx, c).map(str::to_owned))
+                    .map_err(|e| e.to_string()),
+            }
+        };
+        let run = || -> Result<NamesRead, String> {
+            let mut udp = Udp::open(ip, device.arc, &seq, REPLY_TIMEOUT, &requests, &stop)
+                .map_err(|e| format!("socket: {e}"))?;
+            let before = read(&mut udp).map_err(|e| format!("read before: {e}"))?;
+            if before.is_none() {
+                return Err(format!("{} has no {what} channel {channel}", device.name));
+            }
+            let sent = match req.target {
+                api::RenameTarget::Device => {
+                    control::rename_device(&mut udp, req.name.as_deref().unwrap_or_default())
+                }
+                api::RenameTarget::Tx(c) => {
+                    control::rename_channel(&mut udp, control::Dir::Tx, c, req.name.as_deref())
+                }
+                api::RenameTarget::Rx(c) => {
+                    control::rename_channel(&mut udp, control::Dir::Rx, c, req.name.as_deref())
+                }
+            };
+            let send_error = sent.err().map(|e| format!("device refused: {e}"));
+            let after = read(&mut udp).map_err(|e| format!("read back: {e}"))?;
+            Ok((before, after, send_error))
+        };
+        let mut entry = api::ChangeEntry {
+            at: now(),
+            user: user.to_owned(),
+            kind: "rename".into(),
+            what: what.into(),
+            rx_device: device.name.clone(),
+            rx_channel: channel,
+            name_asked: req.name.clone(),
+            ..api::ChangeEntry::default()
+        };
+        let result = match run() {
+            Err(message) => api::ChangeResult {
+                ok: false,
+                message,
+                channel: None,
+            },
+            Ok((before, after, send_error)) => {
+                entry.rx_label = before.clone().unwrap_or_default();
+                entry.name_before = before;
+                entry.name_after = after.clone();
+                // A reset asks for the default, which only the device knows: done when it took it.
+                let ok = send_error.is_none()
+                    && match &req.name {
+                        Some(n) => after.as_deref() == Some(n.as_str()),
+                        None => after.is_some(),
+                    };
+                let message = match (&send_error, ok) {
+                    (Some(e), _) => e.clone(),
+                    (None, true) => format!(
+                        "done, read back from the device: {}",
+                        after.as_deref().unwrap_or_default()
+                    ),
+                    (None, false) => format!(
+                        "the device answered OK but reports {:?} now",
+                        after.as_deref().unwrap_or_default()
+                    ),
+                };
+                api::ChangeResult {
+                    ok,
+                    message,
+                    channel: None,
+                }
+            }
+        };
+        entry.ok = result.ok;
+        entry.message = result.message.clone();
+        // Show the new names at once: a fresh read of the device's channels.
+        let fresh = Udp::open(ip, device.arc, &seq, REPLY_TIMEOUT, &requests, &stop)
+            .map_err(|e| format!("socket: {e}"))
+            .and_then(|mut udp| dante::read_channels(&mut udp).map_err(|e| e.to_string()));
+        {
+            let mut st = dante.write().unwrap_or_else(|e| e.into_inner());
+            match fresh {
+                Ok(ch) => st.record(&device, Ok(ch), std::time::Instant::now(), now()),
+                Err(e) => {
+                    warn!(device = %device.name, error = %e, "rename: fresh read failed, read again soon");
+                    st.mark_due(&device);
+                }
+            }
+        }
+        info!(%user, device = %entry.rx_device, what = %entry.what, channel = entry.rx_channel,
+            before = ?entry.name_before, asked = ?entry.name_asked, after = ?entry.name_after,
+            ok = entry.ok, message = %entry.message, "rename: done");
         if let Err(e) = self.append(&entry) {
             warn!(error = %e, "changes log: entry not written (it is in the journal above)");
         }
@@ -279,6 +447,37 @@ mod tests {
                 .contains("device name")
         );
         assert!(validate(&req(1, Some(("", "desk")))).is_err());
+    }
+
+    #[test]
+    fn validate_rename_checks_targets_and_names() {
+        let r = |target, name: Option<&str>| api::Rename {
+            device: "desk".into(),
+            target,
+            name: name.map(Into::into),
+        };
+        use api::RenameTarget::{Device, Rx, Tx};
+        assert!(validate_rename(&r(Tx(1), Some("Vox 1"))).is_ok());
+        assert!(validate_rename(&r(Rx(2), None)).is_ok());
+        assert!(validate_rename(&r(Device, Some("stage-box"))).is_ok());
+        assert!(
+            validate_rename(&r(Tx(0), Some("x")))
+                .unwrap_err()
+                .contains("start at 1")
+        );
+        assert!(
+            validate_rename(&r(Rx(1), Some("a.b")))
+                .unwrap_err()
+                .contains("channel name")
+        );
+        assert!(
+            validate_rename(&r(Device, Some("stage box")))
+                .unwrap_err()
+                .contains("device name")
+        );
+        assert!(validate_rename(&r(Device, None)).is_err());
+        // A device name is not held to the channel rule, nor a channel to the device rule.
+        assert!(validate_rename(&r(Tx(1), Some("Vox (L)"))).is_ok());
     }
 
     #[test]

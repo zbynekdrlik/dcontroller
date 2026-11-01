@@ -34,13 +34,14 @@ test.describe("subscription changes", () => {
 
   test("cancel sends nothing", async ({ page }) => {
     const matrix = await openMatrix(page);
+    const logBefore = await page.evaluate(() => fetch("/api/changes").then((r) => r.json()));
     await matrix.locator(`[data-testid="cell"][data-rx="${DEVICE}/Stage R"][data-tx="${DEVICE}/Mix R"]`).click();
     await expect(page.getByTestId("confirm-text")).toHaveText(`Subscribe Stage R @ ${DEVICE} to Mix R @ ${DEVICE}?`);
     await page.getByTestId("cancel-change").click();
     await expect(page.getByTestId("confirm-dialog")).toHaveCount(0);
     expect((await stageR(page)).source).toBeNull();
     const log = await page.evaluate(() => fetch("/api/changes").then((r) => r.json()));
-    expect(log).toEqual([]);
+    expect(log).toEqual(logBefore);
     expect(console_msgs).toEqual([]);
   });
 
@@ -77,7 +78,9 @@ test.describe("subscription changes", () => {
     await expect(cell).toHaveText("");
     expect((await stageR(page)).source).toBeNull();
 
-    const log = await page.evaluate(() => fetch("/api/changes").then((r) => r.json()));
+    const log = (await page.evaluate(() => fetch("/api/changes").then((r) => r.json()))).filter(
+      (e: { kind: string }) => e.kind === "subscription",
+    );
     expect(log.length).toBe(2);
     expect(log[0].requested).toBeNull();
     expect(log[0].after).toBeNull();

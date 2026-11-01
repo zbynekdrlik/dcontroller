@@ -8,13 +8,14 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use dcontroller_api::{
-    ChangeEntry, ChangeResult, Device, Devices, RxChannel, Source, SubscriptionChange,
+    ChangeEntry, ChangeResult, Device, Devices, Rename, RenameTarget, RxChannel, Source,
+    SubscriptionChange,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 mod matrix;
-use matrix::{Grid, cell, elsewhere};
+use matrix::{Grid, affected, cell, elsewhere};
 
 const VERSION: &str = env!("DC_VERSION");
 /// How often the page asks the server for the device list.
@@ -44,6 +45,7 @@ fn App() -> impl IntoView {
     let ctl = Ctl {
         devices,
         pending: RwSignal::new(None),
+        renaming: RwSignal::new(None),
         busy: RwSignal::new(false),
         result: RwSignal::new(None),
     };
@@ -82,6 +84,7 @@ fn App() -> impl IntoView {
             }}
         </main>
         <ConfirmDialog/>
+        <RenameDialog/>
         <ResultLine/>
     }
 }
@@ -135,6 +138,20 @@ fn pending_for(rx_device: &str, rc: &RxChannel, tx_device: &str, tx_channel: &st
     }
 }
 
+fn name_text(n: &Option<String>) -> String {
+    n.clone().unwrap_or_else(|| "default".to_owned())
+}
+
+/// What a logged change changed, in words.
+fn change_target(e: &ChangeEntry) -> String {
+    match (e.kind.as_str(), e.what.as_str()) {
+        ("rename", "device") => format!("rename device {}", e.rx_device),
+        ("rename", "tx") => format!("rename TX {} @ {}", e.rx_channel, e.rx_device),
+        ("rename", _) => format!("rename RX {} @ {}", e.rx_channel, e.rx_device),
+        _ => format!("{} @ {}", e.rx_label, e.rx_device),
+    }
+}
+
 fn source_text(s: &Option<Source>) -> String {
     s.as_ref().map_or_else(
         || "nothing".to_owned(),
@@ -165,6 +182,7 @@ fn question(p: &Pending) -> String {
 struct Ctl {
     devices: RwSignal<Option<Result<Devices, String>>>,
     pending: RwSignal<Option<Pending>>,
+    renaming: RwSignal<Option<RenameAsk>>,
     busy: RwSignal<bool>,
     result: RwSignal<Option<ChangeResult>>,
 }
@@ -242,6 +260,147 @@ fn ResultLine() -> impl IntoView {
     }
 }
 
+/// A rename the user asked for, waiting in the rename dialog.
+#[derive(Clone, Debug, PartialEq)]
+struct RenameAsk {
+    device: String,
+    target: RenameTarget,
+    current: String,
+    /// The subscriptions that name what is renamed (they stop until changed).
+    affected: Vec<String>,
+}
+
+impl RenameAsk {
+    /// A rename of TX channel `channel` (`label`) of `device`.
+    fn tx(d: &Devices, device: &str, channel: u16, label: &str) -> Self {
+        RenameAsk {
+            device: device.to_owned(),
+            target: RenameTarget::Tx(channel),
+            current: label.to_owned(),
+            affected: affected(d, device, Some(label)),
+        }
+    }
+
+    fn rx(device: &str, channel: u16, label: &str) -> Self {
+        RenameAsk {
+            device: device.to_owned(),
+            target: RenameTarget::Rx(channel),
+            current: label.to_owned(),
+            affected: Vec::new(),
+        }
+    }
+
+    fn device(d: &Devices, device: &str) -> Self {
+        RenameAsk {
+            device: device.to_owned(),
+            target: RenameTarget::Device,
+            current: device.to_owned(),
+            affected: affected(d, device, None),
+        }
+    }
+
+    fn title(&self) -> String {
+        match self.target {
+            RenameTarget::Tx(c) => format!(
+                "Rename TX channel {c} \u{201c}{}\u{201d} of {}",
+                self.current, self.device
+            ),
+            RenameTarget::Rx(c) => format!(
+                "Rename RX channel {c} \u{201c}{}\u{201d} of {}",
+                self.current, self.device
+            ),
+            RenameTarget::Device => format!("Rename device {}", self.device),
+        }
+    }
+}
+
+async fn send_rename(req: &Rename) -> Result<ChangeResult, String> {
+    let res = gloo_net::http::Request::post("/api/rename")
+        .json(req)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.ok() {
+        return Err(format!("server answered {}", res.status()));
+    }
+    res.json::<ChangeResult>().await.map_err(|e| e.to_string())
+}
+
+#[component]
+fn RenameDialog() -> impl IntoView {
+    let ctl = expect_context::<Ctl>();
+    let name = RwSignal::new(String::new());
+    // A new ask fills the input with the current name.
+    Effect::new(move |_| {
+        if let Some(a) = ctl.renaming.get() {
+            name.set(a.current.clone());
+        }
+    });
+    let send = move |new: Option<String>| {
+        let Some(a) = ctl.renaming.get_untracked() else {
+            return;
+        };
+        ctl.busy.set(true);
+        spawn_local(async move {
+            let req = Rename {
+                device: a.device.clone(),
+                target: a.target,
+                name: new,
+            };
+            let r = send_rename(&req).await.unwrap_or_else(|e| ChangeResult {
+                ok: false,
+                message: e,
+                channel: None,
+            });
+            ctl.result.set(Some(r));
+            ctl.devices.set(Some(fetch_devices().await));
+            ctl.busy.set(false);
+            ctl.renaming.set(None);
+        });
+    };
+    move || {
+        ctl.renaming.get().map(|a| {
+            let busy = ctl.busy.get();
+            let channel = !matches!(a.target, RenameTarget::Device);
+            let warn = (!a.affected.is_empty()).then(|| {
+                view! {
+                    <p class="warn" data-testid="rename-affected">
+                        {format!(
+                            "{} subscription(s) use this name and stop until they are changed: {}",
+                            a.affected.len(),
+                            a.affected.join(", ")
+                        )}
+                    </p>
+                }
+            });
+            view! {
+                <div class="modal-back">
+                    <div class="modal" role="dialog" data-testid="rename-dialog">
+                        <p data-testid="rename-title">{a.title()}</p>
+                        <input data-testid="rename-input" maxlength="31" prop:value=move || name.get()
+                            on:input=move |ev| name.set(event_target_value(&ev)) />
+                        {warn}
+                        <div class="buttons">
+                            <button data-testid="rename-cancel" disabled=busy
+                                on:click=move |_| ctl.renaming.set(None)>"Cancel"</button>
+                            {channel.then(|| view! {
+                                <button data-testid="rename-reset" disabled=busy
+                                    on:click=move |_| send(None)>"Reset to default"</button>
+                            })}
+                            <button class="primary" data-testid="rename-confirm"
+                                disabled=move || busy || name.get().trim().is_empty() || name.get() == a.current
+                                on:click=move |_| send(Some(name.get_untracked().trim().to_owned()))>
+                                {if busy { "Sending…" } else { "Rename" }}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            }
+        })
+    }
+}
+
 async fn fetch_changes() -> Result<Vec<ChangeEntry>, String> {
     let res = gloo_net::http::Request::get("/api/changes")
         .send()
@@ -275,12 +434,12 @@ fn ChangeLog() -> impl IntoView {
                         view! {
                             <tr data-testid="change-row" class=if e.ok { "" } else { "err" }>
                                 <td>{String::from(when)}</td>
-                                <td>{e.user}</td>
-                                <td>{format!("{} @ {}", e.rx_label, e.rx_device)}</td>
-                                <td>{source_text(&e.before)}</td>
-                                <td>{source_text(&e.requested)}</td>
-                                <td>{source_text(&e.after)}</td>
-                                <td>{e.message}</td>
+                                <td>{e.user.clone()}</td>
+                                <td>{change_target(&e)}</td>
+                                <td>{if e.kind == "rename" { name_text(&e.name_before) } else { source_text(&e.before) }}</td>
+                                <td>{if e.kind == "rename" { name_text(&e.name_asked) } else { source_text(&e.requested) }}</td>
+                                <td>{if e.kind == "rename" { name_text(&e.name_after) } else { source_text(&e.after) }}</td>
+                                <td>{e.message.clone()}</td>
                             </tr>
                         }
                     }).collect_view()}
@@ -362,8 +521,17 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
         .iter()
         .map(|&(i, c)| match c {
             Some(c) => {
-                view! { <th class="txch"><span>{grid.tx[i].channels[c].clone()}</span></th> }
-                    .into_any()
+                let t = &grid.tx[i];
+                let ask = RenameAsk::tx(d, &t.device, t.numbers[c], &t.channels[c]);
+                view! {
+                    <th class="txch rename" data-testid="tx-channel-head"
+                        data-name=format!("{}/{}", t.device, t.channels[c])
+                        title="Rename this TX channel"
+                        on:click=move |_| ctl.renaming.set(Some(ask.clone()))>
+                        <span>{t.channels[c].clone()}</span>
+                    </th>
+                }
+                .into_any()
             }
             None => view! { <th class="txch"></th> }.into_any(),
         })
@@ -431,7 +599,13 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
                 rows.push(
                     view! {
                         <tr class="rxch">
-                            <th class="rxchname">{rc.label.clone()}</th>
+                            <th class="rxchname rename" data-testid="rx-channel-head"
+                                data-name=format!("{}/{}", r.device, rc.label)
+                                title="Rename this RX channel"
+                                on:click={
+                                    let ask = RenameAsk::rx(&r.device, rc.channel, &rc.label);
+                                    move |_| ctl.renaming.set(Some(ask.clone()))
+                                }>{rc.label.clone()}</th>
                             {cells}
                         </tr>
                     }
@@ -535,6 +709,17 @@ fn DeviceCard(dev: Device) -> impl IntoView {
                     <span class="subs">{format!("{subscribed} subscribed")}</span>
                     <span class="addr">{dev.address.clone()}</span>
                 </summary>
+                <div class="actions">
+                    <button data-testid="rename-device" on:click={
+                        let name = dev.name.clone();
+                        move |_| {
+                            let ctl = expect_context::<Ctl>();
+                            if let Some(Ok(d)) = ctl.devices.get_untracked() {
+                                ctl.renaming.set(Some(RenameAsk::device(&d, &name)));
+                            }
+                        }
+                    }>"Rename device"</button>
+                </div>
                 {dev.error.clone().map(|e| view! {
                     <p class="error" data-testid="device-error">{format!("Last read failed: {e}")}</p>
                 })}

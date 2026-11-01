@@ -146,6 +146,13 @@ impl State {
         Some((ip, e.device.clone()))
     }
 
+    /// Makes `device` due for a read now (after a change to it).
+    pub fn mark_due(&mut self, device: &Device) {
+        if let Some(e) = self.devices.get_mut(&device.name.to_ascii_lowercase()) {
+            e.due = None;
+        }
+    }
+
     /// Replaces the RX channels of `device` (still listed with the same
     /// records) with a fresh read, as after a change.
     pub fn set_rx(&mut self, device: &Device, rx: Vec<api::RxChannel>) {
