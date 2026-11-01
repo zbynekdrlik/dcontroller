@@ -11,7 +11,8 @@ pub struct Row {
     pub primary: Option<NetPort>,
     pub secondary: Option<NetPort>,
     pub error: Option<String>,
-    /// The primary link is down or below 1 Gbit/s.
+    /// The primary link is down, or below 1 Gbit/s on a platform that does
+    /// a gigabit (Ultimo is a 100 Mbit platform).
     pub warn: bool,
 }
 
@@ -20,6 +21,7 @@ pub fn link(mbit: u16) -> String {
     match mbit {
         0 => "no link".to_owned(),
         m if m % 1000 == 0 => format!("{} Gbit/s", m / 1000),
+        m if m > 1000 => format!("{} Gbit/s", f64::from(m) / 1000.0),
         m => format!("{m} Mbit/s"),
     }
 }
@@ -31,9 +33,17 @@ pub fn rows(d: &Devices) -> Vec<Row> {
         .map(|dev| {
             let ports = dev.network.clone().unwrap_or_default();
             let primary = ports.first().cloned();
+            let fast_ethernet = dev
+                .info
+                .as_ref()
+                .and_then(|i| i.platform.as_deref())
+                .is_some_and(|p| p.to_ascii_lowercase().contains("ultimo"));
+            let floor = if fast_ethernet { 100 } else { 1000 };
             Row {
                 device: dev.name.clone(),
-                warn: primary.as_ref().is_some_and(|p| p.link_mbit < 1000),
+                warn: primary
+                    .as_ref()
+                    .is_some_and(|p| p.link_mbit == 0 || p.link_mbit < floor),
                 primary,
                 secondary: ports.get(1).cloned(),
                 error: dev.network_error.clone(),
