@@ -70,6 +70,11 @@ pub fn ms(us: u32) -> String {
     format!("{:.2} ms", f64::from(us) / 1000.0)
 }
 
+/// `µs` in ms with two decimals and no unit, for the narrow histogram labels.
+pub fn ms_short(us: u32) -> String {
+    format!("{:.2}", f64::from(us) / 1000.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,5 +116,6 @@ mod tests {
         );
         assert_eq!(figures(&[], 1000), Figures::default());
         assert_eq!(ms(1250), "1.25 ms");
+        assert_eq!(ms_short(62), "0.06");
     }
 }

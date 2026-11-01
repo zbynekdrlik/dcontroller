@@ -77,12 +77,15 @@ th.rename:hover span, th.rxchname.rename:hover { color: #e8b84a; }
 .figs { display: flex; flex-wrap: wrap; gap: 0.3rem 0.9rem; font-size: 0.8rem; color: #aab4c3; margin-bottom: 0.6rem; }
 .fig b { color: #e6e9ee; }
 .fig.bad b { color: #ff8a80; }
-.hist { display: flex; align-items: flex-end; gap: 2px; height: 7rem; margin-bottom: 0.4rem; }
-.bin { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; min-width: 0; }
-.bin .bar { background: #3fb67a; border-radius: 2px 2px 0 0; min-height: 1px; }
-.bin.late .bar { background: #e05a5a; }
-.bin .count { font-size: 0.65rem; text-align: center; color: #aab4c3; }
-.bin .edge { font-size: 0.55rem; color: #7d8898; text-align: center; white-space: nowrap; overflow: hidden; }
+.caption { margin: 0 0 0.3rem; font-size: 0.7rem; color: #7d8898; }
+.hist { display: flex; gap: 2px; margin-bottom: 0.4rem; }
+.bin { flex: 1; min-width: 0; }
+.bin .barbox { position: relative; height: 6rem; border-bottom: 1px solid #3d4f66; }
+.bin .hbar { position: absolute; left: 0; right: 0; bottom: 0; background: #3fb67a; border-radius: 2px 2px 0 0; }
+.bin.late .hbar { background: #e05a5a; }
+.bin.late .barbox { background: rgb(224 90 90 / 8%); }
+.bin .count { position: absolute; left: 0; right: 0; bottom: 0.2rem; font-size: 0.65rem; text-align: center; color: #121821; font-weight: 600; }
+.bin .edge { font-size: 0.6rem; color: #7d8898; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: clip; }
 svg.spark { width: 100%; height: 3.5rem; background: #1b2430; border-radius: 4px; }
 svg.spark .limit { stroke: #e05a5a; stroke-dasharray: 4 3; stroke-width: 1; vector-effect: non-scaling-stroke; }
 svg.spark .peaks { fill: none; stroke: #3fb67a; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
