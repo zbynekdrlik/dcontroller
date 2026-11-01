@@ -14,6 +14,7 @@ fn off() -> dcontroller::Shared {
             None, None,
         ))),
         changes: std::sync::Arc::new(dcontroller::change::Changes::new(log)),
+        latency: std::sync::Arc::default(),
     }
 }
 

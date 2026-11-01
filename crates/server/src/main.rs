@@ -50,6 +50,7 @@ async fn serve(path: PathBuf) -> anyhow::Result<()> {
     let shared = dcontroller::Shared {
         dante,
         changes: Arc::new(dcontroller::change::Changes::new(cfg.changes_log.clone())),
+        latency: Arc::default(),
     };
     axum::serve(listener, app(&cfg.web_dir, shared))
         .with_graceful_shutdown(async {

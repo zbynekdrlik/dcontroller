@@ -2,6 +2,7 @@
 
 pub mod change;
 pub mod dante;
+pub mod latency;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -103,6 +104,7 @@ async fn api_not_found() -> StatusCode {
 pub struct Shared {
     pub dante: dante::Shared,
     pub changes: std::sync::Arc<change::Changes>,
+    pub latency: std::sync::Arc<latency::Watches>,
 }
 
 async fn devices(State(s): State<Shared>) -> axum::Json<dcontroller_api::Devices> {
@@ -131,6 +133,19 @@ async fn subscription(
         .map(axum::Json)
         .map_err(|e| {
             tracing::error!(error = %e, "change: task failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+async fn latency_report(
+    State(s): State<Shared>,
+    axum::extract::Path(device): axum::extract::Path<String>,
+) -> Result<axum::Json<dcontroller_api::LatencyReport>, StatusCode> {
+    tokio::task::spawn_blocking(move || s.latency.report(&s.dante, &device))
+        .await
+        .map(axum::Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "latency: task failed");
             StatusCode::INTERNAL_SERVER_ERROR
         })
 }
@@ -179,6 +194,7 @@ pub fn app(web_dir: &Path, shared: Shared) -> Router {
         .route("/api/subscription", axum::routing::post(subscription))
         .route("/api/rename", axum::routing::post(rename))
         .route("/api/changes", get(changes))
+        .route("/api/latency/{device}", get(latency_report))
         .route("/api", any(api_not_found))
         .route("/api/", any(api_not_found))
         .route("/api/{*rest}", any(api_not_found))
