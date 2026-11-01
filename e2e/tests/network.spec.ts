@@ -33,7 +33,7 @@ test("the network tab lists every device's interfaces as the server read them", 
     if (d.network?.length) await expect(r.getByTestId("network-primary")).toHaveText(text(d.network[0]));
     else await expect(r.getByTestId("network-none")).toBeVisible();
   }
-  await expect(page.getByTestId("network-summary")).toContainText("devices report their network");
+  await expect(page.getByTestId("network-summary")).toHaveText(/^\d+ devices? reports? (their|its) network · /);
 
   // The device table shows the same interface.
   await page.getByTestId("tab-devices").click();

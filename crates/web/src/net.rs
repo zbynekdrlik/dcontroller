@@ -60,17 +60,16 @@ pub fn summary(rows: &[Row]) -> (String, bool) {
         .filter(|r| r.warn)
         .map(|r| r.device.as_str())
         .collect();
+    let who = if read == 1 {
+        "1 device reports its network".to_owned()
+    } else {
+        format!("{read} devices report their network")
+    };
     if slow.is_empty() {
-        (
-            format!("{read} devices report their network · all at 1 Gbit/s or more"),
-            false,
-        )
+        (format!("{who} · every link at its platform's speed"), false)
     } else {
         (
-            format!(
-                "{read} devices report their network · below 1 Gbit/s: {}",
-                slow.join(", ")
-            ),
+            format!("{who} · slow or no link: {}", slow.join(", ")),
             true,
         )
     }
@@ -200,14 +199,14 @@ mod tests {
         assert_eq!(
             summary(&r),
             (
-                "2 devices report their network · below 1 Gbit/s: mic".to_owned(),
+                "2 devices report their network · slow or no link: mic".to_owned(),
                 true
             )
         );
         assert_eq!(
             summary(&r[..1]),
             (
-                "1 devices report their network · all at 1 Gbit/s or more".to_owned(),
+                "1 device reports its network · every link at its platform's speed".to_owned(),
                 false
             )
         );
