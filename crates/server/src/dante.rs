@@ -39,6 +39,7 @@ pub struct State {
 struct Entry {
     device: Device,
     channels: Option<api::Channels>,
+    settings: Option<api::Settings>,
     read_at: Option<u64>,
     error: Option<String>,
     /// When the next read is due; `None` = now.
@@ -87,6 +88,7 @@ impl State {
                             Entry {
                                 device,
                                 channels: None,
+                                settings: None,
                                 read_at: None,
                                 error: None,
                                 due: None,
@@ -116,7 +118,7 @@ impl State {
     pub fn record(
         &mut self,
         device: &Device,
-        result: Result<api::Channels, String>,
+        result: Result<Read, String>,
         now: Instant,
         unix: u64,
     ) {
@@ -129,8 +131,12 @@ impl State {
         }
         e.due = Some(now + REFRESH);
         match result {
-            Ok(ch) => {
-                e.channels = Some(ch);
+            Ok(r) => {
+                e.channels = Some(r.channels);
+                // A device that does not answer the settings read keeps what it last said.
+                if r.settings.is_some() {
+                    e.settings = r.settings;
+                }
                 e.read_at = Some(unix);
                 e.error = None;
             }
@@ -182,6 +188,7 @@ impl State {
                     manufacturer: e.device.txt.get("mf").cloned(),
                     model: model(&e.device),
                     channels: e.channels.clone(),
+                    settings: e.settings.clone(),
                     read_at: e.read_at,
                     error: e.error.clone(),
                 })
@@ -218,6 +225,41 @@ pub fn status_text(rx: &control::RxChannel) -> Option<(String, Option<String>)> 
         }
         None => (format!("0x{:x}", rx.status), None),
     })
+}
+
+/// One read of a device: its channels and, when it answers, its settings.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Read {
+    pub channels: api::Channels,
+    pub settings: Option<api::Settings>,
+}
+
+/// The settings as the API shows them (latencies in µs).
+pub fn settings_view(s: &control::Settings) -> api::Settings {
+    let us = |ns: Option<u32>| ns.map(|n| n / 1000);
+    api::Settings {
+        sample_rate: s.sample_rate,
+        pullup: s.pullup,
+        latency_configured_us: us(s.latency_configured_ns),
+        latency_active_us: us(s.latency_active_ns),
+        latency_default_us: us(s.latency_default_ns),
+        latency_min_us: us(s.latency_min_ns),
+        latency_max_us: us(s.latency_max_ns),
+    }
+}
+
+/// A device's channels and settings. A settings read that fails is logged
+/// and leaves `settings` `None`; the channels read decides the result.
+pub fn read_device(c: &mut impl Call, name: &str) -> Result<Read, ReadError> {
+    let channels = read_channels(c)?;
+    let settings = match control::settings(c) {
+        Ok(s) => Some(settings_view(&s)),
+        Err(e) => {
+            warn!(device = %name, error = %e, "dante: settings not read");
+            None
+        }
+    };
+    Ok(Read { channels, settings })
 }
 
 /// A device's channels: TX labels and RX channels with their subscriptions.
@@ -394,10 +436,13 @@ fn run(
             let started = Instant::now();
             let result = Udp::open(ip, device.arc, &seq, REPLY_TIMEOUT, &requests, stop)
                 .map_err(|e| format!("socket: {e}"))
-                .and_then(|mut udp| read_channels(&mut udp).map_err(|e| e.to_string()));
+                .and_then(|mut udp| read_device(&mut udp, &device.name).map_err(|e| e.to_string()));
             match &result {
-                Ok(ch) => info!(device = %device.name, tx = ch.tx.len(), rx = ch.rx.len(),
-                    ms = started.elapsed().as_millis() as u64, "dante: channels read"),
+                Ok(r) => {
+                    info!(device = %device.name, tx = r.channels.tx.len(), rx = r.channels.rx.len(),
+                    settings = ?r.settings,
+                    ms = started.elapsed().as_millis() as u64, "dante: channels read")
+                }
                 Err(e) => warn!(device = %device.name, error = %e, "dante: channel read failed"),
             }
             let unix = SystemTime::now()
@@ -454,6 +499,46 @@ mod tests {
         }
     }
 
+    fn read(label: &str) -> Read {
+        Read {
+            channels: channels(label),
+            settings: None,
+        }
+    }
+
+    #[test]
+    fn settings_are_shown_in_us_and_kept_when_a_read_has_none() {
+        let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
+        s.apply(Change::Added(dev("Desk", 1)));
+        let set = control::Settings {
+            sample_rate: Some(48000),
+            pullup: Some(0),
+            latency_configured_ns: Some(1_000_000),
+            latency_active_ns: Some(1_000_000),
+            latency_default_ns: Some(1_000_000),
+            latency_min_ns: Some(150_000),
+            latency_max_ns: Some(5_000_000),
+            all: BTreeMap::new(),
+        };
+        let now = Instant::now();
+        s.record(
+            &dev("Desk", 1),
+            Ok(Read {
+                channels: channels("Vox"),
+                settings: Some(settings_view(&set)),
+            }),
+            now,
+            1,
+        );
+        let v = s.view().devices[0].settings.clone().unwrap();
+        assert_eq!(v.sample_rate, Some(48000));
+        assert_eq!(v.latency_active_us, Some(1000));
+        assert_eq!(v.latency_min_us, Some(150));
+        assert_eq!(v.latency_max_us, Some(5000));
+        s.record(&dev("Desk", 1), Ok(read("Vox")), now + REFRESH, 2);
+        assert_eq!(s.view().devices[0].settings, Some(v));
+    }
+
     #[test]
     fn added_device_is_listed_and_due_at_once() {
         let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
@@ -480,7 +565,7 @@ mod tests {
         let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
         s.apply(Change::Added(dev("Desk", 1)));
         let now = Instant::now();
-        s.record(&dev("Desk", 1), Ok(channels("Vox")), now, 42);
+        s.record(&dev("Desk", 1), Ok(read("Vox")), now, 42);
         assert!(s.due(now).is_empty());
         assert!(s.due(now + REFRESH - Duration::from_millis(1)).is_empty());
         assert_eq!(s.due(now + REFRESH).len(), 1);
@@ -494,18 +579,13 @@ mod tests {
         let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
         s.apply(Change::Added(dev("Desk", 1)));
         let now = Instant::now();
-        s.record(&dev("Desk", 1), Ok(channels("Vox")), now, 42);
+        s.record(&dev("Desk", 1), Ok(read("Vox")), now, 42);
         s.record(&dev("Desk", 1), Err("no reply".into()), now + REFRESH, 99);
         let v = s.view();
         assert_eq!(v.devices[0].channels, Some(channels("Vox")));
         assert_eq!(v.devices[0].read_at, Some(42));
         assert_eq!(v.devices[0].error.as_deref(), Some("no reply"));
-        s.record(
-            &dev("Desk", 1),
-            Ok(channels("Bass")),
-            now + REFRESH * 2,
-            100,
-        );
+        s.record(&dev("Desk", 1), Ok(read("Bass")), now + REFRESH * 2, 100);
         assert_eq!(s.view().devices[0].error, None);
     }
 
@@ -514,11 +594,11 @@ mod tests {
         let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
         s.apply(Change::Added(dev("Desk", 1)));
         let now = Instant::now();
-        s.record(&dev("Desk", 1), Ok(channels("Vox")), now, 42);
+        s.record(&dev("Desk", 1), Ok(read("Vox")), now, 42);
         s.apply(Change::Changed(dev("Desk", 2)));
         assert_eq!(s.due(now), vec![dev("Desk", 2)]);
         // A read that started before the change lands after it: ignored.
-        s.record(&dev("Desk", 1), Ok(channels("Old")), now, 43);
+        s.record(&dev("Desk", 1), Ok(read("Old")), now, 43);
         assert_eq!(s.view().devices[0].channels, Some(channels("Vox")));
         assert_eq!(s.view().devices[0].address, "10.0.0.2:4440");
     }
@@ -533,7 +613,7 @@ mod tests {
         assert_eq!(v.devices.len(), 1);
         assert_eq!(v.devices[0].name, "amp");
         // A read of a removed device is dropped.
-        s.record(&dev("Desk", 1), Ok(channels("Vox")), Instant::now(), 1);
+        s.record(&dev("Desk", 1), Ok(read("Vox")), Instant::now(), 1);
         assert_eq!(s.view().devices.len(), 1);
     }
 

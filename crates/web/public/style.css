@@ -89,3 +89,5 @@ th.rename:hover span, th.rxchname.rename:hover { color: #e8b84a; }
 svg.spark { width: 100%; height: 3.5rem; background: #1b2430; border-radius: 4px; }
 svg.spark .limit { stroke: #e05a5a; stroke-dasharray: 4 3; stroke-width: 1; vector-effect: non-scaling-stroke; }
 svg.spark .peaks { fill: none; stroke: #3fb67a; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+table.settings { font-size: 0.8rem; border-collapse: collapse; margin: 0 0 0.6rem; }
+table.settings th { text-align: left; font-weight: normal; color: #aab4c3; padding: 0.1rem 1rem 0.1rem 0; }

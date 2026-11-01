@@ -28,10 +28,26 @@ pub struct Device {
     pub model: Option<String>,
     /// The last complete read; `None` before the first one.
     pub channels: Option<Channels>,
+    /// The device's settings, as last read; `None` before the first read
+    /// or when the device does not answer the settings read.
+    pub settings: Option<Settings>,
     /// Unix seconds of the last complete read.
     pub read_at: Option<u64>,
     /// The last read's error, when it failed (the previous read stays).
     pub error: Option<String>,
+}
+
+/// A device's settings (ARC 0x1100), each `None` when the device does not
+/// report it. Latencies in µs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Settings {
+    pub sample_rate: Option<u32>,
+    pub pullup: Option<u32>,
+    pub latency_configured_us: Option<u32>,
+    pub latency_active_us: Option<u32>,
+    pub latency_default_us: Option<u32>,
+    pub latency_min_us: Option<u32>,
+    pub latency_max_us: Option<u32>,
 }
 
 /// A device's channels, read over ARC.
@@ -219,6 +235,11 @@ mod tests {
                         status: Some("Subscribed (unicast)".into()),
                         state: Some("connected".into()),
                     }],
+                }),
+                settings: Some(Settings {
+                    sample_rate: Some(48000),
+                    latency_active_us: Some(1000),
+                    ..Settings::default()
                 }),
                 read_at: Some(1),
                 error: None,
