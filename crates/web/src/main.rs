@@ -8,12 +8,13 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use dcontroller_api::{
-    ChangeEntry, ChangeResult, Device, Devices, Rename, RenameTarget, RxChannel, Source,
-    SubscriptionChange,
+    ChangeEntry, ChangeResult, Device, Devices, LatencyReport, Rename, RenameTarget, RxChannel,
+    Source, SubscriptionChange,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+mod lat;
 mod matrix;
 use matrix::{Grid, affected, cell, elsewhere};
 
@@ -50,6 +51,34 @@ fn App() -> impl IntoView {
         result: RwSignal::new(None),
     };
     provide_context(ctl);
+    let lat = Lat {
+        device: RwSignal::new(lat_device_from_hash()),
+        report: RwSignal::new(None),
+    };
+    provide_context(lat);
+    // The latency of the chosen receiver, every 2 s while the latency view is open.
+    let poll_latency = move || {
+        if view_now.get_untracked() != View::Latency {
+            return;
+        }
+        let Some(dev) = lat.device.get_untracked() else {
+            return;
+        };
+        spawn_local(async move {
+            let r = fetch_latency(&dev).await;
+            // Only if still the chosen device.
+            if lat.device.get_untracked().as_deref() == Some(dev.as_str()) {
+                lat.report.set(Some(r));
+            }
+        });
+    };
+    poll_latency();
+    let _ = set_interval_with_handle(poll_latency, LAT_POLL);
+    // A new choice or opening the view asks at once.
+    Effect::new(move |_| {
+        let _ = (lat.device.get(), view_now.get());
+        poll_latency();
+    });
     let load = move || spawn_local(async move { devices.set(Some(fetch_devices().await)) });
     load();
     // The interval lives as long as the page.
@@ -67,6 +96,9 @@ fn App() -> impl IntoView {
                 <a href="#changes" data-testid="tab-changes"
                     class=move || if view_now.get() == View::Changes { "tab on" } else { "tab" }
                     on:click=move |_| view_now.set(View::Changes)>"Changes"</a>
+                <a href="#latency" data-testid="tab-latency"
+                    class=move || if view_now.get() == View::Latency { "tab on" } else { "tab" }
+                    on:click=move |_| view_now.set(View::Latency)>"Latency"</a>
             </nav>
             <span class="version" data-testid="version">{VERSION}</span>
         </header>
@@ -80,6 +112,7 @@ fn App() -> impl IntoView {
                     View::Devices => view! { <DeviceList d=d/> }.into_any(),
                     View::Routing => view! { <Routing d=d/> }.into_any(),
                     View::Changes => view! { <ChangeLog/> }.into_any(),
+                    View::Latency => view! { <LatencyView d=d/> }.into_any(),
                 },
             }}
         </main>
@@ -95,6 +128,7 @@ enum View {
     Routing,
     Devices,
     Changes,
+    Latency,
 }
 
 impl View {
@@ -103,9 +137,167 @@ impl View {
         match hash.as_str() {
             "#devices" => View::Devices,
             "#changes" => View::Changes,
+            h if h.starts_with("#latency") => View::Latency,
             _ => View::Routing,
         }
     }
+}
+
+/// How often the latency view asks for the chosen receiver's latency.
+const LAT_POLL: Duration = Duration::from_secs(2);
+
+/// The latency view's receiver (kept in the hash `#latency/<name>`) and its last report.
+#[derive(Clone, Copy)]
+struct Lat {
+    device: RwSignal<Option<String>>,
+    report: RwSignal<Option<Result<LatencyReport, String>>>,
+}
+
+fn lat_device_from_hash() -> Option<String> {
+    let hash = window().location().hash().unwrap_or_default();
+    let name = hash.strip_prefix("#latency/")?;
+    js_sys::decode_uri_component(name)
+        .ok()
+        .map(String::from)
+        .filter(|n| !n.is_empty())
+}
+
+async fn fetch_latency(device: &str) -> Result<LatencyReport, String> {
+    let url = format!(
+        "/api/latency/{}",
+        String::from(js_sys::encode_uri_component(device))
+    );
+    let res = gloo_net::http::Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.ok() {
+        return Err(format!("server answered {}", res.status()));
+    }
+    res.json::<LatencyReport>().await.map_err(|e| e.to_string())
+}
+
+/// Packet latency per RX flow of one receiver, as Dante Controller's
+/// Latency tab: a histogram of the per-second peaks against the flow's
+/// latency, the peaks over time, and the late packets.
+#[component]
+fn LatencyView(d: Devices) -> impl IntoView {
+    let lat = expect_context::<Lat>();
+    let receivers: Vec<String> = d
+        .devices
+        .iter()
+        .filter(|dev| dev.channels.as_ref().is_some_and(|c| !c.rx.is_empty()))
+        .map(|dev| dev.name.clone())
+        .collect();
+    let line = status_line(&d);
+    view! {
+        <p class="status" data-testid="status">{line}</p>
+        <div class="receivers">
+            {receivers.into_iter().map(|name| {
+                let n = name.clone();
+                let href = format!("#latency/{}", String::from(js_sys::encode_uri_component(&name)));
+                let on = {
+                    let n = name.clone();
+                    move || lat.device.get().as_deref() == Some(n.as_str())
+                };
+                view! {
+                    <a href=href data-testid="lat-receiver" data-name=name.clone()
+                        class=move || if on() { "tab on" } else { "tab" }
+                        on:click=move |_| {
+                            lat.report.set(None);
+                            lat.device.set(Some(n.clone()));
+                        }>{name.clone()}</a>
+                }
+            }).collect_view()}
+        </div>
+        {move || match (lat.device.get(), lat.report.get()) {
+            (None, _) => view! { <p class="status">"Pick a receiver."</p> }.into_any(),
+            (Some(_), None) => view! { <p class="status" data-testid="lat-wait">"Listening…"</p> }.into_any(),
+            (Some(_), Some(Err(e))) => view! { <p class="status error">{format!("Not readable: {e}")}</p> }.into_any(),
+            (Some(_), Some(Ok(r))) => latency_report_view(r),
+        }}
+    }
+}
+
+fn latency_report_view(r: LatencyReport) -> AnyView {
+    let head = format!(
+        "{} · listening {} s · {} heartbeats",
+        r.device, r.watching_s, r.beats
+    );
+    let error = r
+        .error
+        .clone()
+        .map(|e| view! { <p class="error" data-testid="lat-error">{e}</p> });
+    let empty = (r.flows.is_empty() && r.error.is_none())
+        .then(|| view! { <p class="status" data-testid="lat-noflows">"No RX flows: this device receives nothing now."</p> });
+    view! {
+        <p class="status" data-testid="lat-head">{head}</p>
+        {error}
+        {empty}
+        <div class="flows">
+            {r.flows.into_iter().map(|f| {
+                let fig = lat::figures(&f.peaks_us, f.latency_us);
+                let bins = lat::bins(&f.peaks_us, f.latency_us);
+                let top = bins.iter().map(|b| b.count).max().unwrap_or(0).max(1);
+                let from = if f.sources.is_empty() { "?".to_owned() } else { f.sources.join(", ") };
+                let chans = if f.channels.len() > 4 {
+                    format!("{} … {} ({} channels)", f.channels[0], f.channels[f.channels.len() - 1], f.channels.len())
+                } else {
+                    f.channels.join(", ")
+                };
+                let late_class = if f.late > 0 { "fig bad" } else { "fig" };
+                let max_class = if fig.max_us > f.latency_us { "fig bad" } else { "fig" };
+                // The last two minutes of peaks, against the latency line.
+                let recent: Vec<u32> = f.peaks_us.iter().rev().take(120).rev().copied().collect();
+                let scale = recent.iter().copied().max().unwrap_or(0).max(f.latency_us * 5 / 4).max(1);
+                let (w, h) = (360.0_f64, 60.0_f64);
+                let y = |us: u32| h - f64::from(us) / f64::from(scale) * h;
+                let points = recent
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &p)| format!("{:.1},{:.1}", i as f64 * w / 119.0, y(p)))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let ly = y(f.latency_us);
+                view! {
+                    <section class="flow" data-testid="lat-flow" data-slot=f.slot>
+                        <h3>{format!("Flow {} · from {from}", f.slot)}</h3>
+                        <p class="chans">{chans}</p>
+                        <div class="figs">
+                            <span class="fig">"Latency "<b data-testid="lat-set">{lat::ms(f.latency_us)}</b></span>
+                            <span class="fig">"Now "<b>{lat::ms(fig.last_us)}</b></span>
+                            <span class="fig">"Mean "<b>{lat::ms(fig.mean_us)}</b></span>
+                            <span class=max_class>"Peak "<b data-testid="lat-max">{lat::ms(fig.max_us)}</b></span>
+                            <span class=late_class>"Late packets "<b data-testid="lat-late">{f.late}</b>
+                                {format!(" (device total {})", f.late_total)}</span>
+                        </div>
+                        <div class="hist" data-testid="lat-hist">
+                            {bins.into_iter().map(|b| {
+                                let pct = b.count * 100 / top;
+                                let label = match b.to_us {
+                                    Some(to) => format!("≤{}", lat::ms(to)),
+                                    None => format!(">{}", lat::ms(b.from_us)),
+                                };
+                                let tip = format!("{label}: {} s", b.count);
+                                view! {
+                                    <div class=if b.late { "bin late" } else { "bin" } title=tip>
+                                        <div class="count">{(b.count > 0).then(|| b.count.to_string())}</div>
+                                        <div class="bar" style=format!("height: {pct}%")></div>
+                                        <div class="edge">{label}</div>
+                                    </div>
+                                }
+                            }).collect_view()}
+                        </div>
+                        <svg class="spark" viewBox="0 0 360 60" preserveAspectRatio="none" data-testid="lat-spark">
+                            <line x1="0" x2="360" y1=format!("{ly:.1}") y2=format!("{ly:.1}") class="limit"/>
+                            <polyline points=points class="peaks"/>
+                        </svg>
+                    </section>
+                }
+            }).collect_view()}
+        </div>
+    }
+    .into_any()
 }
 
 /// A subscription change the user clicked, waiting for the confirmation.

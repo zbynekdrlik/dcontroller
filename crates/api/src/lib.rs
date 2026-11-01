@@ -146,6 +146,42 @@ pub struct ChangeEntry {
     pub message: String,
 }
 
+/// `GET /api/latency/{device}`: the receiver's packet latency per RX flow,
+/// as Dante Controller's Latency tab shows it, gathered from its heartbeats
+/// while someone watches.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LatencyReport {
+    pub device: String,
+    /// Seconds the server has been listening to this device.
+    pub watching_s: u64,
+    /// Heartbeats heard (one a second).
+    pub beats: u64,
+    pub flows: Vec<FlowLatency>,
+    /// Why there is no data, when there is none.
+    pub error: Option<String>,
+}
+
+/// One RX flow of the receiver.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlowLatency {
+    /// The flow's slot, 1 up.
+    pub slot: u16,
+    /// The flow's latency, µs: a packet older than this plays late.
+    pub latency_us: u32,
+    pub rate: u32,
+    /// The RX channels it feeds (labels).
+    pub channels: Vec<String>,
+    /// The transmitting devices of those channels.
+    pub sources: Vec<String>,
+    /// The largest packet latency of each second, µs, oldest first (at most
+    /// the last ten minutes).
+    pub peaks_us: Vec<u32>,
+    /// Late packets since the server started listening.
+    pub late: u64,
+    /// Late packets since the device started (the device's own count).
+    pub late_total: u32,
+}
+
 impl RxChannel {
     /// `true` when the subscription receives audio.
     pub fn receiving(&self) -> bool {
