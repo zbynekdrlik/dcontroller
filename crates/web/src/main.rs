@@ -255,7 +255,7 @@ fn latency_report_view(r: LatencyReport) -> AnyView {
                 let points = recent
                     .iter()
                     .enumerate()
-                    .map(|(i, &p)| format!("{:.1},{:.1}", i as f64 * w / 119.0, y(p)))
+                    .map(|(i, &p)| format!("{:.1},{:.1}", i as f64 * w / (recent.len().max(2) - 1) as f64, y(p)))
                     .collect::<Vec<_>>()
                     .join(" ");
                 let ly = y(f.latency_us);
@@ -271,6 +271,7 @@ fn latency_report_view(r: LatencyReport) -> AnyView {
                             <span class=late_class>"Late packets "<b data-testid="lat-late">{f.late}</b>
                                 {format!(" (device total {})", f.late_total)}</span>
                         </div>
+                        <p class="caption">"Peak latency per second (ms), seconds per bin; red: past the latency"</p>
                         <div class="hist" data-testid="lat-hist">
                             {bins.into_iter().map(|b| {
                                 let pct = b.count * 100 / top;
@@ -278,12 +279,19 @@ fn latency_report_view(r: LatencyReport) -> AnyView {
                                     Some(to) => format!("≤{}", lat::ms(to)),
                                     None => format!(">{}", lat::ms(b.from_us)),
                                 };
+                                // Under the bar: the upper edge in ms, no unit (the caption has it).
+                                let edge = match b.to_us {
+                                    Some(to) => lat::ms_short(to),
+                                    None => format!(">{}", lat::ms_short(b.from_us)),
+                                };
                                 let tip = format!("{label}: {} s", b.count);
                                 view! {
                                     <div class=if b.late { "bin late" } else { "bin" } title=tip>
-                                        <div class="count">{(b.count > 0).then(|| b.count.to_string())}</div>
-                                        <div class="bar" style=format!("height: {pct}%")></div>
-                                        <div class="edge">{label}</div>
+                                        <div class="barbox">
+                                            <div class="hbar" style=format!("height: {pct}%")></div>
+                                            <div class="count">{(b.count > 0).then(|| b.count.to_string())}</div>
+                                        </div>
+                                        <div class="edge">{edge}</div>
                                     </div>
                                 }
                             }).collect_view()}

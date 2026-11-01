@@ -32,6 +32,13 @@ test.describe("latency", () => {
     // Heartbeats come once a second: the count grows while the page watches.
     await expect(page.getByTestId("lat-head")).toContainText(/ [1-9]\d* heartbeats/, { timeout: 20_000 });
 
+    // Once peaks are in, their bins draw bars and an empty bin draws none (0 px).
+    const heights = () =>
+      flow.locator(".bin .hbar").evaluateAll((bars) => bars.map((b) => b.getBoundingClientRect().height));
+    await expect.poll(async () => (await heights()).some((h) => h > 0), { timeout: 20_000 }).toBe(true);
+    const hs = await heights();
+    expect(hs.filter((h) => h === 0).length).toBeGreaterThan(0);
+
     // The page shows what the server heard from the device.
     const r = await page.evaluate((d) => fetch(`/api/latency/${d}`).then((x) => x.json()), DEVICE);
     expect(r.beats).toBeGreaterThan(0);
