@@ -167,18 +167,23 @@ fn model(d: &Device) -> Option<String> {
         .cloned()
 }
 
-/// The subscription status in words, or its code in hex when unknown;
-/// `None` when the channel is not subscribed.
-pub fn status_text(rx: &control::RxChannel) -> Option<String> {
-    use dante_stack::subscribe::SubStatus;
+/// The subscription's status in Dante Controller's words (its code in hex
+/// when dstack does not know it) and its state for the colours; `None` when
+/// the channel is not subscribed.
+pub fn status_text(rx: &control::RxChannel) -> Option<(String, Option<String>)> {
+    use dante_stack::subscribe::SubState;
     rx.tx_channel.as_ref()?;
     Some(match rx.sub_status() {
-        Some(SubStatus::Receiving) => "receiving".into(),
-        Some(SubStatus::Unresolved) => "unresolved".into(),
-        Some(SubStatus::InProgress) => "in progress".into(),
-        Some(SubStatus::TooManyTxFlows) => "too many TX flows".into(),
-        Some(SubStatus::TxFail) => "TX failed".into(),
-        None => format!("0x{:x}", rx.status),
+        Some(s) => {
+            let state = match s.state() {
+                SubState::Idle => "idle",
+                SubState::Pending => "pending",
+                SubState::Connected => "connected",
+                SubState::Error => "error",
+            };
+            (s.label().to_owned(), Some(state.to_owned()))
+        }
+        None => (format!("0x{:x}", rx.status), None),
     })
 }
 
@@ -205,7 +210,8 @@ pub fn read_channels(c: &mut impl Call) -> Result<api::Channels, ReadError> {
                     }),
                     _ => None,
                 },
-                status: status_text(r),
+                status: status_text(r).map(|(t, _)| t),
+                state: status_text(r).and_then(|(_, s)| s),
             })
             .collect(),
     })
@@ -556,11 +562,17 @@ mod tests {
         assert_eq!(status_text(&rx), None);
         rx.tx_channel = Some("Vox".into());
         rx.tx_device = Some("desk".into());
-        rx.status = 0x0101_0009;
-        assert_eq!(status_text(&rx).as_deref(), Some("receiving"));
+        // Seen on site: status 9 with an unknown receiver detail.
+        rx.status = 0x0301_0009;
+        let (text, state) = status_text(&rx).unwrap();
+        assert!(text.starts_with("Subscribed"), "{text}");
+        assert_eq!(state.as_deref(), Some("connected"));
+        rx.status = 4;
+        assert_eq!(status_text(&rx).unwrap().0, "Subscribed (self)");
         rx.status = 1;
-        assert_eq!(status_text(&rx).as_deref(), Some("unresolved"));
+        let (text, state) = status_text(&rx).unwrap();
+        assert_ne!(state.as_deref(), Some("connected"), "{text}");
         rx.status = 0x77;
-        assert_eq!(status_text(&rx).as_deref(), Some("0x77"));
+        assert_eq!(status_text(&rx), Some(("0x77".to_owned(), None)));
     }
 }

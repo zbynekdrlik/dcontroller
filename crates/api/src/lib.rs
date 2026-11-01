@@ -55,9 +55,13 @@ pub struct RxChannel {
     pub label: String,
     /// The subscribed TX channel and device; `None` when not subscribed.
     pub source: Option<Source>,
-    /// The subscription's state in words (`receiving`, `unresolved`, ...),
-    /// or its code in hex when unknown; `None` when not subscribed.
+    /// The subscription's status in Dante Controller's words
+    /// (`Subscribed (unicast)`, `Unresolved`, ...), or its code in hex when
+    /// unknown; `None` when not subscribed.
     pub status: Option<String>,
+    /// What the status means for the audio: `connected`, `pending`, `idle`
+    /// or `error`; `None` when not subscribed or the code is unknown.
+    pub state: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,7 +73,7 @@ pub struct Source {
 impl RxChannel {
     /// `true` when the subscription receives audio.
     pub fn receiving(&self) -> bool {
-        self.status.as_deref() == Some("receiving")
+        self.state.as_deref() == Some("connected")
     }
 }
 
@@ -100,7 +104,8 @@ mod tests {
                             channel: "Vox".into(),
                             device: "desk".into(),
                         }),
-                        status: Some("receiving".into()),
+                        status: Some("Subscribed (unicast)".into()),
+                        state: Some("connected".into()),
                     }],
                 }),
                 read_at: Some(1),
@@ -113,10 +118,12 @@ mod tests {
     }
 
     #[test]
-    fn only_receiving_status_counts_as_receiving() {
+    fn only_the_connected_state_counts_as_receiving() {
         let mut rx = RxChannel::default();
         assert!(!rx.receiving());
-        rx.status = Some("unresolved".into());
+        rx.state = Some("pending".into());
         assert!(!rx.receiving());
+        rx.state = Some("connected".into());
+        assert!(rx.receiving());
     }
 }

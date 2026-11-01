@@ -1,5 +1,5 @@
 //! dcontroller dashboard: the Dante devices the server discovers, with
-//! their channels and subscriptions. Read-only. The version label is
+//! their channels and subscriptions, and the routing matrix. Read-only. The version label is
 //! build-injected from the same `buildver` as the server's `/api/version`.
 
 use std::collections::BTreeSet;
@@ -8,6 +8,9 @@ use std::time::Duration;
 use dcontroller_api::{Device, Devices, RxChannel};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+
+mod matrix;
+use matrix::{Grid, cell, elsewhere};
 
 const VERSION: &str = env!("DC_VERSION");
 /// How often the page asks the server for the device list.
@@ -29,6 +32,11 @@ fn App() -> impl IntoView {
     let devices = RwSignal::new(None::<Result<Devices, String>>);
     // The devices whose channels are open, kept across refreshes.
     provide_context(Open(RwSignal::new(BTreeSet::new())));
+    provide_context(Expanded {
+        tx: RwSignal::new(BTreeSet::new()),
+        rx: RwSignal::new(BTreeSet::new()),
+    });
+    let view_now = RwSignal::new(View::from_hash());
     let load = move || spawn_local(async move { devices.set(Some(fetch_devices().await)) });
     load();
     // The interval lives as long as the page.
@@ -36,6 +44,14 @@ fn App() -> impl IntoView {
     view! {
         <header class="bar">
             <h1>"dcontroller"</h1>
+            <nav class="tabs">
+                <a href="#routing" data-testid="tab-routing"
+                    class=move || if view_now.get() == View::Routing { "tab on" } else { "tab" }
+                    on:click=move |_| view_now.set(View::Routing)>"Routing"</a>
+                <a href="#devices" data-testid="tab-devices"
+                    class=move || if view_now.get() == View::Devices { "tab on" } else { "tab" }
+                    on:click=move |_| view_now.set(View::Devices)>"Devices"</a>
+            </nav>
             <span class="version" data-testid="version">{VERSION}</span>
         </header>
         <main>
@@ -44,10 +60,203 @@ fn App() -> impl IntoView {
                 Some(Err(e)) => view! {
                     <p class="status error" data-testid="status">{format!("Server not reachable: {e}")}</p>
                 }.into_any(),
-                Some(Ok(d)) => view! { <DeviceList d=d/> }.into_any(),
+                Some(Ok(d)) => match view_now.get() {
+                    View::Devices => view! { <DeviceList d=d/> }.into_any(),
+                    View::Routing => view! { <Routing d=d/> }.into_any(),
+                },
             }}
         </main>
     }
+}
+
+/// The page's view, kept in the URL hash.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum View {
+    Routing,
+    Devices,
+}
+
+impl View {
+    fn from_hash() -> View {
+        let hash = window().location().hash().unwrap_or_default();
+        if hash == "#devices" {
+            View::Devices
+        } else {
+            View::Routing
+        }
+    }
+}
+
+/// The expanded TX and RX devices of the matrix, kept across refreshes.
+#[derive(Clone, Copy)]
+struct Expanded {
+    tx: RwSignal<BTreeSet<String>>,
+    rx: RwSignal<BTreeSet<String>>,
+}
+
+fn flip(set: RwSignal<BTreeSet<String>>, name: &str) {
+    set.update(|s| {
+        if !s.remove(name) {
+            s.insert(name.to_owned());
+        }
+    });
+}
+
+/// The routing matrix: TX devices as columns, RX devices as rows, each
+/// device collapsed to one cross-point until it is clicked open.
+#[component]
+fn Routing(d: Devices) -> impl IntoView {
+    let ex = expect_context::<Expanded>();
+    // Re-rendered when a device is opened or closed, not only on a refresh.
+    move || routing_view(&d, ex)
+}
+
+fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
+    let line = status_line(d);
+    let grid = Grid::of(d);
+    let Expanded {
+        tx: tx_open,
+        rx: rx_open,
+    } = ex;
+    let txo = tx_open.get();
+    let rxo = rx_open.get();
+    // Column plan: (device index, None) for a collapsed device, (device, Some(channel)) per open channel.
+    let cols: Vec<(usize, Option<usize>)> = grid
+        .tx
+        .iter()
+        .enumerate()
+        .flat_map(|(i, t)| {
+            if txo.contains(&t.device) {
+                (0..t.channels.len())
+                    .map(|c| (i, Some(c)))
+                    .collect::<Vec<_>>()
+            } else {
+                vec![(i, None)]
+            }
+        })
+        .collect();
+    let head_devices = grid
+        .tx
+        .iter()
+        .map(|t| {
+            let open = txo.contains(&t.device);
+            let span = if open { t.channels.len() } else { 1 };
+            let name = t.device.clone();
+            let label = t.device.clone();
+            let name_attr = t.device.clone();
+            view! {
+                <th class=if open { "txdev open" } else { "txdev" } colspan=span
+                    data-testid="tx-device" data-name=name_attr
+                    on:click=move |_| flip(tx_open, &name)>
+                    <span>{label}</span>
+                </th>
+            }
+        })
+        .collect_view();
+    let head_channels = cols
+        .iter()
+        .map(|&(i, c)| match c {
+            Some(c) => {
+                view! { <th class="txch"><span>{grid.tx[i].channels[c].clone()}</span></th> }
+                    .into_any()
+            }
+            None => view! { <th class="txch"></th> }.into_any(),
+        })
+        .collect_view();
+    let mut rows = Vec::new();
+    for r in &grid.rx {
+        let open = rxo.contains(&r.device);
+        let name = r.device.clone();
+        let label = r.device.clone();
+        let name_attr = r.device.clone();
+        let cells = cols
+            .iter()
+            .map(|&(i, c)| {
+                let t = &grid.tx[i];
+                let ch = c.map(|c| t.channels[c].as_str());
+                let x = cell(&r.channels, &t.device, ch);
+                let n = x.count();
+                let tx_attr = match ch {
+                    Some(ch) => format!("{}/{}", t.device, ch),
+                    None => t.device.clone(),
+                };
+                view! {
+                    <td class=x.class() data-testid="cell" data-rx=r.device.clone() data-tx=tx_attr>
+                        {(n > 0).then(|| n.to_string())}
+                    </td>
+                }
+            })
+            .collect_view();
+        rows.push(view! {
+            <tr class="rxdev">
+                <th class=if open { "rxname open" } else { "rxname" } data-testid="rx-device" data-name=name_attr
+                    on:click=move |_| flip(rx_open, &name)>{label}</th>
+                {cells}
+            </tr>
+        }.into_any());
+        if open {
+            for rc in &r.channels {
+                let cells = cols
+                    .iter()
+                    .map(|&(i, c)| {
+                        let t = &grid.tx[i];
+                        let ch = c.map(|c| t.channels[c].as_str());
+                        let x = cell(std::slice::from_ref(rc), &t.device, ch);
+                        let tx_attr = match ch {
+                            Some(ch) => format!("{}/{}", t.device, ch),
+                            None => t.device.clone(),
+                        };
+                        // A collapsed TX device shows which of its channels feeds this one.
+                        let text = match (ch, &rc.source) {
+                            (None, Some(s)) if x.count() > 0 => s.channel.clone(),
+                            (Some(_), _) if x.count() > 0 => "●".into(),
+                            _ => String::new(),
+                        };
+                        view! {
+                            <td class=x.class() data-testid="cell"
+                                data-rx=format!("{}/{}", r.device, rc.label) data-tx=tx_attr
+                                title=rc.status.clone().unwrap_or_default()>{text}</td>
+                        }
+                    })
+                    .collect_view();
+                rows.push(
+                    view! {
+                        <tr class="rxch">
+                            <th class="rxchname">{rc.label.clone()}</th>
+                            {cells}
+                        </tr>
+                    }
+                    .into_any(),
+                );
+            }
+            let other = elsewhere(&grid, r);
+            if !other.is_empty() {
+                let text = other
+                    .iter()
+                    .map(|(l, s)| format!("{l} ← {s}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                rows.push(view! {
+                    <tr class="rxch"><td class="elsewhere" data-testid="elsewhere" colspan=cols.len() + 1>
+                        {format!("From devices not listed: {text}")}
+                    </td></tr>
+                }.into_any());
+            }
+        }
+    }
+    view! {
+        <p class="status" data-testid="status">{line}</p>
+        <div class="matrix-wrap">
+            <table class="matrix" data-testid="matrix">
+                <thead>
+                    <tr><th class="corner" rowspan="2">"RX ↓  TX →"</th>{head_devices}</tr>
+                    <tr>{head_channels}</tr>
+                </thead>
+                <tbody>{rows}</tbody>
+            </table>
+        </div>
+    }
+    .into_any()
 }
 
 /// The status line for a device list.
@@ -140,10 +349,11 @@ fn DeviceCard(dev: Device) -> impl IntoView {
 
 #[component]
 fn RxRow(r: RxChannel) -> impl IntoView {
-    let class = match (&r.source, r.receiving()) {
+    let class = match (&r.source, r.state.as_deref()) {
         (None, _) => "status none",
-        (Some(_), true) => "status ok",
-        (Some(_), false) => "status warn",
+        (Some(_), Some("connected")) => "status ok",
+        (Some(_), Some("error")) => "status err",
+        (Some(_), _) => "status warn",
     };
     let source = r
         .source

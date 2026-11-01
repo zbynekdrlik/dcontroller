@@ -9,7 +9,7 @@ description = "Web Dante controller server: serves the PWA and the controller AP
 [dependencies]
 anyhow = "1"
 # The Dante stack (GPL-3.0-or-later, like this crate): discovery and ARC reads.
-dante-stack = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.4.17" }
+dante-stack = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.4.18" }
 dcontroller-api = { path = "../api" }
 # The Dante interface's IPv4 address; already in the tree through dante-stack.
 if-addrs = "0.15"
