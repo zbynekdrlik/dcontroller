@@ -17,9 +17,10 @@ test("a setting change is offered from what the device reports, confirmed, sent 
   const card = page.locator(`[data-testid="device"][data-name="${DEVICE}"]`);
   await expect(card.getByTestId("device-counts")).toHaveText("4 TX · 4 RX", { timeout: 30_000 });
   await card.getByTestId("device-name").click();
-  const api = await page.evaluate(() => fetch("/api/devices").then((r) => r.json()));
-  const dev = api.devices.find((d: { name: string }) => d.name === DEVICE);
-  console.log(JSON.stringify({ settings: dev.settings, info: dev.info }));
+
+  // It reports no latency range and no list of rates: neither is offered.
+  await expect(card.getByTestId("change-latency")).toHaveCount(0);
+  await expect(card.getByTestId("change-sample-rate")).toHaveCount(0);
 
   // The encoding: 24 bit in its config, so 16/24/32 are offered.
   await card.getByTestId("change-encoding").click();

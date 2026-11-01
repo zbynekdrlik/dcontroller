@@ -183,14 +183,6 @@ impl State {
             .is_some_and(|e| e.info.is_none())
     }
 
-    /// Drops `device`'s info, so the next read asks for it again (after a
-    /// setting changed).
-    pub fn forget_info(&mut self, device: &Device) {
-        if let Some(e) = self.devices.get_mut(&device.name.to_ascii_lowercase()) {
-            e.info = None;
-        }
-    }
-
     /// The last read settings and info of the listed device `name`.
     pub fn known(&self, name: &str) -> (Option<api::Settings>, Option<api::Info>) {
         self.devices
@@ -941,8 +933,6 @@ mod tests {
             3,
         );
         assert_eq!(s.known("desk").1, Some(api::Info::default()));
-        s.forget_info(&dev("Desk", 1));
-        assert!(s.needs_info(&dev("Desk", 1)));
         assert_eq!(s.known("nobody"), (None, None));
     }
 

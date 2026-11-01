@@ -670,13 +670,14 @@ impl Changes {
         };
         entry.ok = result.ok;
         entry.message = result.message.clone();
-        // Show the device as it is now: its info read again, its settings at once.
+        // Show the device as it is now: its settings and its info read again.
         let fresh = open().and_then(|mut udp| {
-            dante::read_device(&mut udp, &device.name).map_err(|e| e.to_string())
+            let mut r = dante::read_device(&mut udp, &device.name).map_err(|e| e.to_string())?;
+            r.info = dante::read_info(ip, &device, &mut udp);
+            Ok(r)
         });
         {
             let mut st = dante.write().unwrap_or_else(|e| e.into_inner());
-            st.forget_info(&device);
             match fresh {
                 Ok(r) => st.record(&device, Ok(r), Instant::now(), now()),
                 Err(e) => {
