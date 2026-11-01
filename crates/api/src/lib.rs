@@ -92,16 +92,50 @@ pub struct ChangeResult {
     pub channel: Option<RxChannel>,
 }
 
-/// One logged change (`GET /api/changes`, newest first).
+/// `POST /api/rename`: a new label for a TX or RX channel (`name` `None`
+/// resets it to the channel's default), or a new device name. Sent only
+/// after the user confirmed it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rename {
+    pub device: String,
+    pub target: RenameTarget,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RenameTarget {
+    /// TX channel (from 1).
+    Tx(u16),
+    /// RX channel (from 1).
+    Rx(u16),
+    /// The device's own name.
+    #[default]
+    Device,
+}
+
+/// One logged change (`GET /api/changes`, newest first): a subscription
+/// change, or a rename (`kind` `rename`, the names in `name_*`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ChangeEntry {
     /// Unix seconds.
     pub at: u64,
     /// The Cloudflare Access e-mail, or `local` without Access.
     pub user: String,
+    /// `subscription` (also when empty, as in the first log lines) or `rename`.
+    pub kind: String,
+    /// For a rename: `tx`, `rx` or `device`.
+    pub what: String,
+    /// The device the change went to (for a subscription, the receiver).
     pub rx_device: String,
+    /// The channel (0 for a device rename).
     pub rx_channel: u16,
     pub rx_label: String,
+    /// For a rename: the name before, asked for (`None` = default) and after.
+    pub name_before: Option<String>,
+    pub name_asked: Option<String>,
+    pub name_after: Option<String>,
     /// The subscription before, as read before the change.
     pub before: Option<Source>,
     /// The subscription asked for (`None` = remove).

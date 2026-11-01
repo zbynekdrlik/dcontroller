@@ -9,6 +9,8 @@ use dcontroller_api::{Device, Devices, RxChannel};
 pub struct Tx {
     pub device: String,
     pub channels: Vec<String>,
+    /// The channel numbers, in the order of `channels`.
+    pub numbers: Vec<u16>,
 }
 
 /// A receiver: a device with RX channels.
@@ -74,6 +76,7 @@ impl Grid {
                 .map(|(dev, c)| Tx {
                     device: dev.name.clone(),
                     channels: c.tx.iter().map(|t| t.label.clone()).collect(),
+                    numbers: c.tx.iter().map(|t| t.channel).collect(),
                 })
                 .collect(),
             rx: read()
@@ -113,6 +116,24 @@ pub fn cell<'a>(
         (n, 0) => Cell::Ok(n),
         (n, bad) => Cell::Warn { n, bad },
     }
+}
+
+/// The RX channels (as `label @ device`) whose subscription names TX
+/// channel `tx_channel` of `tx_device` (`None`: any of its channels): what
+/// a rename of that channel or device leaves unresolved.
+pub fn affected(d: &Devices, tx_device: &str, tx_channel: Option<&str>) -> Vec<String> {
+    d.devices
+        .iter()
+        .filter_map(|dev| dev.channels.as_ref().map(|c| (dev, c)))
+        .flat_map(|(dev, c)| {
+            c.rx.iter().filter_map(move |r| {
+                let s = r.source.as_ref()?;
+                let hit =
+                    same(&s.device, tx_device) && tx_channel.is_none_or(|t| same(&s.channel, t));
+                hit.then(|| format!("{} @ {}", r.label, dev.name))
+            })
+        })
+        .collect()
 }
 
 /// Subscriptions of `rx` to devices that are not transmitters in the grid
@@ -205,7 +226,8 @@ mod tests {
             g.tx,
             vec![Tx {
                 device: "desk".into(),
-                channels: vec!["Mix L".into(), "Mix R".into()]
+                channels: vec!["Mix L".into(), "Mix R".into()],
+                numbers: vec![1, 2],
             }]
         );
         assert_eq!(g.rx.len(), 1);
@@ -237,6 +259,22 @@ mod tests {
         assert_eq!(cell(ch, "desk", Some("Mix L")), Cell::Ok(1));
         assert_eq!(Cell::Ok(1).class(), "cell ok");
         assert_eq!(Cell::Empty.class(), "cell");
+    }
+
+    #[test]
+    fn affected_lists_the_receivers_naming_a_channel_or_device() {
+        let d = site();
+        assert_eq!(
+            affected(&d, "desk", Some("Mix L")),
+            vec!["In 1 @ stage".to_string()]
+        );
+        assert_eq!(
+            affected(&d, "DESK", Some("MIX R")),
+            vec!["In 2 @ stage".to_string()]
+        );
+        assert_eq!(affected(&d, "desk", None).len(), 2);
+        assert!(affected(&d, "desk", Some("Talkback")).is_empty());
+        assert!(affected(&d, "nobody", None).is_empty());
     }
 
     #[test]

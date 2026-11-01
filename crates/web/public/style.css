@@ -63,3 +63,9 @@ button:disabled { opacity: 0.6; cursor: default; }
 table.changes { border-collapse: collapse; font-size: 0.85rem; width: 100%; }
 table.changes th, table.changes td { text-align: left; padding: 0.3rem 0.5rem; border-bottom: 1px solid #2f3d50; }
 table.changes tr.err td { color: #ff8a80; }
+.rename { cursor: pointer; }
+th.rename:hover span, th.rxchname.rename:hover { color: #e8b84a; }
+.modal input { width: 100%; box-sizing: border-box; font: inherit; padding: 0.4rem; margin-bottom: 0.8rem;
+  background: #1b2430; color: #e6e9ee; border: 1px solid #3d4f66; border-radius: 5px; }
+.modal .warn { color: #e8b84a; font-size: 0.85rem; }
+.actions { margin: 0.2rem 0 0.6rem; }
