@@ -1,0 +1,30 @@
+#!/usr/sbin/nft -f
+# Dante NIC guard: only Dante traffic uses the Dante interface @IFACE@.
+# Out: the dcontroller service user, the DHCP client, IGMP and PTP.
+# In: replies, DHCP, PTP, mDNS and UDP multicast/broadcast.
+# Everything else (other services, IPv6) is dropped on this interface only.
+table inet dante_guard
+delete table inet dante_guard
+table inet dante_guard {
+	chain out {
+		type filter hook output priority filter; policy accept;
+		oifname != "@IFACE@" accept
+		meta nfproto ipv6 counter drop
+		ip protocol igmp accept
+		meta skuid "dcontroller" accept
+		udp sport 68 udp dport 67 accept
+		udp sport { 319, 320 } udp dport { 319, 320 } accept
+		limit rate 6/minute log prefix "dante-guard out drop: "
+		counter drop
+	}
+	chain in {
+		type filter hook input priority filter; policy accept;
+		iifname != "@IFACE@" accept
+		meta nfproto ipv6 counter drop
+		ct state established,related accept
+		ip protocol igmp accept
+		udp dport { 68, 319, 320, 5353 } accept
+		meta pkttype { broadcast, multicast } meta l4proto udp accept
+		counter drop
+	}
+}

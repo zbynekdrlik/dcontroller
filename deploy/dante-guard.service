@@ -1,0 +1,15 @@
+[Unit]
+Description=Dante NIC guard: only Dante traffic on the Dante interface
+DefaultDependencies=no
+Before=network-pre.target
+Wants=network-pre.target
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/dcontroller/dante-guard.nft
+ExecStop=/usr/sbin/nft delete table inet dante_guard
+
+[Install]
+WantedBy=multi-user.target

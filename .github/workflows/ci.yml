@@ -164,6 +164,34 @@ jobs:
           test ! -e /etc/systemd/system/dcontroller.service
           test ! -e /etc/dcontroller/config.toml
           if systemctl is-enabled -q dcontroller.service 2>/dev/null; then echo "unit left enabled"; exit 1; fi
+      - name: Dante NIC guard lets only dcontroller send on the Dante interface
+        run: |
+          set -euo pipefail
+          dir=$(mktemp -d)
+          tar -xzf "${{ steps.bundle.outputs.path }}" -C "$dir"
+          rel=$(echo "$dir"/dcontroller-*)
+          sudo ip link add dante0 type dummy
+          sudo ip addr add 10.99.7.2/24 dev dante0
+          sudo ip link set dante0 up
+          send() {  # send() <user>: one UDP datagram from the Dante address
+            sudo -u "$1" python3 -I -c 'import socket;s=socket.socket(2,2);s.bind(("10.99.7.2",0));s.sendto(b"x",("10.99.7.9",9))'
+          }
+          send nobody   # no guard yet: anyone may send
+          if sudo DC_IFACE=nope0 DC_GUARD_SKIP_ROUTING=1 "$rel/dante-guard.sh"; then echo "bad iface accepted"; exit 1; fi
+          sudo DC_IFACE=dante0 DC_GUARD_SKIP_ROUTING=1 "$rel/dante-guard.sh"
+          sudo DC_IFACE=dante0 DC_GUARD_SKIP_ROUTING=1 "$rel/dante-guard.sh"   # idempotent
+          systemctl is-active -q dante-guard.service
+          systemctl is-enabled -q dante-guard.service
+          test "$(sudo nft list tables | grep -c 'inet dante_guard')" = 1
+          test "$(sysctl -n net.ipv4.conf.dante0.arp_ignore)" = 1
+          send dcontroller
+          if send nobody; then echo "foreign user sent on the Dante NIC"; exit 1; fi
+          if sudo python3 -I -c 'import socket;s=socket.socket(2,2);s.bind(("10.99.7.2",0));s.sendto(b"x",("10.99.7.9",9))'; then echo "root sent on the Dante NIC"; exit 1; fi
+          # Other interfaces are untouched.
+          sudo -u nobody python3 -I -c 'import socket;s=socket.socket(2,2);s.sendto(b"x",("127.0.0.1",9))'
+          sudo systemctl stop dante-guard.service
+          if sudo nft list table inet dante_guard 2>/dev/null; then echo "stop left the table"; exit 1; fi
+          send nobody
       - uses: actions/upload-artifact@v4
         with:
           name: dcontroller-bundle
