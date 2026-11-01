@@ -16,7 +16,9 @@ use dante_stack::arc::client::{Exchange, REPLY_TIMEOUT, ReadError, Udp, read_dir
 use dante_stack::arc::control::{self, Call};
 use dante_stack::ctl::Requests;
 use dante_stack::discover::{Change, Device, Discovery};
-use dante_stack::info::client::{self as info_client, Board, ClockStatus, NetInterface, Product};
+use dante_stack::info::client::{
+    self as info_client, Board, ClockStatus, NetInterface, Product, SampleRate,
+};
 use dcontroller_api as api;
 use tracing::{info, warn};
 
@@ -179,6 +181,13 @@ impl State {
         self.devices
             .get(&device.name.to_ascii_lowercase())
             .is_some_and(|e| e.info.is_none())
+    }
+
+    /// The last read settings and info of the listed device `name`.
+    pub fn known(&self, name: &str) -> (Option<api::Settings>, Option<api::Info>) {
+        self.devices
+            .get(&name.to_ascii_lowercase())
+            .map_or((None, None), |e| (e.settings.clone(), e.info.clone()))
     }
 
     /// Makes `device` due for a read now (after a change to it).
@@ -357,8 +366,9 @@ pub fn info_view(
     product: Option<&Product>,
     board: Option<&Board>,
     encoding: Option<u32>,
+    rates: Option<&SampleRate>,
 ) -> Option<api::Info> {
-    if product.is_none() && board.is_none() && encoding.is_none() {
+    if product.is_none() && board.is_none() && encoding.is_none() && rates.is_none() {
         return None;
     }
     let text = |s: &String| (!s.is_empty()).then(|| s.clone());
@@ -373,6 +383,8 @@ pub fn info_view(
         platform_software: board.and_then(|b| ver(b.software)),
         platform_hardware: board.and_then(|b| ver(b.hardware)),
         encoding_bits: encoding,
+        sample_rates: rates.map(|r| r.supported.clone()).unwrap_or_default(),
+        sample_rate_pending: rates.and_then(|r| r.pending),
     })
 }
 
@@ -391,7 +403,10 @@ pub fn read_info(our: Ipv4Addr, device: &Device, ex: &mut impl Exchange) -> Opti
         .inspect_err(|e| warn!(device = %device.name, error = %e, "dante: encoding not read"))
         .ok()
         .and_then(|d| d.encoding());
-    let info = info_view(product.as_ref(), board.as_ref(), encoding);
+    let rates = info_client::sample_rate(our, ip, device.device_id, INFO_WAIT)
+        .inspect_err(|e| warn!(device = %device.name, error = %e, "dante: sample rates not read"))
+        .ok();
+    let info = info_view(product.as_ref(), board.as_ref(), encoding, rates.as_ref());
     info!(device = %device.name, info = ?info, "dante: device info read");
     info
 }
@@ -837,7 +852,14 @@ mod tests {
             api: None,
             boot: None,
         };
-        let i = info_view(Some(&product), Some(&board), Some(24)).unwrap();
+        let rates = SampleRate {
+            current: 48000,
+            pending: Some(96000),
+            supported: vec![44100, 48000, 96000],
+        };
+        let i = info_view(Some(&product), Some(&board), Some(24), Some(&rates)).unwrap();
+        assert_eq!(i.sample_rates, vec![44100, 48000, 96000]);
+        assert_eq!(i.sample_rate_pending, Some(96000));
         assert_eq!(i.manufacturer.as_deref(), Some("Yamaha"));
         assert_eq!(i.model.as_deref(), Some("Dante-MY16-AUD2"));
         assert_eq!(i.software_version.as_deref(), Some("1.2.3"));
@@ -857,13 +879,14 @@ mod tests {
             manufacturer: String::new(),
             ..product
         };
-        let i = info_view(Some(&blank), Some(&short), None).unwrap();
+        let i = info_view(Some(&blank), Some(&short), None, None).unwrap();
+        assert!(i.sample_rates.is_empty());
         assert_eq!(i.platform.as_deref(), Some("Bklyn2"));
         assert_eq!(i.manufacturer, None);
         assert_eq!(i.encoding_bits, None);
-        assert_eq!(info_view(None, None, None), None);
+        assert_eq!(info_view(None, None, None, None), None);
         assert_eq!(
-            info_view(None, None, Some(32)).and_then(|i| i.encoding_bits),
+            info_view(None, None, Some(32), None).and_then(|i| i.encoding_bits),
             Some(32)
         );
     }
@@ -900,6 +923,17 @@ mod tests {
         s.apply(Change::Changed(dev("Desk", 1)));
         assert!(s.needs_info(&dev("Desk", 1)));
         assert!(!s.needs_info(&dev("Nobody", 9)));
+        s.record(
+            &dev("Desk", 1),
+            Ok(Read {
+                info: Some(api::Info::default()),
+                ..read("Vox")
+            }),
+            now,
+            3,
+        );
+        assert_eq!(s.known("desk").1, Some(api::Info::default()));
+        assert_eq!(s.known("nobody"), (None, None));
     }
 
     #[test]

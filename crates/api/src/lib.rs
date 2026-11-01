@@ -76,6 +76,40 @@ pub struct Info {
     pub platform_hardware: Option<String>,
     /// Bits per sample, shared by all its TX channels.
     pub encoding_bits: Option<u32>,
+    /// The sample rates the device takes (UDP 8700); empty when it does
+    /// not say.
+    #[serde(default)]
+    pub sample_rates: Vec<u32>,
+    /// A rate set but not yet in effect (applied at the device's next start).
+    #[serde(default)]
+    pub sample_rate_pending: Option<u32>,
+}
+
+/// `POST /api/setting`: one setting of one device, confirmed by the user.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingChange {
+    pub device: String,
+    pub setting: Setting,
+}
+
+/// The setting to write and its new value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Setting {
+    LatencyUs(u32),
+    SampleRateHz(u32),
+    EncodingBits(u32),
+}
+
+impl Setting {
+    /// Its name in the changes log.
+    pub fn what(self) -> &'static str {
+        match self {
+            Setting::LatencyUs(_) => "latency",
+            Setting::SampleRateHz(_) => "sample_rate",
+            Setting::EncodingBits(_) => "encoding",
+        }
+    }
 }
 
 /// A device's clock status (UDP 8700, Dante's clock stats). States the
@@ -204,16 +238,19 @@ pub struct ChangeEntry {
     pub at: u64,
     /// The Cloudflare Access e-mail, or `local` without Access.
     pub user: String,
-    /// `subscription` (also when empty, as in the first log lines) or `rename`.
+    /// `subscription` (also when empty, as in the first log lines),
+    /// `rename` or `setting`.
     pub kind: String,
-    /// For a rename: `tx`, `rx` or `device`.
+    /// For a rename: `tx`, `rx` or `device`; for a setting: `latency`,
+    /// `sample_rate` or `encoding`.
     pub what: String,
     /// The device the change went to (for a subscription, the receiver).
     pub rx_device: String,
     /// The channel (0 for a device rename).
     pub rx_channel: u16,
     pub rx_label: String,
-    /// For a rename: the name before, asked for (`None` = default) and after.
+    /// For a rename: the name before, asked for (`None` = default) and
+    /// after; for a setting: its value before, asked for and after, as text.
     pub name_before: Option<String>,
     pub name_asked: Option<String>,
     pub name_after: Option<String>,
@@ -330,6 +367,18 @@ mod tests {
         let text = serde_json::to_string(&d).unwrap();
         assert_eq!(serde_json::from_str::<Devices>(&text).unwrap(), d);
         assert!(d.devices[0].channels.as_ref().unwrap().rx[0].receiving());
+    }
+
+    #[test]
+    fn a_setting_change_reads_as_the_page_sends_it() {
+        let c: SettingChange =
+            serde_json::from_str(r#"{"device":"desk","setting":{"latency_us":500}}"#).unwrap();
+        assert_eq!(c.setting, Setting::LatencyUs(500));
+        assert_eq!(c.setting.what(), "latency");
+        assert_eq!(Setting::SampleRateHz(48000).what(), "sample_rate");
+        assert_eq!(Setting::EncodingBits(24).what(), "encoding");
+        let back = serde_json::to_string(&c).unwrap();
+        assert_eq!(serde_json::from_str::<SettingChange>(&back).unwrap(), c);
     }
 
     #[test]

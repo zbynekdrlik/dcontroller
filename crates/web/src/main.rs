@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use dcontroller_api::{
     ChangeEntry, ChangeResult, Device, Devices, Info, LatencyReport, Rename, RenameTarget,
-    RxChannel, Settings, Source, SubscriptionChange,
+    RxChannel, SettingChange, Settings, Source, SubscriptionChange,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -18,6 +18,7 @@ mod clock;
 mod lat;
 mod matrix;
 mod net;
+mod settings;
 use matrix::{Grid, affected, cell, elsewhere};
 
 const VERSION: &str = env!("DC_VERSION");
@@ -49,6 +50,7 @@ fn App() -> impl IntoView {
         devices,
         pending: RwSignal::new(None),
         renaming: RwSignal::new(None),
+        setting: RwSignal::new(None),
         busy: RwSignal::new(false),
         result: RwSignal::new(None),
     };
@@ -128,6 +130,7 @@ fn App() -> impl IntoView {
         </main>
         <ConfirmDialog/>
         <RenameDialog/>
+        <SettingDialog/>
         <ResultLine/>
     }
 }
@@ -362,6 +365,7 @@ fn change_target(e: &ChangeEntry) -> String {
         ("rename", "device") => format!("rename device {}", e.rx_device),
         ("rename", "tx") => format!("rename TX {} @ {}", e.rx_channel, e.rx_device),
         ("rename", _) => format!("rename RX {} @ {}", e.rx_channel, e.rx_device),
+        ("setting", w) => format!("{} @ {}", w.replace('_', " "), e.rx_device),
         _ => format!("{} @ {}", e.rx_label, e.rx_device),
     }
 }
@@ -397,6 +401,7 @@ struct Ctl {
     devices: RwSignal<Option<Result<Devices, String>>>,
     pending: RwSignal<Option<Pending>>,
     renaming: RwSignal<Option<RenameAsk>>,
+    setting: RwSignal<Option<settings::Ask>>,
     busy: RwSignal<bool>,
     result: RwSignal<Option<ChangeResult>>,
 }
@@ -615,6 +620,84 @@ fn RenameDialog() -> impl IntoView {
     }
 }
 
+async fn send_setting(req: &SettingChange) -> Result<ChangeResult, String> {
+    let res = gloo_net::http::Request::post("/api/setting")
+        .json(req)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.ok() {
+        return Err(format!("server answered {}", res.status()));
+    }
+    res.json::<ChangeResult>().await.map_err(|e| e.to_string())
+}
+
+/// The setting dialog: choose a value, read what it does, Apply sends it.
+#[component]
+fn SettingDialog() -> impl IntoView {
+    let ctl = expect_context::<Ctl>();
+    let value = RwSignal::new(None::<u32>);
+    Effect::new(move |_| {
+        if let Some(a) = ctl.setting.get() {
+            value.set(a.current);
+        }
+    });
+    let apply = move |_| {
+        let (Some(a), Some(v)) = (ctl.setting.get_untracked(), value.get_untracked()) else {
+            return;
+        };
+        ctl.busy.set(true);
+        spawn_local(async move {
+            let req = SettingChange {
+                device: a.device.clone(),
+                setting: a.kind.setting(v),
+            };
+            let r = send_setting(&req).await.unwrap_or_else(|e| ChangeResult {
+                ok: false,
+                message: e,
+                channel: None,
+            });
+            ctl.result.set(Some(r));
+            ctl.devices.set(Some(fetch_devices().await));
+            ctl.busy.set(false);
+            ctl.setting.set(None);
+        });
+    };
+    move || {
+        ctl.setting.get().map(|a| {
+            let busy = ctl.busy.get();
+            let kind = a.kind;
+            let current = a.current;
+            view! {
+                <div class="modal-back">
+                    <div class="modal" role="dialog" data-testid="setting-dialog">
+                        <p data-testid="setting-title">{a.title()}</p>
+                        <select data-testid="setting-value"
+                            on:change=move |ev| value.set(event_target_value(&ev).parse().ok())>
+                            {a.options.iter().map(|&o| view! {
+                                <option value=o.to_string() selected=move || value.get() == Some(o)>{kind.text(o)}</option>
+                            }).collect_view()}
+                        </select>
+                        <p class="warn" data-testid="setting-warning">{kind.warning()}</p>
+                        <div class="buttons">
+                            <button data-testid="setting-cancel" disabled=busy
+                                on:click=move |_| ctl.setting.set(None)>"Cancel"</button>
+                            <button class="primary" data-testid="setting-apply"
+                                disabled=move || busy || value.get().is_none() || value.get() == current
+                                on:click=apply>
+                                {move || if busy { "Sending…".to_owned() } else {
+                                    value.get().map_or("Apply".to_owned(), |v| format!("Set {}", kind.text(v)))
+                                }}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            }
+        })
+    }
+}
+
 async fn fetch_changes() -> Result<Vec<ChangeEntry>, String> {
     let res = gloo_net::http::Request::get("/api/changes")
         .send()
@@ -650,9 +733,9 @@ fn ChangeLog() -> impl IntoView {
                                 <td>{String::from(when)}</td>
                                 <td>{e.user.clone()}</td>
                                 <td>{change_target(&e)}</td>
-                                <td>{if e.kind == "rename" { name_text(&e.name_before) } else { source_text(&e.before) }}</td>
-                                <td>{if e.kind == "rename" { name_text(&e.name_asked) } else { source_text(&e.requested) }}</td>
-                                <td>{if e.kind == "rename" { name_text(&e.name_after) } else { source_text(&e.after) }}</td>
+                                <td>{if e.kind == "rename" || e.kind == "setting" { name_text(&e.name_before) } else { source_text(&e.before) }}</td>
+                                <td>{if e.kind == "rename" || e.kind == "setting" { name_text(&e.name_asked) } else { source_text(&e.requested) }}</td>
+                                <td>{if e.kind == "rename" || e.kind == "setting" { name_text(&e.name_after) } else { source_text(&e.after) }}</td>
                                 <td>{e.message.clone()}</td>
                             </tr>
                         }
@@ -1126,6 +1209,15 @@ fn DeviceCard(dev: Device) -> impl IntoView {
                             }
                         }
                     }>"Rename device"</button>
+                    {settings::asks(&dev).into_iter().map(|a| {
+                        let id = format!("change-{}", a.kind.name().replace(' ', "-"));
+                        let label = format!("Change {}", a.kind.name());
+                        view! {
+                            <button data-testid=id on:click=move |_| {
+                                expect_context::<Ctl>().setting.set(Some(a.clone()));
+                            }>{label}</button>
+                        }
+                    }).collect_view()}
                 </div>
                 {dev.error.clone().map(|e| view! {
                     <p class="error" data-testid="device-error">{format!("Last read failed: {e}")}</p>

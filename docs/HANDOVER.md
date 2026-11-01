@@ -6,7 +6,9 @@ Request: zbynekdrlik/airuleset#1273, owner 30.10.2026 and 31.10.2026.
 
 Cargo workspace: `crates/server` (axum: PWA, `/api/version`, `/api/devices`, `/healthz`), `crates/web` (Leptos CSR, built by trunk, PWA manifest + service worker), `crates/api` (the JSON types both share), `crates/buildver` (one version string from git for both). Live behind Cloudflare Access (#1).
 
-Device list (read-only): `crates/server/src/dante.rs` runs dstack discovery on the IPv4 of `dante_interface` and reads each device's TX labels and RX channels with subscriptions over ARC when listed, when its records change and every 30 s. No write call exists in the code. The page polls `/api/devices` every 3 s.
+Reads: `crates/server/src/dante.rs` runs dstack discovery on the IPv4 of `dante_interface` and reads each device when listed, when its records change and every 30 s. Every read covers the channels, subscriptions and settings (ARC), plus the clock status and network info (UDP 8700). The product info, board info, encoding and sample rates are read once per listing. The page polls `/api/devices` every 3 s. Tabs: Routing, Devices, Changes, Latency (`crates/server/src/latency.rs`, heartbeats), Clock, Network.
+
+Writes: only in `crates/server/src/change.rs`, one at a time, each confirmed in a page dialog, read back and logged to `changes.jsonl` with the Access user. They cover subscriptions (`/api/subscription`), renames (`/api/rename`) and settings (`/api/setting`: latency, sample rate, encoding). Tests write only to dstack's own device in E2E.
 
 Dante protocol APIs requested in priority order: zbynekdrlik/dstack#16.
 
@@ -41,8 +43,7 @@ None yet. GitHub-hosted runners cover build and tests. A test on the Dante netwo
 ## Backlog
 
 - Foundation as in Status.
-- Device list, channels and subscriptions: read-only done; changing a subscription needs the confirm-and-log flow (CLAUDE.md rule).
-- Renames, latency, sample rate and encoding, per-flow telemetry.
+- Open items are on #1's checklist (meters: dstack#16 step 6).
 
 dstack provides these or builds them, tracked on zbynekdrlik/dstack#1: mDNS discovery, ARC reads, subscription requests, renames (ARC 0x2013/0x3001/0x1001), device latency (0x1101), sample rate and encoding (UDP 8700, messages 0x0081/0x0083), per-flow telemetry.
 

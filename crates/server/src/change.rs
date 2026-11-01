@@ -1,20 +1,21 @@
-//! Subscription changes: the only writes to a Dante device. Each one is
-//! asked for by a user who confirmed it on the page, runs one at a time,
-//! is read back from the device and logged (who, when, the channel, the
-//! subscription before, asked for and after) to the journal and to the
-//! changes log the page lists.
+//! The writes to a Dante device: subscriptions, renames and settings
+//! (latency, sample rate, encoding). Each one is asked for by a user who
+//! confirmed it on the page, runs one at a time, is read back from the
+//! device and logged (who, when, what, the value before, asked for and
+//! after) to the journal and to the changes log the page lists.
 
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU16};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use dante_stack::arc::client::{REPLY_TIMEOUT, Udp};
-use dante_stack::arc::control;
+use dante_stack::arc::client::{REPLY_TIMEOUT, Udp, read_directory};
+use dante_stack::arc::control::{self, WriteError};
 use dante_stack::ctl::Requests;
 use dante_stack::device::{valid_channel_name, valid_device_name};
+use dante_stack::info::client as info_client;
 use dcontroller_api as api;
 use tracing::{info, warn};
 
@@ -418,9 +419,394 @@ impl Changes {
     }
 }
 
+/// How long a sample-rate or encoding write waits to read its value back.
+const WRITE_WAIT: Duration = Duration::from_secs(5);
+/// How often an encoding write reads the device's channels again.
+const ENCODING_POLL: Duration = Duration::from_millis(500);
+/// The encodings Dante devices offer.
+pub const ENCODINGS: [u32; 3] = [16, 24, 32];
+
+/// A setting's value as the log and the page write it.
+pub fn setting_text(s: api::Setting) -> String {
+    match s {
+        api::Setting::LatencyUs(us) => format!("{:.2} ms", f64::from(us) / 1000.0),
+        api::Setting::SampleRateHz(hz) => format!("{hz} Hz"),
+        api::Setting::EncodingBits(b) => format!("{b} bit"),
+    }
+}
+
+/// Checks a setting before anything is sent, against what the device last
+/// reported: a latency within its range, a rate it lists, a Dante encoding.
+pub fn validate_setting(
+    s: api::Setting,
+    settings: Option<&api::Settings>,
+    info: Option<&api::Info>,
+) -> Result<(), String> {
+    match s {
+        api::Setting::LatencyUs(us) => {
+            let range = settings.and_then(|s| s.latency_min_us.zip(s.latency_max_us));
+            match range {
+                Some((lo, hi)) if (lo..=hi).contains(&us) => Ok(()),
+                Some((lo, hi)) => Err(format!(
+                    "{} is outside the device's latency range {} to {}",
+                    setting_text(s),
+                    setting_text(api::Setting::LatencyUs(lo)),
+                    setting_text(api::Setting::LatencyUs(hi))
+                )),
+                None => Err("the device reports no latency range".into()),
+            }
+        }
+        api::Setting::SampleRateHz(hz) => {
+            let rates = info.map(|i| i.sample_rates.as_slice()).unwrap_or_default();
+            if rates.contains(&hz) {
+                Ok(())
+            } else if rates.is_empty() {
+                Err("the device lists no sample rates".into())
+            } else {
+                Err(format!(
+                    "{hz} Hz is not one of the device's rates {rates:?}"
+                ))
+            }
+        }
+        api::Setting::EncodingBits(b) if ENCODINGS.contains(&b) => Ok(()),
+        api::Setting::EncodingBits(b) => Err(format!("{b} bit is not a Dante encoding")),
+    }
+}
+
+/// The message for a latency write's outcome: ok and text.
+pub fn latency_outcome(asked_us: u32, r: &Result<control::Settings, WriteError>) -> (bool, String) {
+    let ms = |ns: u32| setting_text(api::Setting::LatencyUs(ns / 1000));
+    match r {
+        Ok(after) => (
+            true,
+            format!(
+                "done, read back from the device: latency {}",
+                after.latency_configured_ns.map_or("?".into(), ms)
+            ),
+        ),
+        Err(WriteError::OthersChanged(keys)) => (
+            false,
+            format!(
+                "WARNING: other settings changed with the latency, check the device: {}",
+                keys.iter()
+                    .map(|(k, b, a)| format!("key 0x{k:04x} {b:?} -> {a:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        ),
+        Err(WriteError::NotConfirmed { read, .. }) => (
+            false,
+            format!(
+                "the device answered but reports latency {} (asked {})",
+                read.map_or("none".into(), ms),
+                setting_text(api::Setting::LatencyUs(asked_us))
+            ),
+        ),
+        Err(WriteError::Read(e)) => (false, format!("not confirmed: {e}")),
+    }
+}
+
+/// The message for a sample-rate write's outcome: ok and text.
+pub fn rate_outcome(
+    asked: u32,
+    r: &Result<info_client::SampleRate, info_client::InfoError>,
+) -> (bool, String) {
+    match r {
+        Ok(s) if s.current == asked => (true, format!("done, the device runs at {asked} Hz")),
+        Ok(s) if s.pending == Some(asked) => (
+            true,
+            format!(
+                "set to {asked} Hz, applies at the device's next start (runs at {} Hz now)",
+                s.current
+            ),
+        ),
+        Ok(s) => (false, format!("the device reports {} Hz", s.current)),
+        Err(e) => (false, format!("not confirmed: {e}")),
+    }
+}
+
+impl Changes {
+    /// Runs one confirmed setting by `user`: checks it against the device's
+    /// last read, reads the value before, writes it, reads it back, logs it
+    /// and makes the device due for a fresh read (its info included).
+    pub fn setting(
+        &self,
+        dante: &Shared,
+        user: &str,
+        req: &api::SettingChange,
+    ) -> api::ChangeResult {
+        let _one = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        info!(%user, device = %req.device, setting = ?req.setting, "setting: asked");
+        let refuse = |message: String| {
+            warn!(%user, %message, "setting: refused before sending");
+            api::ChangeResult {
+                ok: false,
+                message,
+                channel: None,
+            }
+        };
+        let (target, (settings, info)) = {
+            let st = dante.read().unwrap_or_else(|e| e.into_inner());
+            (st.target(&req.device), st.known(&req.device))
+        };
+        let Some((ip, device)) = target else {
+            return refuse(format!(
+                "{} is not listed (discovery off or device gone)",
+                req.device
+            ));
+        };
+        if let Err(m) = validate_setting(req.setting, settings.as_ref(), info.as_ref()) {
+            return refuse(m);
+        }
+        let seq = AtomicU16::new(1);
+        let requests = Requests::default();
+        let stop = AtomicBool::new(false);
+        let dev_ip = *device.arc.ip();
+        let open = || {
+            Udp::open(ip, device.arc, &seq, REPLY_TIMEOUT, &requests, &stop)
+                .map_err(|e| format!("socket: {e}"))
+        };
+        // (before, after, ok, message); before/after as text.
+        let run = || -> Result<(Option<String>, Option<String>, bool, String), String> {
+            match req.setting {
+                api::Setting::LatencyUs(us) => {
+                    let mut udp = open()?;
+                    let ms = |s: &control::Settings| {
+                        s.latency_configured_ns
+                            .map(|ns| setting_text(api::Setting::LatencyUs(ns / 1000)))
+                    };
+                    let before =
+                        control::settings(&mut udp).map_err(|e| format!("read before: {e}"))?;
+                    let r = control::set_latency(&mut udp, us.saturating_mul(1000));
+                    let after = match &r {
+                        Ok(a) => ms(a),
+                        Err(_) => control::settings(&mut udp).ok().as_ref().and_then(ms),
+                    };
+                    let (ok, message) = latency_outcome(us, &r);
+                    Ok((ms(&before), after, ok, message))
+                }
+                api::Setting::SampleRateHz(hz) => {
+                    let text = |s: &info_client::SampleRate| match s.pending {
+                        Some(p) => format!("{} Hz (pending {p} Hz)", s.current),
+                        None => format!("{} Hz", s.current),
+                    };
+                    let before = info_client::sample_rate(ip, dev_ip, device.device_id, WRITE_WAIT)
+                        .map_err(|e| format!("read before: {e}"))?;
+                    let r =
+                        info_client::set_sample_rate(ip, dev_ip, device.device_id, hz, WRITE_WAIT);
+                    let after = match &r {
+                        Ok(a) => Some(text(a)),
+                        Err(_) => {
+                            info_client::sample_rate(ip, dev_ip, device.device_id, WRITE_WAIT)
+                                .ok()
+                                .as_ref()
+                                .map(text)
+                        }
+                    };
+                    let (ok, message) = rate_outcome(hz, &r);
+                    Ok((Some(text(&before)), after, ok, message))
+                }
+                api::Setting::EncodingBits(bits) => {
+                    let mut udp = open()?;
+                    let enc = |udp: &mut Udp<'_>| {
+                        read_directory(udp)
+                            .map(|d| d.encoding())
+                            .map_err(|e| e.to_string())
+                    };
+                    let text =
+                        |b: Option<u32>| b.map(|b| setting_text(api::Setting::EncodingBits(b)));
+                    let before = enc(&mut udp).map_err(|e| format!("read before: {e}"))?;
+                    info_client::set_encoding(ip, dev_ip, bits)
+                        .map_err(|e| format!("not sent: {e}"))?;
+                    let end = Instant::now() + WRITE_WAIT;
+                    let mut now_bits = before;
+                    while Instant::now() < end {
+                        std::thread::sleep(ENCODING_POLL);
+                        if let Ok(b) = enc(&mut udp) {
+                            now_bits = b;
+                            if b == Some(bits) {
+                                break;
+                            }
+                        }
+                    }
+                    let ok = now_bits == Some(bits);
+                    let message = if ok {
+                        format!("done, read back from the device: {bits} bit")
+                    } else {
+                        format!(
+                            "not confirmed: the device's channels read {} after {} s",
+                            text(now_bits).unwrap_or_else(|| "no encoding".into()),
+                            WRITE_WAIT.as_secs()
+                        )
+                    };
+                    Ok((text(before), text(now_bits), ok, message))
+                }
+            }
+        };
+        let mut entry = api::ChangeEntry {
+            at: now(),
+            user: user.to_owned(),
+            kind: "setting".into(),
+            what: req.setting.what().into(),
+            rx_device: device.name.clone(),
+            name_asked: Some(setting_text(req.setting)),
+            ..api::ChangeEntry::default()
+        };
+        let result = match run() {
+            Err(message) => api::ChangeResult {
+                ok: false,
+                message,
+                channel: None,
+            },
+            Ok((before, after, ok, message)) => {
+                entry.name_before = before;
+                entry.name_after = after;
+                api::ChangeResult {
+                    ok,
+                    message,
+                    channel: None,
+                }
+            }
+        };
+        entry.ok = result.ok;
+        entry.message = result.message.clone();
+        // Show the device as it is now: its settings and its info read again.
+        let fresh = open().and_then(|mut udp| {
+            let mut r = dante::read_device(&mut udp, &device.name).map_err(|e| e.to_string())?;
+            r.info = dante::read_info(ip, &device, &mut udp);
+            Ok(r)
+        });
+        {
+            let mut st = dante.write().unwrap_or_else(|e| e.into_inner());
+            match fresh {
+                Ok(r) => st.record(&device, Ok(r), Instant::now(), now()),
+                Err(e) => {
+                    warn!(device = %device.name, error = %e, "setting: fresh read failed, read again soon");
+                    st.mark_due(&device);
+                }
+            }
+        }
+        info!(%user, device = %entry.rx_device, what = %entry.what,
+            before = ?entry.name_before, asked = ?entry.name_asked, after = ?entry.name_after,
+            ok = entry.ok, message = %entry.message, "setting: done");
+        if let Err(e) = self.append(&entry) {
+            warn!(error = %e, "changes log: entry not written (it is in the journal above)");
+        }
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_are_checked_against_what_the_device_reports() {
+        let set = api::Settings {
+            latency_min_us: Some(150),
+            latency_max_us: Some(5000),
+            ..api::Settings::default()
+        };
+        let info = api::Info {
+            sample_rates: vec![44100, 48000, 96000],
+            ..api::Info::default()
+        };
+        let v = |s| validate_setting(s, Some(&set), Some(&info));
+        assert!(v(api::Setting::LatencyUs(150)).is_ok());
+        assert!(v(api::Setting::LatencyUs(5000)).is_ok());
+        assert!(
+            v(api::Setting::LatencyUs(100))
+                .unwrap_err()
+                .contains("outside the device's latency range 0.15 ms to 5.00 ms")
+        );
+        assert!(v(api::Setting::LatencyUs(6000)).is_err());
+        assert!(
+            validate_setting(api::Setting::LatencyUs(1000), None, None)
+                .unwrap_err()
+                .contains("no latency range")
+        );
+        assert!(v(api::Setting::SampleRateHz(48000)).is_ok());
+        assert!(
+            v(api::Setting::SampleRateHz(88200))
+                .unwrap_err()
+                .contains("not one of")
+        );
+        assert!(
+            validate_setting(api::Setting::SampleRateHz(48000), None, None)
+                .unwrap_err()
+                .contains("no sample rates")
+        );
+        assert!(v(api::Setting::EncodingBits(24)).is_ok());
+        assert!(
+            v(api::Setting::EncodingBits(20))
+                .unwrap_err()
+                .contains("not a Dante encoding")
+        );
+        assert_eq!(setting_text(api::Setting::LatencyUs(250)), "0.25 ms");
+        assert_eq!(setting_text(api::Setting::SampleRateHz(96000)), "96000 Hz");
+        assert_eq!(setting_text(api::Setting::EncodingBits(32)), "32 bit");
+    }
+
+    #[test]
+    fn write_outcomes_read_plainly_and_others_changed_warns() {
+        let after = control::Settings {
+            latency_configured_ns: Some(500_000),
+            ..control::Settings::default()
+        };
+        assert_eq!(
+            latency_outcome(500, &Ok(after)),
+            (
+                true,
+                "done, read back from the device: latency 0.50 ms".to_owned()
+            )
+        );
+        let (ok, m) = latency_outcome(
+            500,
+            &Err(WriteError::OthersChanged(vec![(0x2808, Some(0), Some(1))])),
+        );
+        assert!(!ok);
+        assert!(m.starts_with("WARNING: other settings changed"));
+        assert!(m.contains("key 0x2808 Some(0) -> Some(1)"));
+        assert_eq!(
+            latency_outcome(
+                500,
+                &Err(WriteError::NotConfirmed {
+                    asked: 500_000,
+                    read: Some(1_000_000)
+                })
+            ),
+            (
+                false,
+                "the device answered but reports latency 1.00 ms (asked 0.50 ms)".to_owned()
+            )
+        );
+        let rate = |current, pending| info_client::SampleRate {
+            current,
+            pending,
+            supported: vec![48000, 96000],
+        };
+        assert_eq!(
+            rate_outcome(96000, &Ok(rate(96000, None))),
+            (true, "done, the device runs at 96000 Hz".to_owned())
+        );
+        assert_eq!(
+            rate_outcome(96000, &Ok(rate(48000, Some(96000)))),
+            (
+                true,
+                "set to 96000 Hz, applies at the device's next start (runs at 48000 Hz now)"
+                    .to_owned()
+            )
+        );
+        assert!(!rate_outcome(96000, &Ok(rate(48000, None))).0);
+        let (ok, m) = rate_outcome(
+            96000,
+            &Err(info_client::InfoError::NotConfirmed {
+                ask: info_client::Ask::SetSampleRate(96000),
+            }),
+        );
+        assert!(!ok);
+        assert!(m.starts_with("not confirmed"));
+    }
 
     fn req(ch: u16, src: Option<(&str, &str)>) -> api::SubscriptionChange {
         api::SubscriptionChange {

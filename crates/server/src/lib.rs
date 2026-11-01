@@ -165,6 +165,21 @@ async fn rename(
         })
 }
 
+async fn setting(
+    State(s): State<Shared>,
+    headers: axum::http::HeaderMap,
+    axum::Json(req): axum::Json<dcontroller_api::SettingChange>,
+) -> Result<axum::Json<dcontroller_api::ChangeResult>, StatusCode> {
+    let who = user(&headers);
+    tokio::task::spawn_blocking(move || s.changes.setting(&s.dante, &who, &req))
+        .await
+        .map(axum::Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "setting: task failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
 async fn changes(
     State(s): State<Shared>,
 ) -> Result<axum::Json<Vec<dcontroller_api::ChangeEntry>>, StatusCode> {
@@ -193,6 +208,7 @@ pub fn app(web_dir: &Path, shared: Shared) -> Router {
         .route("/api/devices", get(devices))
         .route("/api/subscription", axum::routing::post(subscription))
         .route("/api/rename", axum::routing::post(rename))
+        .route("/api/setting", axum::routing::post(setting))
         .route("/api/changes", get(changes))
         .route("/api/latency/{device}", get(latency_report))
         .route("/api", any(api_not_found))
