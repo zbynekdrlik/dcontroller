@@ -46,7 +46,12 @@ async fn serve(path: PathBuf) -> anyhow::Result<()> {
     info!(addr = %listener.local_addr()?, "listening");
     let stop = Arc::new(AtomicBool::new(false));
     let dante = dcontroller::dante::start(cfg.dante_interface.clone(), Arc::clone(&stop));
-    axum::serve(listener, app(&cfg.web_dir, dante))
+    info!(changes_log = %cfg.changes_log.display(), "changes log");
+    let shared = dcontroller::Shared {
+        dante,
+        changes: Arc::new(dcontroller::change::Changes::new(cfg.changes_log.clone())),
+    };
+    axum::serve(listener, app(&cfg.web_dir, shared))
         .with_graceful_shutdown(async {
             shutdown_signal().await;
             info!("shutdown");

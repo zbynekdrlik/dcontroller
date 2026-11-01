@@ -1,11 +1,15 @@
 //! dcontroller dashboard: the Dante devices the server discovers, with
-//! their channels and subscriptions, and the routing matrix. Read-only. The version label is
+//! their channels and subscriptions, and the routing matrix. A click on a
+//! cross-point asks for a subscription change; nothing is sent before the
+//! user confirms it, and the server reads it back and logs it. The version label is
 //! build-injected from the same `buildver` as the server's `/api/version`.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use dcontroller_api::{Device, Devices, RxChannel};
+use dcontroller_api::{
+    ChangeEntry, ChangeResult, Device, Devices, RxChannel, Source, SubscriptionChange,
+};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
@@ -37,6 +41,13 @@ fn App() -> impl IntoView {
         rx: RwSignal::new(BTreeSet::new()),
     });
     let view_now = RwSignal::new(View::from_hash());
+    let ctl = Ctl {
+        devices,
+        pending: RwSignal::new(None),
+        busy: RwSignal::new(false),
+        result: RwSignal::new(None),
+    };
+    provide_context(ctl);
     let load = move || spawn_local(async move { devices.set(Some(fetch_devices().await)) });
     load();
     // The interval lives as long as the page.
@@ -51,6 +62,9 @@ fn App() -> impl IntoView {
                 <a href="#devices" data-testid="tab-devices"
                     class=move || if view_now.get() == View::Devices { "tab on" } else { "tab" }
                     on:click=move |_| view_now.set(View::Devices)>"Devices"</a>
+                <a href="#changes" data-testid="tab-changes"
+                    class=move || if view_now.get() == View::Changes { "tab on" } else { "tab" }
+                    on:click=move |_| view_now.set(View::Changes)>"Changes"</a>
             </nav>
             <span class="version" data-testid="version">{VERSION}</span>
         </header>
@@ -63,9 +77,12 @@ fn App() -> impl IntoView {
                 Some(Ok(d)) => match view_now.get() {
                     View::Devices => view! { <DeviceList d=d/> }.into_any(),
                     View::Routing => view! { <Routing d=d/> }.into_any(),
+                    View::Changes => view! { <ChangeLog/> }.into_any(),
                 },
             }}
         </main>
+        <ConfirmDialog/>
+        <ResultLine/>
     }
 }
 
@@ -74,16 +91,203 @@ fn App() -> impl IntoView {
 enum View {
     Routing,
     Devices,
+    Changes,
 }
 
 impl View {
     fn from_hash() -> View {
         let hash = window().location().hash().unwrap_or_default();
-        if hash == "#devices" {
-            View::Devices
-        } else {
-            View::Routing
+        match hash.as_str() {
+            "#devices" => View::Devices,
+            "#changes" => View::Changes,
+            _ => View::Routing,
         }
+    }
+}
+
+/// A subscription change the user clicked, waiting for the confirmation.
+#[derive(Clone, Debug, PartialEq)]
+struct Pending {
+    rx_device: String,
+    rx_channel: u16,
+    rx_label: String,
+    current: Option<Source>,
+    /// `None` = remove the subscription.
+    target: Option<Source>,
+}
+
+/// What a click on the cross-point of `rc` and TX channel `tx_channel` of
+/// `tx_device` asks for: the subscription to it, or its removal when the
+/// channel already takes exactly it.
+fn pending_for(rx_device: &str, rc: &RxChannel, tx_device: &str, tx_channel: &str) -> Pending {
+    let hit = rc.source.as_ref().is_some_and(|s| {
+        s.device.eq_ignore_ascii_case(tx_device) && s.channel.eq_ignore_ascii_case(tx_channel)
+    });
+    Pending {
+        rx_device: rx_device.to_owned(),
+        rx_channel: rc.channel,
+        rx_label: rc.label.clone(),
+        current: rc.source.clone(),
+        target: (!hit).then(|| Source {
+            channel: tx_channel.to_owned(),
+            device: tx_device.to_owned(),
+        }),
+    }
+}
+
+fn source_text(s: &Option<Source>) -> String {
+    s.as_ref().map_or_else(
+        || "nothing".to_owned(),
+        |s| format!("{} @ {}", s.channel, s.device),
+    )
+}
+
+/// The confirmation question for `p`.
+fn question(p: &Pending) -> String {
+    let rx = format!("{} @ {}", p.rx_label, p.rx_device);
+    match (&p.current, &p.target) {
+        (_, None) => format!(
+            "Remove the subscription of {rx} (now {})?",
+            source_text(&p.current)
+        ),
+        (None, Some(_)) => format!("Subscribe {rx} to {}?", source_text(&p.target)),
+        (Some(_), Some(_)) => format!(
+            "Change {rx} from {} to {}?",
+            source_text(&p.current),
+            source_text(&p.target)
+        ),
+    }
+}
+
+/// The page's change state: the device list, the change waiting for its
+/// confirmation, one change in flight, and the last result.
+#[derive(Clone, Copy)]
+struct Ctl {
+    devices: RwSignal<Option<Result<Devices, String>>>,
+    pending: RwSignal<Option<Pending>>,
+    busy: RwSignal<bool>,
+    result: RwSignal<Option<ChangeResult>>,
+}
+
+async fn send_change(req: &SubscriptionChange) -> Result<ChangeResult, String> {
+    let res = gloo_net::http::Request::post("/api/subscription")
+        .json(req)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.ok() {
+        return Err(format!("server answered {}", res.status()));
+    }
+    res.json::<ChangeResult>().await.map_err(|e| e.to_string())
+}
+
+#[component]
+fn ConfirmDialog() -> impl IntoView {
+    let ctl = expect_context::<Ctl>();
+    let confirm = move |_| {
+        let Some(p) = ctl.pending.get_untracked() else {
+            return;
+        };
+        ctl.busy.set(true);
+        spawn_local(async move {
+            let req = SubscriptionChange {
+                rx_device: p.rx_device.clone(),
+                rx_channel: p.rx_channel,
+                source: p.target.clone(),
+            };
+            let r = send_change(&req).await.unwrap_or_else(|e| ChangeResult {
+                ok: false,
+                message: e,
+                channel: None,
+            });
+            ctl.result.set(Some(r));
+            ctl.devices.set(Some(fetch_devices().await));
+            ctl.busy.set(false);
+            ctl.pending.set(None);
+        });
+    };
+    move || {
+        ctl.pending.get().map(|p| {
+            let busy = ctl.busy.get();
+            view! {
+                <div class="modal-back">
+                    <div class="modal" role="dialog" data-testid="confirm-dialog">
+                        <p data-testid="confirm-text">{question(&p)}</p>
+                        <div class="buttons">
+                            <button data-testid="cancel-change" disabled=busy
+                                on:click=move |_| ctl.pending.set(None)>"Cancel"</button>
+                            <button class="primary" data-testid="confirm-change" disabled=busy
+                                on:click=confirm>{if busy { "Sending…" } else { "Confirm" }}</button>
+                        </div>
+                    </div>
+                </div>
+            }
+        })
+    }
+}
+
+#[component]
+fn ResultLine() -> impl IntoView {
+    let ctl = expect_context::<Ctl>();
+    move || {
+        ctl.result.get().map(|r| {
+            let class = if r.ok { "result ok" } else { "result err" };
+            view! {
+                <div class=class data-testid="change-result" on:click=move |_| ctl.result.set(None)>
+                    {if r.ok { format!("Done: {}", r.message) } else { format!("Not changed: {}", r.message) }}
+                </div>
+            }
+        })
+    }
+}
+
+async fn fetch_changes() -> Result<Vec<ChangeEntry>, String> {
+    let res = gloo_net::http::Request::get("/api/changes")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.ok() {
+        return Err(format!("server answered {}", res.status()));
+    }
+    res.json::<Vec<ChangeEntry>>()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// The changes log, newest first.
+#[component]
+fn ChangeLog() -> impl IntoView {
+    let list = RwSignal::new(None::<Result<Vec<ChangeEntry>, String>>);
+    spawn_local(async move { list.set(Some(fetch_changes().await)) });
+    move || {
+        match list.get() {
+        None => view! { <p class="status">"Loading…"</p> }.into_any(),
+        Some(Err(e)) => view! { <p class="status error">{format!("Changes not readable: {e}")}</p> }.into_any(),
+        Some(Ok(v)) if v.is_empty() => view! { <p class="status" data-testid="changes-empty">"No changes yet."</p> }.into_any(),
+        Some(Ok(v)) => view! {
+            <table class="changes">
+                <thead><tr><th>"When"</th><th>"Who"</th><th>"Channel"</th><th>"Before"</th><th>"Asked"</th><th>"After"</th><th>"Result"</th></tr></thead>
+                <tbody>
+                    {v.into_iter().map(|e| {
+                        let when = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(e.at as f64 * 1000.0))
+                            .to_locale_string("sk-SK", &wasm_bindgen::JsValue::UNDEFINED);
+                        view! {
+                            <tr data-testid="change-row" class=if e.ok { "" } else { "err" }>
+                                <td>{String::from(when)}</td>
+                                <td>{e.user}</td>
+                                <td>{format!("{} @ {}", e.rx_label, e.rx_device)}</td>
+                                <td>{source_text(&e.before)}</td>
+                                <td>{source_text(&e.requested)}</td>
+                                <td>{source_text(&e.after)}</td>
+                                <td>{e.message}</td>
+                            </tr>
+                        }
+                    }).collect_view()}
+                </tbody>
+            </table>
+        }.into_any(),
+    }
     }
 }
 
@@ -118,6 +322,7 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
         tx: tx_open,
         rx: rx_open,
     } = ex;
+    let ctl = expect_context::<Ctl>();
     let txo = tx_open.get();
     let rxo = rx_open.get();
     // Column plan: (device index, None) for a collapsed device, (device, Some(channel)) per open channel.
@@ -212,10 +417,14 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
                             (Some(_), _) if x.count() > 0 => "●".into(),
                             _ => String::new(),
                         };
+                        // Channel by channel, a click asks for a change.
+                        let ask = ch.map(|ch| pending_for(&r.device, rc, &t.device, ch));
+                        let class = if ask.is_some() { format!("{} pick", x.class()) } else { x.class().to_owned() };
                         view! {
-                            <td class=x.class() data-testid="cell"
+                            <td class=class data-testid="cell"
                                 data-rx=format!("{}/{}", r.device, rc.label) data-tx=tx_attr
-                                title=rc.status.clone().unwrap_or_default()>{text}</td>
+                                title=rc.status.clone().unwrap_or_default()
+                                on:click=move |_| if let Some(p) = ask.clone() { ctl.pending.set(Some(p)) }>{text}</td>
                         }
                     })
                     .collect_view();
@@ -418,6 +627,52 @@ mod tests {
         assert_eq!(
             status_line(&devices(true, None, 3)),
             "3 Dante devices on eth1"
+        );
+    }
+
+    fn rc(src: Option<(&str, &str)>) -> RxChannel {
+        RxChannel {
+            channel: 3,
+            label: "In 3".into(),
+            source: src.map(|(c, d)| Source {
+                channel: c.into(),
+                device: d.into(),
+            }),
+            status: None,
+            state: None,
+        }
+    }
+
+    #[test]
+    fn a_click_on_an_empty_channel_asks_to_subscribe() {
+        let p = pending_for("stage", &rc(None), "desk", "Mix L");
+        assert_eq!(p.rx_channel, 3);
+        assert_eq!(
+            p.target,
+            Some(Source {
+                channel: "Mix L".into(),
+                device: "desk".into()
+            })
+        );
+        assert_eq!(question(&p), "Subscribe In 3 @ stage to Mix L @ desk?");
+    }
+
+    #[test]
+    fn a_click_on_the_current_source_asks_to_remove_it_case_aside() {
+        let p = pending_for("stage", &rc(Some(("mix l", "DESK"))), "desk", "Mix L");
+        assert_eq!(p.target, None);
+        assert_eq!(
+            question(&p),
+            "Remove the subscription of In 3 @ stage (now mix l @ DESK)?"
+        );
+    }
+
+    #[test]
+    fn a_click_on_another_source_asks_to_change_it() {
+        let p = pending_for("stage", &rc(Some(("Vox", "desk"))), "desk", "Mix L");
+        assert_eq!(
+            question(&p),
+            "Change In 3 @ stage from Vox @ desk to Mix L @ desk?"
         );
     }
 }

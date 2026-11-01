@@ -28,6 +28,8 @@ const TICK: Duration = Duration::from_millis(500);
 #[derive(Debug, Default)]
 pub struct State {
     enabled: bool,
+    /// Our address on the Dante interface while discovery runs.
+    ip: Option<Ipv4Addr>,
     interface: Option<String>,
     error: Option<String>,
     devices: BTreeMap<String, Entry>,
@@ -51,16 +53,18 @@ impl State {
     pub fn off(interface: Option<String>, error: Option<String>) -> Self {
         State {
             enabled: false,
+            ip: None,
             interface,
             error,
             devices: BTreeMap::new(),
         }
     }
 
-    /// Discovery runs on `interface`.
-    pub fn on(interface: String) -> Self {
+    /// Discovery runs on `interface`, from our address `ip`.
+    pub fn on(interface: String, ip: Ipv4Addr) -> Self {
         State {
             enabled: true,
+            ip: Some(ip),
             interface: Some(interface),
             error: None,
             devices: BTreeMap::new(),
@@ -134,6 +138,28 @@ impl State {
         }
     }
 
+    /// Our address and the ARC of the listed device `name` (case aside),
+    /// with its listed name: where a change goes.
+    pub fn target(&self, name: &str) -> Option<(Ipv4Addr, Device)> {
+        let ip = self.ip?;
+        let e = self.devices.get(&name.to_ascii_lowercase())?;
+        Some((ip, e.device.clone()))
+    }
+
+    /// Replaces the RX channels of `device` (still listed with the same
+    /// records) with a fresh read, as after a change.
+    pub fn set_rx(&mut self, device: &Device, rx: Vec<api::RxChannel>) {
+        let Some(e) = self.devices.get_mut(&device.name.to_ascii_lowercase()) else {
+            return;
+        };
+        if e.device != *device {
+            return;
+        }
+        if let Some(c) = e.channels.as_mut() {
+            c.rx = rx;
+        }
+    }
+
     /// The JSON view.
     pub fn view(&self) -> api::Devices {
         api::Devices {
@@ -198,23 +224,27 @@ pub fn read_channels(c: &mut impl Call) -> Result<api::Channels, ReadError> {
             .into_iter()
             .map(|(channel, label)| api::TxChannel { channel, label })
             .collect(),
-        rx: rx
-            .iter()
-            .map(|r| api::RxChannel {
-                channel: r.channel,
-                label: r.label.clone(),
-                source: match (&r.tx_channel, &r.tx_device) {
-                    (Some(c), Some(d)) => Some(api::Source {
-                        channel: c.clone(),
-                        device: d.clone(),
-                    }),
-                    _ => None,
-                },
-                status: status_text(r).map(|(t, _)| t),
-                state: status_text(r).and_then(|(_, s)| s),
-            })
-            .collect(),
+        rx: rx_view(&rx),
     })
+}
+
+/// The RX channels as the API shows them.
+pub fn rx_view(rx: &[control::RxChannel]) -> Vec<api::RxChannel> {
+    rx.iter()
+        .map(|r| api::RxChannel {
+            channel: r.channel,
+            label: r.label.clone(),
+            source: match (&r.tx_channel, &r.tx_device) {
+                (Some(c), Some(d)) => Some(api::Source {
+                    channel: c.clone(),
+                    device: d.clone(),
+                }),
+                _ => None,
+            },
+            status: status_text(r).map(|(t, _)| t),
+            state: status_text(r).and_then(|(_, s)| s),
+        })
+        .collect()
 }
 
 /// The IPv4 address of `iface`.
@@ -283,7 +313,7 @@ fn supervise(iface: &str, state: &Shared, stop: &Arc<AtomicBool>) {
             }
         };
         info!(interface = %iface, %ip, "dante: discovery started");
-        *write(state) = State::on(iface.to_owned());
+        *write(state) = State::on(iface.to_owned(), ip);
         let ended = run(iface, ip, discovery, changes, state, stop);
         if let Some(why) = ended {
             off(why);
@@ -418,7 +448,7 @@ mod tests {
 
     #[test]
     fn added_device_is_listed_and_due_at_once() {
-        let mut s = State::on("eth1".into());
+        let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
         s.apply(Change::Added(dev("Desk", 1)));
         let now = Instant::now();
         assert_eq!(s.due(now), vec![dev("Desk", 1)]);
@@ -439,7 +469,7 @@ mod tests {
 
     #[test]
     fn a_read_is_stored_and_the_next_is_due_after_refresh() {
-        let mut s = State::on("eth1".into());
+        let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
         s.apply(Change::Added(dev("Desk", 1)));
         let now = Instant::now();
         s.record(&dev("Desk", 1), Ok(channels("Vox")), now, 42);
@@ -453,7 +483,7 @@ mod tests {
 
     #[test]
     fn a_failed_read_keeps_the_previous_channels_and_shows_the_error() {
-        let mut s = State::on("eth1".into());
+        let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
         s.apply(Change::Added(dev("Desk", 1)));
         let now = Instant::now();
         s.record(&dev("Desk", 1), Ok(channels("Vox")), now, 42);
@@ -473,7 +503,7 @@ mod tests {
 
     #[test]
     fn changed_records_make_it_due_and_drop_a_read_of_the_old_records() {
-        let mut s = State::on("eth1".into());
+        let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
         s.apply(Change::Added(dev("Desk", 1)));
         let now = Instant::now();
         s.record(&dev("Desk", 1), Ok(channels("Vox")), now, 42);
@@ -487,7 +517,7 @@ mod tests {
 
     #[test]
     fn removed_device_leaves_the_list_case_aside() {
-        let mut s = State::on("eth1".into());
+        let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
         s.apply(Change::Added(dev("Desk", 1)));
         s.apply(Change::Added(dev("amp", 3)));
         s.apply(Change::Removed("DESK".into()));
@@ -501,7 +531,7 @@ mod tests {
 
     #[test]
     fn list_is_sorted_by_name_case_aside() {
-        let mut s = State::on("eth1".into());
+        let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
         s.apply(Change::Added(dev("zeta", 1)));
         s.apply(Change::Added(dev("Alpha", 2)));
         s.apply(Change::Added(dev("beta", 3)));

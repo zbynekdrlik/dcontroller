@@ -16,6 +16,9 @@ ExecStart=/opt/dcontroller/dcontroller /etc/dcontroller/config.toml
 Restart=on-failure
 RestartSec=2
 Environment=RUST_LOG=info,tower_http=info
+# The changes log (every subscription change): /var/lib/dcontroller/changes.jsonl.
+StateDirectory=dcontroller
+StateDirectoryMode=0750
 # Control traffic only (mDNS, ARC); no audio, no realtime priority.
 Nice=5
 NoNewPrivileges=yes

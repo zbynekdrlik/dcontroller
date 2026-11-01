@@ -70,6 +70,48 @@ pub struct Source {
     pub device: String,
 }
 
+/// `POST /api/subscription`: set (`source` given) or remove (`None`) the
+/// subscription of one RX channel. The page sends it only after the user
+/// confirmed the change.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscriptionChange {
+    pub rx_device: String,
+    /// From 1.
+    pub rx_channel: u16,
+    pub source: Option<Source>,
+}
+
+/// The answer to a [`SubscriptionChange`]: the channel as the device
+/// reports it after the change (read back), or why it failed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangeResult {
+    /// The device reports the requested subscription now.
+    pub ok: bool,
+    pub message: String,
+    /// The channel read back from the device, when the read worked.
+    pub channel: Option<RxChannel>,
+}
+
+/// One logged change (`GET /api/changes`, newest first).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangeEntry {
+    /// Unix seconds.
+    pub at: u64,
+    /// The Cloudflare Access e-mail, or `local` without Access.
+    pub user: String,
+    pub rx_device: String,
+    pub rx_channel: u16,
+    pub rx_label: String,
+    /// The subscription before, as read before the change.
+    pub before: Option<Source>,
+    /// The subscription asked for (`None` = remove).
+    pub requested: Option<Source>,
+    /// The subscription read back after the change.
+    pub after: Option<Source>,
+    pub ok: bool,
+    pub message: String,
+}
+
 impl RxChannel {
     /// `true` when the subscription receives audio.
     pub fn receiving(&self) -> bool {

@@ -1,5 +1,6 @@
 //! dcontroller server: serves the built PWA and a small JSON API.
 
+pub mod change;
 pub mod dante;
 
 use std::net::SocketAddr;
@@ -36,6 +37,13 @@ pub struct Config {
     /// it on loopback), so a public bind is refused unless set explicitly.
     #[serde(default)]
     pub allow_remote: bool,
+    /// The changes log: every subscription change, one JSON line each.
+    #[serde(default = "default_changes_log")]
+    pub changes_log: PathBuf,
+}
+
+fn default_changes_log() -> PathBuf {
+    PathBuf::from("/var/lib/dcontroller/changes.jsonl")
 }
 
 fn default_bind() -> SocketAddr {
@@ -90,8 +98,50 @@ async fn api_not_found() -> StatusCode {
     StatusCode::NOT_FOUND
 }
 
-async fn devices(State(dante): State<dante::Shared>) -> axum::Json<dcontroller_api::Devices> {
-    axum::Json(dante::snapshot(&dante))
+/// What the API handlers share.
+#[derive(Clone)]
+pub struct Shared {
+    pub dante: dante::Shared,
+    pub changes: std::sync::Arc<change::Changes>,
+}
+
+async fn devices(State(s): State<Shared>) -> axum::Json<dcontroller_api::Devices> {
+    axum::Json(dante::snapshot(&s.dante))
+}
+
+/// The user Cloudflare Access let in (its header); `local` without Access.
+/// The server binds loopback only, so only the tunnel sets this header.
+fn user(headers: &axum::http::HeaderMap) -> String {
+    headers
+        .get("cf-access-authenticated-user-email")
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty())
+        .unwrap_or("local")
+        .to_owned()
+}
+
+async fn subscription(
+    State(s): State<Shared>,
+    headers: axum::http::HeaderMap,
+    axum::Json(req): axum::Json<dcontroller_api::SubscriptionChange>,
+) -> Result<axum::Json<dcontroller_api::ChangeResult>, StatusCode> {
+    let who = user(&headers);
+    tokio::task::spawn_blocking(move || s.changes.apply(&s.dante, &who, &req))
+        .await
+        .map(axum::Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "change: task failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+async fn changes(
+    State(s): State<Shared>,
+) -> Result<axum::Json<Vec<dcontroller_api::ChangeEntry>>, StatusCode> {
+    s.changes.list().map(axum::Json).map_err(|e| {
+        tracing::error!(error = %e, "changes log: read failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })
 }
 
 async fn healthz() -> axum::Json<Health> {
@@ -103,19 +153,21 @@ async fn healthz() -> axum::Json<Health> {
 
 /// The whole HTTP app: API routes (unknown `/api/*` is 404), then the PWA
 /// from `web_dir` with `index.html` as the fallback for client-side routes.
-/// Nothing is cached by the browser, so a deploy shows at once. `dante` is
-/// the Dante state `/api/devices` shows ([`dante::start`]).
-pub fn app(web_dir: &Path, dante: dante::Shared) -> Router {
+/// Nothing is cached by the browser, so a deploy shows at once. `shared`
+/// holds the Dante state ([`dante::start`]) and the changes log.
+pub fn app(web_dir: &Path, shared: Shared) -> Router {
     let index = web_dir.join("index.html");
     let spa = ServeDir::new(web_dir).fallback(ServeFile::new(index));
     Router::new()
         .route("/api/version", get(version))
         .route("/api/devices", get(devices))
+        .route("/api/subscription", axum::routing::post(subscription))
+        .route("/api/changes", get(changes))
         .route("/api", any(api_not_found))
         .route("/api/", any(api_not_found))
         .route("/api/{*rest}", any(api_not_found))
         .route("/healthz", get(healthz))
-        .with_state(dante)
+        .with_state(shared)
         .fallback_service(spa)
         .layer(SetResponseHeaderLayer::overriding(
             header::CACHE_CONTROL,
