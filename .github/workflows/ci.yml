@@ -119,6 +119,7 @@ jobs:
           sudo DC_BIND=127.0.0.1:8790 DC_IFACE=lo "$rel/install.sh"
           ver=$(curl -fsS "$url/api/version")
           echo "served: $ver"
+          test "$(sudo stat -c %U:%a /var/lib/dcontroller)" = dcontroller:750   # changes log dir
           [[ "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-dev\.[0-9]+)?\ \([0-9a-f]{7}\)$ ]]
           curl -fsS -o "$dir/index.html" "$url/"
           grep -q 'manifest.webmanifest' "$dir/index.html"

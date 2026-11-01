@@ -1,5 +1,5 @@
 import { defineConfig } from "@playwright/test";
-import { writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { root, routed, run } from "./env";
 
@@ -7,9 +7,11 @@ import { root, routed, run } from "./env";
 // Dante device (global-setup.ts); nothing is mocked.
 const port = 18080;
 const config = resolve(run, "config.toml");
+const changes = resolve(run, "changes.jsonl");
+rmSync(changes, { force: true });
 writeFileSync(
   config,
-  `bind = "127.0.0.1:${port}"\nweb_dir = "${resolve(root, "crates/web/dist")}"\ndante_interface = "${routed.iface}"\n`,
+  `bind = "127.0.0.1:${port}"\nweb_dir = "${resolve(root, "crates/web/dist")}"\ndante_interface = "${routed.iface}"\nchanges_log = "${changes}"\n`,
 );
 
 export default defineConfig({

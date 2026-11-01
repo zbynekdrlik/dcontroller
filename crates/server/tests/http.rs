@@ -4,10 +4,17 @@ use dcontroller::{Config, Health, VERSION, app};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-fn off() -> dcontroller::dante::Shared {
-    std::sync::Arc::new(std::sync::RwLock::new(dcontroller::dante::State::off(
-        None, None,
-    )))
+fn off() -> dcontroller::Shared {
+    let log = tempfile::NamedTempFile::new()
+        .unwrap()
+        .into_temp_path()
+        .to_path_buf();
+    dcontroller::Shared {
+        dante: std::sync::Arc::new(std::sync::RwLock::new(dcontroller::dante::State::off(
+            None, None,
+        ))),
+        changes: std::sync::Arc::new(dcontroller::change::Changes::new(log)),
+    }
 }
 
 fn web() -> tempfile::TempDir {
@@ -134,4 +141,45 @@ async fn api_devices_without_a_dante_interface_is_an_empty_off_list() {
     assert!(!d.enabled);
     assert!(d.devices.is_empty());
     assert_eq!(d.interface, None);
+}
+
+async fn post(dir: &std::path::Path, uri: &str, ctype: &str, body: &str) -> (StatusCode, String) {
+    let res = app(dir, off())
+        .oneshot(
+            Request::post(uri)
+                .header("content-type", ctype)
+                .header("cf-access-authenticated-user-email", "op@example.com")
+                .body(Body::from(body.to_owned()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = res.status();
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8(body.to_vec()).unwrap())
+}
+
+#[tokio::test]
+async fn a_subscription_change_needs_json_and_a_listed_device() {
+    let dir = web();
+    let body =
+        r#"{"rx_device":"stage","rx_channel":1,"source":{"channel":"Mix L","device":"desk"}}"#;
+    // A form post (what a foreign page could send without CORS) is refused.
+    let (status, _) = post(dir.path(), "/api/subscription", "text/plain", body).await;
+    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    let (status, text) = post(dir.path(), "/api/subscription", "application/json", body).await;
+    assert_eq!(status, StatusCode::OK);
+    let r: dcontroller_api::ChangeResult = serde_json::from_str(&text).unwrap();
+    assert!(!r.ok);
+    assert!(r.message.contains("not listed"), "{}", r.message);
+}
+
+#[tokio::test]
+async fn api_changes_is_a_json_list() {
+    let dir = web();
+    let (status, body, cache) = get(dir.path(), "/api/changes").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cache.as_deref(), Some("no-store"));
+    let list: Vec<dcontroller_api::ChangeEntry> = serde_json::from_str(&body).unwrap();
+    assert!(list.is_empty());
 }
