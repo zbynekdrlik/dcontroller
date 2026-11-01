@@ -11,7 +11,8 @@ pub struct Row {
     pub primary: Option<NetPort>,
     pub secondary: Option<NetPort>,
     pub error: Option<String>,
-    /// The primary link is down or below 1 Gbit/s.
+    /// The primary link is down, or below 1 Gbit/s on a platform that does
+    /// a gigabit (Ultimo is a 100 Mbit platform).
     pub warn: bool,
 }
 
@@ -20,6 +21,7 @@ pub fn link(mbit: u16) -> String {
     match mbit {
         0 => "no link".to_owned(),
         m if m % 1000 == 0 => format!("{} Gbit/s", m / 1000),
+        m if m > 1000 => format!("{} Gbit/s", f64::from(m) / 1000.0),
         m => format!("{m} Mbit/s"),
     }
 }
@@ -31,9 +33,17 @@ pub fn rows(d: &Devices) -> Vec<Row> {
         .map(|dev| {
             let ports = dev.network.clone().unwrap_or_default();
             let primary = ports.first().cloned();
+            let fast_ethernet = dev
+                .info
+                .as_ref()
+                .and_then(|i| i.platform.as_deref())
+                .is_some_and(|p| p.to_ascii_lowercase().contains("ultimo"));
+            let floor = if fast_ethernet { 100 } else { 1000 };
             Row {
                 device: dev.name.clone(),
-                warn: primary.as_ref().is_some_and(|p| p.link_mbit < 1000),
+                warn: primary
+                    .as_ref()
+                    .is_some_and(|p| p.link_mbit == 0 || p.link_mbit < floor),
                 primary,
                 secondary: ports.get(1).cloned(),
                 error: dev.network_error.clone(),
@@ -118,8 +128,37 @@ mod tests {
         assert_eq!(link(100), "100 Mbit/s");
         assert_eq!(link(1000), "1 Gbit/s");
         assert_eq!(link(10000), "10 Gbit/s");
+        // dasio's 2.5 Gbit NIC, seen live as "2500 Mbit/s".
+        assert_eq!(link(2500), "2.5 Gbit/s");
         assert_eq!(port_text(&port(1000, "10.0.0.2")), "1 Gbit/s · 10.0.0.2");
         assert_eq!(port_text(&port(0, "0.0.0.0")), "no link");
+    }
+
+    #[test]
+    fn an_ultimo_device_at_100_mbit_is_no_warning_a_brooklyn_one_is() {
+        // UltimoX2 is a 100 Mbit platform: seen live, two Ultimo devices
+        // at 100 Mbit/s were flagged as slow.
+        let on = |platform: &str, mbit: u16| Device {
+            name: platform.into(),
+            network: Some(vec![port(mbit, "10.0.0.9")]),
+            info: Some(dcontroller_api::Info {
+                platform: Some(platform.into()),
+                ..dcontroller_api::Info::default()
+            }),
+            ..Device::default()
+        };
+        let d = Devices {
+            devices: vec![
+                on("UltimoX2", 100),
+                on("Brooklyn II", 100),
+                on("UltimoX2", 0),
+            ],
+            ..Devices::default()
+        };
+        let r = rows(&d);
+        assert!(!r[0].warn);
+        assert!(r[1].warn);
+        assert!(r[2].warn);
     }
 
     #[test]

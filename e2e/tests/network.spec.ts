@@ -4,7 +4,7 @@ import { test, expect, type ConsoleMessage } from "@playwright/test";
 // answers the network info with the interface it runs on.
 const DEVICE = "dc-e2e-device";
 
-const link = (m: number) => (m === 0 ? "no link" : m % 1000 === 0 ? `${m / 1000} Gbit/s` : `${m} Mbit/s`);
+const link = (m: number) => (m === 0 ? "no link" : m >= 1000 ? `${m / 1000} Gbit/s` : `${m} Mbit/s`);
 const text = (p: { link_mbit: number; ip: string }) => (p.link_mbit === 0 ? "no link" : `${link(p.link_mbit)} · ${p.ip}`);
 
 test("the network tab lists every device's interfaces as the server read them", async ({ page }) => {
