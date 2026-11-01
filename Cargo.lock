@@ -172,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "buildver"
-version = "0.1.19"
+version = "0.1.20"
 
 [[package]]
 name = "bumpalo"
@@ -319,13 +319,13 @@ dependencies = [
 
 [[package]]
 name = "dante-audio-io"
-version = "0.4.30"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.4.30#45a63c078ea76508511db148bce8a7bd6423de21"
+version = "0.4.31"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.4.31#419dfa34d04eacacb792a3d3d17ec1539917d2cd"
 
 [[package]]
 name = "dante-stack"
-version = "0.4.30"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.4.30#45a63c078ea76508511db148bce8a7bd6423de21"
+version = "0.4.31"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.4.31#419dfa34d04eacacb792a3d3d17ec1539917d2cd"
 dependencies = [
  "dante-audio-io",
  "if-addrs",
@@ -346,7 +346,7 @@ dependencies = [
 
 [[package]]
 name = "dcontroller"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "anyhow",
  "axum",
@@ -368,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "dcontroller-api"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "serde",
  "serde_json",
@@ -376,7 +376,7 @@ dependencies = [
 
 [[package]]
 name = "dcontroller-web"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "buildver",
  "console_error_panic_hook",
