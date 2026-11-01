@@ -162,6 +162,31 @@ mod tests {
     }
 
     #[test]
+    fn summary_claims_no_gigabit_for_an_ultimo_at_100_mbit() {
+        // Seen live on v0.1.17: two Ultimo devices at 100 Mbit/s and a
+        // summary saying "all at 1 Gbit/s or more".
+        let d = Devices {
+            devices: vec![Device {
+                name: "mic".into(),
+                network: Some(vec![port(100, "10.0.0.9")]),
+                info: Some(dcontroller_api::Info {
+                    platform: Some("UltimoX2".into()),
+                    ..dcontroller_api::Info::default()
+                }),
+                ..Device::default()
+            }],
+            ..Devices::default()
+        };
+        assert_eq!(
+            summary(&rows(&d)),
+            (
+                "1 device reports its network · every link at its platform's speed".to_owned(),
+                false
+            )
+        );
+    }
+
+    #[test]
     fn rows_split_primary_and_secondary_and_flag_a_slow_primary() {
         let r = rows(&site());
         assert_eq!(r[0].primary.as_ref().map(|p| p.link_mbit), Some(1000));
