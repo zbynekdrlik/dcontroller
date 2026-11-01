@@ -12,10 +12,11 @@ use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use dante_stack::arc::client::{REPLY_TIMEOUT, ReadError, Udp};
+use dante_stack::arc::client::{Exchange, REPLY_TIMEOUT, ReadError, Udp, read_directory};
 use dante_stack::arc::control::{self, Call};
 use dante_stack::ctl::Requests;
 use dante_stack::discover::{Change, Device, Discovery};
+use dante_stack::info::client::{self as info_client, Board, Product};
 use dcontroller_api as api;
 use tracing::{info, warn};
 
@@ -23,6 +24,8 @@ use tracing::{info, warn};
 pub const REFRESH: Duration = Duration::from_secs(30);
 /// How long the thread waits for a discovery change before it looks for due reads.
 const TICK: Duration = Duration::from_millis(500);
+/// How long a product or board info ask waits for its reply.
+const INFO_WAIT: Duration = Duration::from_secs(1);
 
 /// Discovery's table plus each device's last read.
 #[derive(Debug, Default)]
@@ -40,6 +43,8 @@ struct Entry {
     device: Device,
     channels: Option<api::Channels>,
     settings: Option<api::Settings>,
+    /// Read once per listing (again when its records change).
+    info: Option<api::Info>,
     read_at: Option<u64>,
     error: Option<String>,
     /// When the next read is due; `None` = now.
@@ -80,6 +85,7 @@ impl State {
                 match self.devices.get_mut(&key) {
                     Some(e) => {
                         e.device = device;
+                        e.info = None;
                         e.due = None;
                     }
                     None => {
@@ -89,6 +95,7 @@ impl State {
                                 device,
                                 channels: None,
                                 settings: None,
+                                info: None,
                                 read_at: None,
                                 error: None,
                                 due: None,
@@ -137,6 +144,9 @@ impl State {
                 if r.settings.is_some() {
                     e.settings = r.settings;
                 }
+                if r.info.is_some() {
+                    e.info = r.info;
+                }
                 e.read_at = Some(unix);
                 e.error = None;
             }
@@ -150,6 +160,13 @@ impl State {
         let ip = self.ip?;
         let e = self.devices.get(&name.to_ascii_lowercase())?;
         Some((ip, e.device.clone()))
+    }
+
+    /// Whether `device`'s product info is still to be read.
+    pub fn needs_info(&self, device: &Device) -> bool {
+        self.devices
+            .get(&device.name.to_ascii_lowercase())
+            .is_some_and(|e| e.info.is_none())
     }
 
     /// Makes `device` due for a read now (after a change to it).
@@ -185,10 +202,19 @@ impl State {
                 .map(|e| api::Device {
                     name: e.device.name.clone(),
                     address: e.device.arc.to_string(),
-                    manufacturer: e.device.txt.get("mf").cloned(),
-                    model: model(&e.device),
+                    manufacturer: e
+                        .info
+                        .as_ref()
+                        .and_then(|i| i.manufacturer.clone())
+                        .or_else(|| e.device.txt.get("mf").cloned()),
+                    model: e
+                        .info
+                        .as_ref()
+                        .and_then(|i| i.model.clone())
+                        .or_else(|| model(&e.device)),
                     channels: e.channels.clone(),
                     settings: e.settings.clone(),
+                    info: e.info.clone(),
                     read_at: e.read_at,
                     error: e.error.clone(),
                 })
@@ -232,6 +258,53 @@ pub fn status_text(rx: &control::RxChannel) -> Option<(String, Option<String>)> 
 pub struct Read {
     pub channels: api::Channels,
     pub settings: Option<api::Settings>,
+    /// `None`: not read this time (the last one stays).
+    pub info: Option<api::Info>,
+}
+
+/// What the device says it is, from the replies it gave; `None` when it
+/// gave none.
+pub fn info_view(
+    product: Option<&Product>,
+    board: Option<&Board>,
+    encoding: Option<u32>,
+) -> Option<api::Info> {
+    if product.is_none() && board.is_none() && encoding.is_none() {
+        return None;
+    }
+    let text = |s: &String| (!s.is_empty()).then(|| s.clone());
+    let ver = |v: Option<info_client::Version>| v.map(|v| v.to_string());
+    Some(api::Info {
+        manufacturer: product.and_then(|p| text(&p.manufacturer)),
+        model: product.and_then(|p| text(&p.model)),
+        product_version: product.and_then(|p| ver(p.version)),
+        software_version: product.and_then(|p| ver(p.software)),
+        firmware_version: product.and_then(|p| ver(p.firmware)),
+        platform: board.and_then(|b| text(&b.model).or_else(|| text(&b.board))),
+        platform_software: board.and_then(|b| ver(b.software)),
+        platform_hardware: board.and_then(|b| ver(b.hardware)),
+        encoding_bits: encoding,
+    })
+}
+
+/// Asks `device` for its product and board info from our address `our`
+/// (UDP 8700, read-only) and reads its encoding through `ex`. A part that
+/// does not answer is logged and left out.
+pub fn read_info(our: Ipv4Addr, device: &Device, ex: &mut impl Exchange) -> Option<api::Info> {
+    let ip = *device.arc.ip();
+    let product = info_client::product_info(our, ip, device.device_id, INFO_WAIT)
+        .inspect_err(|e| warn!(device = %device.name, error = %e, "dante: product info not read"))
+        .ok();
+    let board = info_client::board_info(our, ip, device.device_id, INFO_WAIT)
+        .inspect_err(|e| warn!(device = %device.name, error = %e, "dante: board info not read"))
+        .ok();
+    let encoding = read_directory(ex)
+        .inspect_err(|e| warn!(device = %device.name, error = %e, "dante: encoding not read"))
+        .ok()
+        .and_then(|d| d.encoding());
+    let info = info_view(product.as_ref(), board.as_ref(), encoding);
+    info!(device = %device.name, info = ?info, "dante: device info read");
+    info
 }
 
 /// The settings as the API shows them (latencies in µs).
@@ -259,7 +332,11 @@ pub fn read_device(c: &mut impl Call, name: &str) -> Result<Read, ReadError> {
             None
         }
     };
-    Ok(Read { channels, settings })
+    Ok(Read {
+        channels,
+        settings,
+        info: None,
+    })
 }
 
 /// A device's channels: TX labels and RX channels with their subscriptions.
@@ -434,9 +511,16 @@ fn run(
                 break;
             }
             let started = Instant::now();
+            let want_info = read(state).needs_info(&device);
             let result = Udp::open(ip, device.arc, &seq, REPLY_TIMEOUT, &requests, stop)
                 .map_err(|e| format!("socket: {e}"))
-                .and_then(|mut udp| read_device(&mut udp, &device.name).map_err(|e| e.to_string()));
+                .and_then(|mut udp| {
+                    let mut r = read_device(&mut udp, &device.name).map_err(|e| e.to_string())?;
+                    if want_info {
+                        r.info = read_info(ip, &device, &mut udp);
+                    }
+                    Ok(r)
+                });
             match &result {
                 Ok(r) => {
                     info!(device = %device.name, tx = r.channels.tx.len(), rx = r.channels.rx.len(),
@@ -503,7 +587,101 @@ mod tests {
         Read {
             channels: channels(label),
             settings: None,
+            info: None,
         }
+    }
+
+    fn version(major: u8, minor: u8, patch: u16, build: Option<u32>) -> info_client::Version {
+        info_client::Version {
+            major,
+            minor,
+            patch,
+            build,
+        }
+    }
+
+    #[test]
+    fn info_view_takes_product_board_and_encoding() {
+        let product = Product {
+            manufacturer_id: [0; 8],
+            product_id: [0; 8],
+            manufacturer: "Yamaha".into(),
+            model: "Dante-MY16-AUD2".into(),
+            software: Some(version(1, 2, 3, None)),
+            firmware: Some(version(4, 2, 5, Some(1))),
+            version: Some(version(2, 0, 0, None)),
+        };
+        let board = Board {
+            board: "Bklyn2".into(),
+            model: "Brooklyn II".into(),
+            software: Some(version(4, 1, 6, Some(7))),
+            hardware: Some(version(1, 0, 0, None)),
+            api: None,
+            boot: None,
+        };
+        let i = info_view(Some(&product), Some(&board), Some(24)).unwrap();
+        assert_eq!(i.manufacturer.as_deref(), Some("Yamaha"));
+        assert_eq!(i.model.as_deref(), Some("Dante-MY16-AUD2"));
+        assert_eq!(i.software_version.as_deref(), Some("1.2.3"));
+        assert_eq!(i.firmware_version.as_deref(), Some("4.2.5.1"));
+        assert_eq!(i.product_version.as_deref(), Some("2.0.0"));
+        assert_eq!(i.platform.as_deref(), Some("Brooklyn II"));
+        assert_eq!(i.platform_software.as_deref(), Some("4.1.6.7"));
+        assert_eq!(i.platform_hardware.as_deref(), Some("1.0.0"));
+        assert_eq!(i.encoding_bits, Some(24));
+        // An empty platform model falls back to the board's short name; an
+        // empty text is absent.
+        let short = Board {
+            model: String::new(),
+            ..board
+        };
+        let blank = Product {
+            manufacturer: String::new(),
+            ..product
+        };
+        let i = info_view(Some(&blank), Some(&short), None).unwrap();
+        assert_eq!(i.platform.as_deref(), Some("Bklyn2"));
+        assert_eq!(i.manufacturer, None);
+        assert_eq!(i.encoding_bits, None);
+        assert_eq!(info_view(None, None, None), None);
+        assert_eq!(
+            info_view(None, None, Some(32)).and_then(|i| i.encoding_bits),
+            Some(32)
+        );
+    }
+
+    #[test]
+    fn info_is_read_once_kept_and_read_again_when_the_records_change() {
+        let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
+        s.apply(Change::Added(dev("Desk", 1)));
+        assert!(s.needs_info(&dev("Desk", 1)));
+        let info = api::Info {
+            manufacturer: Some("Yamaha".into()),
+            model: Some("RIO".into()),
+            encoding_bits: Some(24),
+            ..api::Info::default()
+        };
+        let now = Instant::now();
+        s.record(
+            &dev("Desk", 1),
+            Ok(Read {
+                info: Some(info.clone()),
+                ..read("Vox")
+            }),
+            now,
+            1,
+        );
+        assert!(!s.needs_info(&dev("Desk", 1)));
+        let v = &s.view().devices[0];
+        assert_eq!(v.info, Some(info.clone()));
+        // The device's own word wins over mDNS.
+        assert_eq!(v.manufacturer.as_deref(), Some("Yamaha"));
+        assert_eq!(v.model.as_deref(), Some("RIO"));
+        s.record(&dev("Desk", 1), Ok(read("Vox")), now + REFRESH, 2);
+        assert_eq!(s.view().devices[0].info, Some(info));
+        s.apply(Change::Changed(dev("Desk", 1)));
+        assert!(s.needs_info(&dev("Desk", 1)));
+        assert!(!s.needs_info(&dev("Nobody", 9)));
     }
 
     #[test]
@@ -526,6 +704,7 @@ mod tests {
             Ok(Read {
                 channels: channels("Vox"),
                 settings: Some(settings_view(&set)),
+                info: None,
             }),
             now,
             1,

@@ -39,18 +39,39 @@ test.describe("devices", () => {
     expect(api.enabled).toBe(true);
     const dev = api.devices.find((d: { name: string }) => d.name === DEVICE);
     expect(dev.channels.rx[0].source).toEqual({ channel: "Mix L", device: DEVICE });
-    // The settings read answers (dstack's own device keeps no settings yet:
-    // an empty table), so the card shows no settings rows.
-    expect(dev.settings).toEqual({
-      sample_rate: null,
-      pullup: null,
-      latency_configured_us: null,
-      latency_active_us: null,
-      latency_default_us: null,
-      latency_min_us: null,
-      latency_max_us: null,
+    // dstack's own device answers the settings read with its config
+    // (fixtures/device.toml): 48 kHz, no pull-up, 10 ms latency.
+    expect(dev.settings).toMatchObject({
+      sample_rate: 48000,
+      pullup: 0,
+      latency_configured_us: 10000,
+      latency_active_us: 10000,
     });
-    await expect(card.getByTestId("settings-table")).toHaveCount(0);
+    // Its product info (UDP 8700) and encoding (TX channels) come from the same config.
+    expect(dev.info).toMatchObject({
+      manufacturer: "dcontroller-e2e",
+      model: "test-box",
+      encoding_bits: 24,
+    });
+    await expect(card.getByTestId("device-settings")).toHaveText("48 kHz · 24 bit · latency 10.00 ms");
+    const table = card.getByTestId("settings-table");
+    await expect(table).toBeVisible();
+    const row = (name: string) => table.locator("tr", { has: page.locator("th", { hasText: name }) }).locator("td");
+    await expect(row("Sample rate")).toHaveText("48000 Hz");
+    await expect(row("Encoding")).toHaveText("PCM 24 bit");
+    await expect(row("Latency, active")).toHaveText("10.00 ms");
+    await expect(row("Manufacturer")).toHaveText("dcontroller-e2e");
+    await expect(row("Model")).toHaveText("test-box");
+    // Each version the device reports is shown as the server read it.
+    for (const [key, name] of [
+      ["product_version", "Product version"],
+      ["software_version", "Software"],
+      ["firmware_version", "Firmware"],
+      ["platform", "Dante platform"],
+    ]) {
+      if (dev.info[key]) await expect(row(name)).toHaveText(dev.info[key]);
+      else await expect(row(name)).toHaveCount(0);
+    }
     expect(console_msgs).toEqual([]);
   });
 

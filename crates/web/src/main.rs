@@ -8,8 +8,8 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use dcontroller_api::{
-    ChangeEntry, ChangeResult, Device, Devices, LatencyReport, Rename, RenameTarget, RxChannel,
-    Settings, Source, SubscriptionChange,
+    ChangeEntry, ChangeResult, Device, Devices, Info, LatencyReport, Rename, RenameTarget,
+    RxChannel, Settings, Source, SubscriptionChange,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -869,24 +869,29 @@ fn DeviceList(d: Devices) -> impl IntoView {
 #[derive(Clone, Copy)]
 struct Open(RwSignal<BTreeSet<String>>);
 
-/// The short settings line: sample rate and active latency.
-fn settings_line(s: &Settings) -> Option<String> {
+/// The short settings line: sample rate, encoding and active latency.
+fn settings_line(s: &Settings, i: Option<&Info>) -> Option<String> {
     let rate = s
         .sample_rate
         .map(|r| format!("{} kHz", f64::from(r) / 1000.0));
+    let bits = i.and_then(|i| i.encoding_bits).map(|b| format!("{b} bit"));
     let lat = s
         .latency_active_us
         .or(s.latency_configured_us)
         .map(|l| format!("latency {}", lat::ms(l)));
-    let parts: Vec<String> = [rate, lat].into_iter().flatten().collect();
+    let parts: Vec<String> = [rate, bits, lat].into_iter().flatten().collect();
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
-/// The settings in full, one `(name, value)` per row; only what the device reports.
-fn settings_rows(s: &Settings) -> Vec<(&'static str, String)> {
+/// The settings and device info in full, one `(name, value)` per row; only
+/// what the device reports.
+fn settings_rows(s: &Settings, i: Option<&Info>) -> Vec<(&'static str, String)> {
     let mut rows = Vec::new();
     if let Some(r) = s.sample_rate {
         rows.push(("Sample rate", format!("{r} Hz")));
+    }
+    if let Some(b) = i.and_then(|i| i.encoding_bits) {
+        rows.push(("Encoding", format!("PCM {b} bit")));
     }
     if let Some(p) = s.pullup {
         rows.push((
@@ -913,6 +918,22 @@ fn settings_rows(s: &Settings) -> Vec<(&'static str, String)> {
             "Latency, range",
             format!("{} – {}", lat::ms(lo), lat::ms(hi)),
         ));
+    }
+    if let Some(i) = i {
+        for (name, v) in [
+            ("Manufacturer", &i.manufacturer),
+            ("Model", &i.model),
+            ("Product version", &i.product_version),
+            ("Software", &i.software_version),
+            ("Firmware", &i.firmware_version),
+            ("Dante platform", &i.platform),
+            ("Dante software", &i.platform_software),
+            ("Dante hardware", &i.platform_hardware),
+        ] {
+            if let Some(v) = v {
+                rows.push((name, v.clone()));
+            }
+        }
     }
     rows
 }
@@ -955,12 +976,12 @@ fn DeviceCard(dev: Device) -> impl IntoView {
                     <span class="model">{what}</span>
                     <span class="counts" data-testid="device-counts">{counts}</span>
                     <span class="subs">{format!("{subscribed} subscribed")}</span>
-                    {dev.settings.as_ref().and_then(settings_line).map(|l| view! {
+                    {settings_line(&dev.settings.clone().unwrap_or_default(), dev.info.as_ref()).map(|l| view! {
                         <span class="subs" data-testid="device-settings">{l}</span>
                     })}
                     <span class="addr">{dev.address.clone()}</span>
                 </summary>
-                {dev.settings.as_ref().map(settings_rows).filter(|r| !r.is_empty()).map(|rows| view! {
+                {Some(settings_rows(&dev.settings.clone().unwrap_or_default(), dev.info.as_ref())).filter(|r| !r.is_empty()).map(|rows| view! {
                     <table class="settings" data-testid="settings-table">
                         {rows.into_iter().map(|(k, v)| view! { <tr><th>{k}</th><td>{v}</td></tr> }).collect_view()}
                     </table>
@@ -1129,10 +1150,10 @@ mod tests {
             latency_max_us: Some(5000),
         };
         assert_eq!(
-            settings_line(&s).as_deref(),
+            settings_line(&s, None).as_deref(),
             Some("48 kHz · latency 1.00 ms")
         );
-        let rows = settings_rows(&s);
+        let rows = settings_rows(&s, None);
         assert_eq!(rows[0], ("Sample rate", "48000 Hz".to_owned()));
         assert_eq!(rows[1], ("Pull-up", "none".to_owned()));
         assert_eq!(
@@ -1140,12 +1161,44 @@ mod tests {
             &("Latency, range", "0.15 ms – 5.00 ms".to_owned())
         );
         // A device that reports nothing shows nothing.
-        assert_eq!(settings_line(&Settings::default()), None);
-        assert!(settings_rows(&Settings::default()).is_empty());
+        assert_eq!(settings_line(&Settings::default(), None), None);
+        assert!(settings_rows(&Settings::default(), None).is_empty());
         let r441 = Settings {
             sample_rate: Some(44100),
             ..Settings::default()
         };
-        assert_eq!(settings_line(&r441).as_deref(), Some("44.1 kHz"));
+        assert_eq!(settings_line(&r441, None).as_deref(), Some("44.1 kHz"));
+    }
+
+    #[test]
+    fn device_info_adds_encoding_and_versions() {
+        let s = Settings {
+            sample_rate: Some(96000),
+            latency_active_us: Some(250),
+            ..Settings::default()
+        };
+        let i = Info {
+            manufacturer: Some("Tascam".into()),
+            model: Some("ML-32D".into()),
+            firmware_version: Some("4.2.5.1".into()),
+            platform: Some("Brooklyn II".into()),
+            encoding_bits: Some(24),
+            ..Info::default()
+        };
+        assert_eq!(
+            settings_line(&s, Some(&i)).as_deref(),
+            Some("96 kHz · 24 bit · latency 0.25 ms")
+        );
+        let rows = settings_rows(&s, Some(&i));
+        assert_eq!(rows[1], ("Encoding", "PCM 24 bit".to_owned()));
+        assert!(rows.contains(&("Firmware", "4.2.5.1".to_owned())));
+        assert!(rows.contains(&("Dante platform", "Brooklyn II".to_owned())));
+        assert!(!rows.iter().any(|(k, _)| *k == "Software"));
+        // Info alone, without settings, still shows.
+        assert_eq!(
+            settings_line(&Settings::default(), Some(&i)).as_deref(),
+            Some("24 bit")
+        );
+        assert_eq!(settings_rows(&Settings::default(), Some(&i)).len(), 5);
     }
 }
