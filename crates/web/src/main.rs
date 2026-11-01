@@ -14,6 +14,7 @@ use dcontroller_api::{
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+mod clock;
 mod lat;
 mod matrix;
 use matrix::{Grid, affected, cell, elsewhere};
@@ -99,6 +100,9 @@ fn App() -> impl IntoView {
                 <a href="#latency" data-testid="tab-latency"
                     class=move || if view_now.get() == View::Latency { "tab on" } else { "tab" }
                     on:click=move |_| view_now.set(View::Latency)>"Latency"</a>
+                <a href="#clock" data-testid="tab-clock"
+                    class=move || if view_now.get() == View::Clock { "tab on" } else { "tab" }
+                    on:click=move |_| view_now.set(View::Clock)>"Clock"</a>
             </nav>
             <span class="version" data-testid="version">{VERSION}</span>
         </header>
@@ -113,6 +117,7 @@ fn App() -> impl IntoView {
                     View::Routing => view! { <Routing d=d/> }.into_any(),
                     View::Changes => view! { <ChangeLog/> }.into_any(),
                     View::Latency => view! { <LatencyView d=d/> }.into_any(),
+                    View::Clock => view! { <ClockView d=d/> }.into_any(),
                 },
             }}
         </main>
@@ -129,6 +134,7 @@ enum View {
     Devices,
     Changes,
     Latency,
+    Clock,
 }
 
 impl View {
@@ -137,6 +143,7 @@ impl View {
         match hash.as_str() {
             "#devices" => View::Devices,
             "#changes" => View::Changes,
+            "#clock" => View::Clock,
             h if h.starts_with("#latency") => View::Latency,
             _ => View::Routing,
         }
@@ -927,7 +934,7 @@ fn settings_rows(s: &Settings, i: Option<&Info>) -> Vec<(&'static str, String)> 
             ("Software", &i.software_version),
             ("Firmware", &i.firmware_version),
             ("Dante platform", &i.platform),
-            ("Dante software", &i.platform_software),
+            ("Dante firmware", &i.platform_software),
             ("Dante hardware", &i.platform_hardware),
         ] {
             if let Some(v) = v {
@@ -936,6 +943,63 @@ fn settings_rows(s: &Settings, i: Option<&Info>) -> Vec<(&'static str, String)> 
         }
     }
     rows
+}
+
+/// The clock rows of the device table.
+fn clock_rows(c: &dcontroller_api::Clock) -> Vec<(&'static str, String)> {
+    let mut rows = vec![
+        ("Clock role", clock::role(c).to_owned()),
+        ("Clock sync", c.sync.clone()),
+        ("Frequency offset", clock::ppb(c.frequency_ppb)),
+    ];
+    if !c.leader {
+        rows.push(("Clock master", c.master.clone()));
+    }
+    rows
+}
+
+/// The clock view: every device's PTP role and sync, as Dante Controller's
+/// Clock Status tab.
+#[component]
+fn ClockView(d: Devices) -> impl IntoView {
+    let rows = clock::rows(&d);
+    let (line, warn) = clock::summary(&rows);
+    view! {
+        <p class=if warn { "status error" } else { "status" } data-testid="clock-summary">{line}</p>
+        <div class="clock-wrap"><table class="clock" data-testid="clock-table">
+            <thead><tr>
+                <th>"Device"</th><th>"Role"</th><th>"Sync"</th><th>"Clock"</th>
+                <th>"Frequency offset"</th><th>"Master"</th><th>"Word clock"</th>
+            </tr></thead>
+            <tbody>
+                {rows.into_iter().map(|r| {
+                    let class = if r.warn { "warn" } else if r.clock.as_ref().is_some_and(|c| c.leader) { "lead" } else { "" };
+                    let name = r.device.clone();
+                    match r.clock {
+                        Some(c) => view! {
+                            <tr class=class data-testid="clock-row" data-name=name>
+                                <td>{r.device}</td>
+                                <td data-testid="clock-role">{clock::role(&c)}</td>
+                                <td data-testid="clock-sync">{c.sync.clone()}</td>
+                                <td>{c.state.clone()}</td>
+                                <td>{clock::ppb(c.frequency_ppb)}</td>
+                                <td data-testid="clock-master">{r.master.unwrap_or_default()}</td>
+                                <td>{c.word_clock.clone().unwrap_or_default()}</td>
+                            </tr>
+                        }.into_any(),
+                        None => view! {
+                            <tr class="none" data-testid="clock-row" data-name=name>
+                                <td>{r.device}</td>
+                                <td colspan="6" data-testid="clock-none">
+                                    {r.error.map_or_else(|| "not read yet".to_owned(), |e| format!("no clock status: {e}"))}
+                                </td>
+                            </tr>
+                        }.into_any(),
+                    }
+                }).collect_view()}
+            </tbody>
+        </table></div>
+    }
 }
 
 #[component]
@@ -981,7 +1045,11 @@ fn DeviceCard(dev: Device) -> impl IntoView {
                     })}
                     <span class="addr">{dev.address.clone()}</span>
                 </summary>
-                {Some(settings_rows(&dev.settings.clone().unwrap_or_default(), dev.info.as_ref())).filter(|r| !r.is_empty()).map(|rows| view! {
+                {Some({
+                    let mut rows = settings_rows(&dev.settings.clone().unwrap_or_default(), dev.info.as_ref());
+                    rows.extend(dev.clock.as_ref().map(clock_rows).unwrap_or_default());
+                    rows
+                }).filter(|r| !r.is_empty()).map(|rows| view! {
                     <table class="settings" data-testid="settings-table">
                         {rows.into_iter().map(|(k, v)| view! { <tr><th>{k}</th><td>{v}</td></tr> }).collect_view()}
                     </table>

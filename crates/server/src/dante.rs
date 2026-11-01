@@ -16,7 +16,7 @@ use dante_stack::arc::client::{Exchange, REPLY_TIMEOUT, ReadError, Udp, read_dir
 use dante_stack::arc::control::{self, Call};
 use dante_stack::ctl::Requests;
 use dante_stack::discover::{Change, Device, Discovery};
-use dante_stack::info::client::{self as info_client, Board, Product};
+use dante_stack::info::client::{self as info_client, Board, ClockStatus, Product};
 use dcontroller_api as api;
 use tracing::{info, warn};
 
@@ -45,6 +45,8 @@ struct Entry {
     settings: Option<api::Settings>,
     /// Read once per listing (again when its records change).
     info: Option<api::Info>,
+    /// The last clock read: the status, or why there is none.
+    clock: Option<Result<api::Clock, String>>,
     read_at: Option<u64>,
     error: Option<String>,
     /// When the next read is due; `None` = now.
@@ -96,6 +98,7 @@ impl State {
                                 channels: None,
                                 settings: None,
                                 info: None,
+                                clock: None,
                                 read_at: None,
                                 error: None,
                                 due: None,
@@ -146,6 +149,9 @@ impl State {
                 }
                 if r.info.is_some() {
                     e.info = r.info;
+                }
+                if r.clock.is_some() {
+                    e.clock = r.clock;
                 }
                 e.read_at = Some(unix);
                 e.error = None;
@@ -215,6 +221,8 @@ impl State {
                     channels: e.channels.clone(),
                     settings: e.settings.clone(),
                     info: e.info.clone(),
+                    clock: e.clock.clone().and_then(Result::ok),
+                    clock_error: e.clock.clone().and_then(Result::err),
                     read_at: e.read_at,
                     error: e.error.clone(),
                 })
@@ -260,6 +268,54 @@ pub struct Read {
     pub settings: Option<api::Settings>,
     /// `None`: not read this time (the last one stays).
     pub info: Option<api::Info>,
+    /// `None`: not read this time (the last one stays).
+    pub clock: Option<Result<api::Clock, String>>,
+}
+
+/// A clock id as a MAC.
+fn mac(id: &[u8; 6]) -> String {
+    id.iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// The clock status as the API shows it.
+pub fn clock_view(c: &ClockStatus) -> api::Clock {
+    let named = |name: Option<&str>, what: &str, code: u16| {
+        name.map_or_else(|| format!("{what} {code}"), str::to_owned)
+    };
+    api::Clock {
+        leader: c.is_leader(),
+        grandmaster: c.is_grandmaster(),
+        state: named(c.clock_state_name(), "state", c.clock_state),
+        sync: named(c.servo_state_name(), "servo", c.servo_state),
+        stratum: c.stratum,
+        frequency_ppb: c.frequency_ppb,
+        max_drift_ppb: c.max_drift_ppb,
+        id: mac(&c.device),
+        master: mac(&c.master),
+        grandmaster_id: mac(&c.grandmaster),
+        ports: c
+            .ports
+            .iter()
+            .map(|&p| named(info_client::port_state_name(p), "state", p))
+            .collect(),
+        word_clock: c.word_clock.map(|w| match w {
+            0 => "unknown".to_owned(),
+            1 => "none".to_owned(),
+            3 => "valid".to_owned(),
+            n => format!("state {n}"),
+        }),
+    }
+}
+
+/// Asks `device` for its clock status from our address `our` (UDP 8700,
+/// read-only).
+pub fn read_clock(our: Ipv4Addr, device: &Device) -> Result<api::Clock, String> {
+    info_client::clock_status(our, *device.arc.ip(), device.device_id, INFO_WAIT)
+        .map(|c| clock_view(&c))
+        .map_err(|e| e.to_string())
 }
 
 /// What the device says it is, from the replies it gave; `None` when it
@@ -336,6 +392,7 @@ pub fn read_device(c: &mut impl Call, name: &str) -> Result<Read, ReadError> {
         channels,
         settings,
         info: None,
+        clock: None,
     })
 }
 
@@ -519,12 +576,14 @@ fn run(
                     if want_info {
                         r.info = read_info(ip, &device, &mut udp);
                     }
+                    r.clock = Some(read_clock(ip, &device));
                     Ok(r)
                 });
             match &result {
                 Ok(r) => {
                     info!(device = %device.name, tx = r.channels.tx.len(), rx = r.channels.rx.len(),
                     settings = ?r.settings,
+                    clock = ?r.clock,
                     ms = started.elapsed().as_millis() as u64, "dante: channels read")
                 }
                 Err(e) => warn!(device = %device.name, error = %e, "dante: channel read failed"),
@@ -588,7 +647,75 @@ mod tests {
             channels: channels(label),
             settings: None,
             info: None,
+            clock: None,
         }
+    }
+
+    fn status(ports: Vec<u16>, gm: [u8; 6]) -> ClockStatus {
+        ClockStatus {
+            clock_state: 3,
+            servo_state: 3,
+            stratum: 2,
+            frequency_ppb: -1200,
+            device: [0, 0x1d, 0xc1, 0, 0, 1],
+            master: [0, 0x1d, 0xc1, 0, 0, 9],
+            grandmaster: gm,
+            ports,
+            capabilities: 0,
+            max_drift_ppb: 100_000,
+            word_clock: Some(1),
+        }
+    }
+
+    #[test]
+    fn clock_view_names_roles_and_states_and_keeps_unknown_codes() {
+        let f = clock_view(&status(vec![9, 3], [0, 0x1d, 0xc1, 0, 0, 9]));
+        assert!(!f.leader);
+        assert!(!f.grandmaster);
+        assert_eq!(f.state, "disciplined");
+        assert_eq!(f.sync, "synchronized");
+        assert_eq!(f.ports, vec!["follower".to_owned(), "disabled".to_owned()]);
+        assert_eq!(f.id, "00:1d:c1:00:00:01");
+        assert_eq!(f.master, "00:1d:c1:00:00:09");
+        assert_eq!(f.frequency_ppb, -1200);
+        assert_eq!(f.word_clock.as_deref(), Some("none"));
+        let mut c = status(vec![6, 4], [0, 0x1d, 0xc1, 0, 0, 1]);
+        c.clock_state = 2;
+        c.servo_state = 5;
+        c.word_clock = None;
+        let l = clock_view(&c);
+        assert!(l.leader);
+        assert!(l.grandmaster);
+        assert_eq!(l.state, "undisciplined");
+        assert_eq!(l.sync, "servo 5");
+        assert_eq!(l.ports, vec!["leader".to_owned(), "state 4".to_owned()]);
+        assert_eq!(l.word_clock, None);
+    }
+
+    #[test]
+    fn a_clock_read_replaces_the_last_one_and_a_failure_shows_why() {
+        let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
+        s.apply(Change::Added(dev("Desk", 1)));
+        let now = Instant::now();
+        let c = clock_view(&status(vec![9], [0; 6]));
+        let with = |clock| Read {
+            clock,
+            ..read("Vox")
+        };
+        s.record(&dev("Desk", 1), Ok(with(Some(Ok(c.clone())))), now, 1);
+        assert_eq!(s.view().devices[0].clock, Some(c.clone()));
+        // A read that did not ask (a change's read-back) keeps it.
+        s.record(&dev("Desk", 1), Ok(with(None)), now, 2);
+        assert_eq!(s.view().devices[0].clock, Some(c));
+        s.record(
+            &dev("Desk", 1),
+            Ok(with(Some(Err("no reply".into())))),
+            now,
+            3,
+        );
+        let v = &s.view().devices[0];
+        assert_eq!(v.clock, None);
+        assert_eq!(v.clock_error.as_deref(), Some("no reply"));
     }
 
     fn version(major: u8, minor: u8, patch: u16, build: Option<u32>) -> info_client::Version {
@@ -705,6 +832,7 @@ mod tests {
                 channels: channels("Vox"),
                 settings: Some(settings_view(&set)),
                 info: None,
+                clock: None,
             }),
             now,
             1,
