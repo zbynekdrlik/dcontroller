@@ -28,7 +28,7 @@ Dante Controller on Windows PCs and every Dante consumer (iemmixer, dasio, SongP
 - E2E: `cd crates/web && trunk build`, `cargo build -p dcontroller -p dante-stack --bin dcontroller --bin dante-stack-dev`, `cd e2e && npm ci && npx playwright test`. It starts dstack's own Dante device (`dante-stack-dev --clock system`, `e2e/fixtures/`) on the default-route address and the real server on 127.0.0.1:18080 with that interface as `dante_interface`; the test reads the device through the page. trunk is system-wide on dev1 (airuleset#1275); CI installs its own. dev1's shared Playwright browsers lag 1.64.1 (airuleset#1277).
 - Server config: `~/.config/dcontroller/config.toml` with `web_dir`, optional `bind` and `dante_interface`.
 
-Dante tests: the E2E uses dstack's device binary as a real Dante device. A read against the site's devices runs on the box after each deploy (the device list must show them). A test that changes a device needs the owner's approval, unless the device is ours.
+Dante tests: the E2E uses dstack's device binary as a real Dante device. A read against the site's devices runs on the box after each deploy (the device list must show them). A test that changes a device needs the owner's approval, unless the device is ours. A browser check after a deploy opens a fresh page each time and closes it after: a tab left open keeps the old version's code, and its polls fail while nothing serves it.
 
 ## Site facts
 
