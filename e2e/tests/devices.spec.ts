@@ -56,7 +56,7 @@ test.describe("devices", () => {
     await expect(card.getByTestId("device-settings")).toHaveText("48 kHz · 24 bit · latency 10.00 ms");
     const table = card.getByTestId("settings-table");
     await expect(table).toBeVisible();
-    const row = (name: string) => table.locator("tr", { has: page.locator("th", { hasText: name }) }).locator("td");
+    const row = (name: string) => table.locator("tr", { has: page.getByRole("rowheader", { name, exact: true }) }).locator("td");
     await expect(row("Sample rate")).toHaveText("48000 Hz");
     await expect(row("Encoding")).toHaveText("PCM 24 bit");
     await expect(row("Latency, active")).toHaveText("10.00 ms");
