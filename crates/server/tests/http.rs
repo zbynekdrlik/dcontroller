@@ -4,6 +4,12 @@ use dcontroller::{Config, Health, VERSION, app};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
+fn off() -> dcontroller::dante::Shared {
+    std::sync::Arc::new(std::sync::RwLock::new(dcontroller::dante::State::off(
+        None, None,
+    )))
+}
+
 fn web() -> tempfile::TempDir {
     let d = tempfile::tempdir().unwrap();
     std::fs::write(d.path().join("index.html"), "<html>shell</html>").unwrap();
@@ -12,7 +18,7 @@ fn web() -> tempfile::TempDir {
 }
 
 async fn get(dir: &std::path::Path, uri: &str) -> (StatusCode, String, Option<String>) {
-    let res = app(dir)
+    let res = app(dir, off())
         .oneshot(Request::get(uri).body(Body::empty()).unwrap())
         .await
         .unwrap();
@@ -116,4 +122,16 @@ fn validate_requires_built_web_dir() {
     let d = web();
     let c = Config::parse(&format!("web_dir = {:?}", d.path())).unwrap();
     c.validate().unwrap();
+}
+
+#[tokio::test]
+async fn api_devices_without_a_dante_interface_is_an_empty_off_list() {
+    let dir = web();
+    let (status, body, cache) = get(dir.path(), "/api/devices").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cache.as_deref(), Some("no-store"));
+    let d: dcontroller_api::Devices = serde_json::from_str(&body).unwrap();
+    assert!(!d.enabled);
+    assert!(d.devices.is_empty());
+    assert_eq!(d.interface, None);
 }

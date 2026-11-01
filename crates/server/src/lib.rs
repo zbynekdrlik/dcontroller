@@ -1,9 +1,12 @@
 //! dcontroller server: serves the built PWA and a small JSON API.
 
+pub mod dante;
+
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use axum::Router;
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::http::{HeaderValue, header};
 use axum::routing::{any, get};
@@ -24,7 +27,8 @@ pub struct Config {
     pub bind: SocketAddr,
     /// Directory holding the built PWA (trunk's `dist`).
     pub web_dir: PathBuf,
-    /// Network interface on the Dante network (used once Dante features land).
+    /// Network interface on the Dante network: discovery and channel reads
+    /// run from its IPv4 address. Unset = no Dante discovery.
     #[serde(default)]
     pub dante_interface: Option<String>,
     /// Allow a non-loopback `bind`. The server has no login of its own: it
@@ -86,6 +90,10 @@ async fn api_not_found() -> StatusCode {
     StatusCode::NOT_FOUND
 }
 
+async fn devices(State(dante): State<dante::Shared>) -> axum::Json<dcontroller_api::Devices> {
+    axum::Json(dante::snapshot(&dante))
+}
+
 async fn healthz() -> axum::Json<Health> {
     axum::Json(Health {
         status: "ok".into(),
@@ -95,16 +103,19 @@ async fn healthz() -> axum::Json<Health> {
 
 /// The whole HTTP app: API routes (unknown `/api/*` is 404), then the PWA
 /// from `web_dir` with `index.html` as the fallback for client-side routes.
-/// Nothing is cached by the browser, so a deploy shows at once.
-pub fn app(web_dir: &Path) -> Router {
+/// Nothing is cached by the browser, so a deploy shows at once. `dante` is
+/// the Dante state `/api/devices` shows ([`dante::start`]).
+pub fn app(web_dir: &Path, dante: dante::Shared) -> Router {
     let index = web_dir.join("index.html");
     let spa = ServeDir::new(web_dir).fallback(ServeFile::new(index));
     Router::new()
         .route("/api/version", get(version))
+        .route("/api/devices", get(devices))
         .route("/api", any(api_not_found))
         .route("/api/", any(api_not_found))
         .route("/api/{*rest}", any(api_not_found))
         .route("/healthz", get(healthz))
+        .with_state(dante)
         .fallback_service(spa)
         .layer(SetResponseHeaderLayer::overriding(
             header::CACHE_CONTROL,

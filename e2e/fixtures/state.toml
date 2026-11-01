@@ -1,0 +1,10 @@
+# RX "Stage L" subscribed to our own TX "Mix L".
+name = "dc-e2e-device"
+config_name = "dc-e2e-device"
+rx = ["Stage L", "Stage R", "Spare 3", "Spare 4"]
+tx = ["Mix L", "Mix R", "Talkback", "Click"]
+
+[[subscriptions]]
+rx = 1
+tx_channel = "Mix L"
+tx_device = "dc-e2e-device"

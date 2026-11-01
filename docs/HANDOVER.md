@@ -4,7 +4,9 @@ Request: zbynekdrlik/airuleset#1273, owner 30.10.2026 and 31.10.2026.
 
 ## Status
 
-Foundation in progress (#1): Cargo workspace with `crates/server` (axum: PWA, `/api/version`, `/healthz`), `crates/web` (Leptos CSR, built by trunk, PWA manifest + service worker), `crates/buildver` (one version string from git for both). Cloudflare tunnel with Access waits for the box on the Dante network.
+Cargo workspace: `crates/server` (axum: PWA, `/api/version`, `/api/devices`, `/healthz`), `crates/web` (Leptos CSR, built by trunk, PWA manifest + service worker), `crates/api` (the JSON types both share), `crates/buildver` (one version string from git for both). Live behind Cloudflare Access (#1).
+
+Device list (read-only): `crates/server/src/dante.rs` runs dstack discovery on the IPv4 of `dante_interface` and reads each device's TX labels and RX channels with subscriptions over ARC when listed, when its records change and every 30 s. No write call exists in the code. The page polls `/api/devices` every 3 s.
 
 Dante protocol APIs requested in priority order: zbynekdrlik/dstack#16.
 
@@ -23,10 +25,10 @@ Dante Controller on Windows PCs and every Dante consumer (iemmixer, dasio, SongP
 ## How to run a test
 
 - Rust: `cargo test --workspace`; lint `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and the same clippy with `-p dcontroller-web --target wasm32-unknown-unknown`.
-- E2E: `cd crates/web && trunk build`, `cargo build -p dcontroller`, `cd e2e && npm ci && npx playwright test` (starts the real server on 127.0.0.1:18080). trunk is system-wide on dev1 (airuleset#1275); CI installs its own. dev1's shared Playwright browsers lag 1.64.1 (airuleset#1277).
+- E2E: `cd crates/web && trunk build`, `cargo build -p dcontroller -p dante-stack --bin dcontroller --bin dante-stack-dev`, `cd e2e && npm ci && npx playwright test`. It starts dstack's own Dante device (`dante-stack-dev --clock system`, `e2e/fixtures/`) on the default-route address and the real server on 127.0.0.1:18080 with that interface as `dante_interface`; the test reads the device through the page. trunk is system-wide on dev1 (airuleset#1275); CI installs its own. dev1's shared Playwright browsers lag 1.64.1 (airuleset#1277).
 - Server config: `~/.config/dcontroller/config.toml` with `web_dir`, optional `bind` and `dante_interface`.
 
-Dante tests: not defined yet. A read-only test against real devices comes first: mDNS discovery and ARC reads through dstack. A test that changes a device needs the owner's approval, unless the device is ours.
+Dante tests: the E2E uses dstack's device binary as a real Dante device. A read against the site's devices runs on the box after each deploy (the device list must show them). A test that changes a device needs the owner's approval, unless the device is ours.
 
 ## Site facts
 
@@ -39,7 +41,7 @@ None yet. GitHub-hosted runners cover build and tests. A test on the Dante netwo
 ## Backlog
 
 - Foundation as in Status.
-- Device list, channels and subscriptions.
+- Device list, channels and subscriptions: read-only done; changing a subscription needs the confirm-and-log flow (CLAUDE.md rule).
 - Renames, latency, sample rate and encoding, per-flow telemetry.
 
 dstack provides these or builds them, tracked on zbynekdrlik/dstack#1: mDNS discovery, ARC reads, subscription requests, renames (ARC 0x2013/0x3001/0x1001), device latency (0x1101), sample rate and encoding (UDP 8700, messages 0x0081/0x0083), per-flow telemetry.

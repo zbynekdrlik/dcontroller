@@ -77,7 +77,7 @@ jobs:
         working-directory: crates/web
         run: trunk build
       - name: Build server
-        run: cargo build -p dcontroller
+        run: cargo build -p dcontroller -p dante-stack --bin dcontroller --bin dante-stack-dev
       - uses: actions/setup-node@v4
         with:
           node-version: 20
