@@ -83,7 +83,7 @@ th.rename:hover span, th.rxchname.rename:hover { color: #e8b84a; }
 .bin .barbox { position: relative; height: 6rem; border-bottom: 1px solid #3d4f66; }
 .bin .hbar { position: absolute; left: 0; right: 0; bottom: 0; background: #3fb67a; border-radius: 2px 2px 0 0; }
 .bin.late .hbar { background: #e05a5a; }
-.bin.late .barbox { background: rgb(224 90 90 / 8%); }
+.bin.late .barbox { background: rgb(224 90 90 / 4%); border-bottom-color: #e05a5a; }
 .bin .count { position: absolute; left: 0; right: 0; bottom: 0.2rem; font-size: 0.65rem; text-align: center; color: #121821; font-weight: 600; }
 .bin .edge { font-size: 0.6rem; color: #7d8898; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: clip; }
 svg.spark { width: 100%; height: 3.5rem; background: #1b2430; border-radius: 4px; }

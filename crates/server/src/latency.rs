@@ -130,6 +130,30 @@ pub fn describe(flows: &[control::RxFlow], rx: &[control::RxChannel]) -> BTreeMa
         .collect()
 }
 
+/// The start of the error for an address several devices share.
+const SHARED: &str = "address shared";
+
+/// What one listen at a device's address heard.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Pick {
+    /// Nothing.
+    None,
+    /// One device: it.
+    One(latency::Latency),
+    /// This many devices at the address: which one is ours is not known.
+    Shared(usize),
+}
+
+/// One device heard: it; several: which is ours is unknown (two of our own
+/// devices can share an address on their own ports).
+pub fn pick(mut heard: Vec<latency::Latency>) -> Pick {
+    match heard.len() {
+        0 => Pick::None,
+        1 => Pick::One(heard.remove(0)),
+        n => Pick::Shared(n),
+    }
+}
+
 struct Watch {
     asked: Instant,
     data: Arc<Mutex<Watched>>,
@@ -227,8 +251,24 @@ impl Watches {
                     }
                 }
             }
-            match latency::listen(ip, *device.arc.ip(), LISTEN) {
-                Ok(l) => data.lock().unwrap_or_else(|e| e.into_inner()).add(&l),
+            match latency::listen(ip, *device.arc.ip(), LISTEN).map(pick) {
+                Ok(Pick::One(l)) => {
+                    let mut d = data.lock().unwrap_or_else(|e| e.into_inner());
+                    d.add(&l);
+                    if d.error.as_deref().is_some_and(|e| e.starts_with(SHARED)) {
+                        d.error = None;
+                    }
+                }
+                Ok(Pick::None) => {}
+                Ok(Pick::Shared(n)) => {
+                    let e = format!(
+                        "{SHARED}: {n} devices send heartbeats from {}; dcontroller cannot tell which is {} yet",
+                        device.arc.ip(),
+                        device.name
+                    );
+                    warn!(device = %device.name, devices = n, "latency: address shared, nothing taken");
+                    data.lock().unwrap_or_else(|e| e.into_inner()).error = Some(e);
+                }
                 Err(e) => {
                     warn!(device = %device.name, error = %e, "latency: listen failed");
                     data.lock().unwrap_or_else(|e| e.into_inner()).error =
@@ -259,15 +299,33 @@ mod tests {
         }
     }
 
+    fn heard(id: u8) -> latency::Latency {
+        latency::Latency {
+            device_id: [id; 8],
+            beats: 1,
+            rate: 48000,
+            slots: vec![],
+        }
+    }
+
+    #[test]
+    fn pick_takes_a_single_device_and_refuses_a_shared_address() {
+        assert_eq!(pick(vec![]), Pick::None);
+        assert_eq!(pick(vec![heard(1)]), Pick::One(heard(1)));
+        assert_eq!(pick(vec![heard(1), heard(2)]), Pick::Shared(2));
+    }
+
     #[test]
     fn listens_add_up_and_keep_the_last_ten_minutes() {
         let mut w = Watched::default();
         w.add(&latency::Latency {
+            device_id: [0; 8],
             beats: 2,
             rate: 48000,
             slots: vec![slot(1, &[100, 200], 0, 5)],
         });
         w.add(&latency::Latency {
+            device_id: [0; 8],
             beats: 2,
             rate: 48000,
             slots: vec![slot(1, &[300, 900], 3, 8)],
@@ -279,6 +337,7 @@ mod tests {
         assert_eq!(h.late_total, 8);
         let many: Vec<u32> = (0..KEEP as u32 + 5).collect();
         w.add(&latency::Latency {
+            device_id: [0; 8],
             beats: 1,
             rate: 48000,
             slots: vec![slot(1, &many, 0, 8)],
@@ -332,6 +391,7 @@ mod tests {
     fn the_report_lists_described_flows_with_their_history() {
         let mut w = Watched::default();
         w.add(&latency::Latency {
+            device_id: [0; 8],
             beats: 1,
             rate: 48000,
             slots: vec![slot(1, &[400], 1, 1), slot(7, &[0], 0, 0)],
