@@ -10,3 +10,4 @@ Web Dante controller, so Dante control does not depend on a Windows PC with Dant
 
 ## Playbook router
 - Start here: `docs/HANDOVER.md`
+- E2E → `.claude/rules/e2e.md` (auto-loads on `e2e/**`)
