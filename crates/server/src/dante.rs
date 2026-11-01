@@ -225,48 +225,104 @@ pub fn interface_ipv4(iface: &str) -> Result<Ipv4Addr, String> {
 }
 
 /// Starts discovery and the reads on `iface` in a thread of their own, and
-/// returns the shared state. When the interface has no IPv4 or discovery
-/// cannot start, the state says so and nothing runs.
+/// returns the shared state. The thread waits for the interface's IPv4
+/// (a USB NIC may come up after the service), restarts discovery when that
+/// address changes or discovery ends, and says why in the state meanwhile.
 pub fn start(iface: Option<String>, stop: Arc<AtomicBool>) -> Shared {
     let Some(iface) = iface else {
         info!("dante: no dante_interface configured, discovery off");
         return Arc::new(RwLock::new(State::off(None, None)));
     };
-    let ip = match interface_ipv4(&iface) {
-        Ok(ip) => ip,
-        Err(e) => {
-            warn!(interface = %iface, error = %e, "dante: discovery off");
-            return Arc::new(RwLock::new(State::off(Some(iface), Some(e))));
-        }
-    };
-    let (discovery, changes) = match Discovery::start(ip) {
-        Ok(d) => d,
-        Err(e) => {
-            let e = format!("discovery did not start: {e}");
-            warn!(interface = %iface, %ip, error = %e, "dante: discovery off");
-            return Arc::new(RwLock::new(State::off(Some(iface), Some(e))));
-        }
-    };
-    info!(interface = %iface, %ip, "dante: discovery started");
-    let shared = Arc::new(RwLock::new(State::on(iface)));
+    let shared = Arc::new(RwLock::new(State::off(
+        Some(iface.clone()),
+        Some(format!("waiting for {iface}")),
+    )));
     let state = Arc::clone(&shared);
     std::thread::Builder::new()
         .name("dante".into())
-        .spawn(move || run(ip, discovery, changes, state, stop))
+        .spawn(move || supervise(&iface, &state, &stop))
         .expect("spawn the dante thread");
     shared
 }
 
+/// How long the thread waits before it tries the interface or discovery again.
+const RETRY: Duration = Duration::from_secs(5);
+/// How often a running discovery checks that the interface keeps its address.
+const ADDRESS_CHECK: Duration = Duration::from_secs(10);
+
+fn supervise(iface: &str, state: &Shared, stop: &Arc<AtomicBool>) {
+    let mut last_error = String::new();
+    let mut off = |e: String| {
+        if e != last_error {
+            warn!(interface = %iface, error = %e, "dante: discovery off, retrying every {}s", RETRY.as_secs());
+            last_error.clone_from(&e);
+        }
+        *write(state) = State::off(Some(iface.to_owned()), Some(e));
+    };
+    while !stop.load(Ordering::Relaxed) {
+        let ip = match interface_ipv4(iface) {
+            Ok(ip) => ip,
+            Err(e) => {
+                off(e);
+                sleep_unless_stopped(RETRY, stop);
+                continue;
+            }
+        };
+        let (discovery, changes) = match Discovery::start(ip) {
+            Ok(d) => d,
+            Err(e) => {
+                off(format!("discovery did not start on {ip}: {e}"));
+                sleep_unless_stopped(RETRY, stop);
+                continue;
+            }
+        };
+        info!(interface = %iface, %ip, "dante: discovery started");
+        *write(state) = State::on(iface.to_owned());
+        let ended = run(iface, ip, discovery, changes, state, stop);
+        if let Some(why) = ended {
+            off(why);
+            sleep_unless_stopped(RETRY, stop);
+        }
+    }
+    info!("dante: stopped");
+}
+
+fn sleep_unless_stopped(d: Duration, stop: &AtomicBool) {
+    let until = Instant::now() + d;
+    while !stop.load(Ordering::Relaxed) && Instant::now() < until {
+        std::thread::sleep(TICK);
+    }
+}
+
+/// Runs discovery and the reads until `stop` (returns `None`) or until
+/// discovery ends or the interface's address changes (returns why).
 fn run(
+    iface: &str,
     ip: Ipv4Addr,
     discovery: Discovery,
     changes: std::sync::mpsc::Receiver<Change>,
-    state: Shared,
-    stop: Arc<AtomicBool>,
-) {
+    state: &Shared,
+    stop: &AtomicBool,
+) -> Option<String> {
     let seq = AtomicU16::new(1);
     let requests = Requests::default();
+    let mut checked = Instant::now();
+    let mut ended = None;
     while !stop.load(Ordering::Relaxed) {
+        if checked.elapsed() >= ADDRESS_CHECK {
+            checked = Instant::now();
+            match interface_ipv4(iface) {
+                Ok(now) if now == ip => {}
+                Ok(now) => {
+                    ended = Some(format!("{iface} changed address from {ip} to {now}"));
+                    break;
+                }
+                Err(e) => {
+                    ended = Some(e);
+                    break;
+                }
+            }
+        }
         match changes.recv_timeout(TICK) {
             Ok(change) => {
                 match &change {
@@ -278,22 +334,22 @@ fn run(
                     }
                     Change::Removed(n) => info!(device = %n, "dante: device removed"),
                 }
-                write(&state).apply(change);
+                write(state).apply(change);
                 continue; // take every queued change before reading
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                warn!("dante: discovery ended");
+                ended = Some("discovery ended".to_owned());
                 break;
             }
         }
-        let due = read(&state).due(Instant::now());
+        let due = read(state).due(Instant::now());
         for device in due {
             if stop.load(Ordering::Relaxed) {
                 break;
             }
             let started = Instant::now();
-            let result = Udp::open(ip, device.arc, &seq, REPLY_TIMEOUT, &requests, &stop)
+            let result = Udp::open(ip, device.arc, &seq, REPLY_TIMEOUT, &requests, stop)
                 .map_err(|e| format!("socket: {e}"))
                 .and_then(|mut udp| read_channels(&mut udp).map_err(|e| e.to_string()));
             match &result {
@@ -304,13 +360,14 @@ fn run(
             let unix = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs());
-            write(&state).record(&device, result, Instant::now(), unix);
+            write(state).record(&device, result, Instant::now(), unix);
         }
     }
     if let Err(e) = discovery.stop() {
         warn!(error = %e, "dante: discovery stop");
     }
-    info!("dante: stopped");
+    info!(interface = %iface, %ip, why = ?ended, "dante: discovery stopped");
+    ended
 }
 
 fn read(s: &Shared) -> std::sync::RwLockReadGuard<'_, State> {
@@ -457,6 +514,27 @@ mod tests {
         assert_eq!(v.interface.as_deref(), Some("eth9"));
         assert!(v.error.unwrap().contains("eth9"));
         assert!(v.devices.is_empty());
+    }
+
+    #[test]
+    fn a_missing_interface_is_waited_for_and_the_thread_stops() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let shared = start(Some("no-such-iface0".into()), Arc::clone(&stop));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let v = snapshot(&shared);
+            if v.error
+                .as_deref()
+                .is_some_and(|e| e.contains("has no IPv4"))
+            {
+                assert!(!v.enabled);
+                assert_eq!(v.interface.as_deref(), Some("no-such-iface0"));
+                break;
+            }
+            assert!(Instant::now() < deadline, "{v:?}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        stop.store(true, Ordering::Relaxed);
     }
 
     #[test]
