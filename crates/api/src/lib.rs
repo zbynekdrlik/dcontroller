@@ -31,6 +31,9 @@ pub struct Device {
     /// The device's settings, as last read; `None` before the first read
     /// or when the device does not answer the settings read.
     pub settings: Option<Settings>,
+    /// What the device says it is (product and board info, encoding);
+    /// `None` until it answers.
+    pub info: Option<Info>,
     /// Unix seconds of the last complete read.
     pub read_at: Option<u64>,
     /// The last read's error, when it failed (the previous read stays).
@@ -48,6 +51,23 @@ pub struct Settings {
     pub latency_default_us: Option<u32>,
     pub latency_min_us: Option<u32>,
     pub latency_max_us: Option<u32>,
+}
+
+/// What a device says it is: its product info and board info (UDP 8700)
+/// and its encoding (from its TX channels). Each `None` when not reported.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Info {
+    pub manufacturer: Option<String>,
+    pub model: Option<String>,
+    pub product_version: Option<String>,
+    pub software_version: Option<String>,
+    pub firmware_version: Option<String>,
+    /// The Dante platform (`Brooklyn II`, `UltimoX2`).
+    pub platform: Option<String>,
+    pub platform_software: Option<String>,
+    pub platform_hardware: Option<String>,
+    /// Bits per sample, shared by all its TX channels.
+    pub encoding_bits: Option<u32>,
 }
 
 /// A device's channels, read over ARC.
@@ -240,6 +260,11 @@ mod tests {
                     sample_rate: Some(48000),
                     latency_active_us: Some(1000),
                     ..Settings::default()
+                }),
+                info: Some(Info {
+                    firmware_version: Some("4.2.5.1".into()),
+                    encoding_bits: Some(24),
+                    ..Info::default()
                 }),
                 read_at: Some(1),
                 error: None,
