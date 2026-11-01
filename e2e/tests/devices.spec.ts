@@ -39,6 +39,18 @@ test.describe("devices", () => {
     expect(api.enabled).toBe(true);
     const dev = api.devices.find((d: { name: string }) => d.name === DEVICE);
     expect(dev.channels.rx[0].source).toEqual({ channel: "Mix L", device: DEVICE });
+    // The settings read answers (dstack's own device keeps no settings yet:
+    // an empty table), so the card shows no settings rows.
+    expect(dev.settings).toEqual({
+      sample_rate: null,
+      pullup: null,
+      latency_configured_us: null,
+      latency_active_us: null,
+      latency_default_us: null,
+      latency_min_us: null,
+      latency_max_us: null,
+    });
+    await expect(card.getByTestId("settings-table")).toHaveCount(0);
     expect(console_msgs).toEqual([]);
   });
 

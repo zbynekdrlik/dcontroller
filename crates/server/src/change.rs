@@ -395,7 +395,9 @@ impl Changes {
         // Show the new names at once: a fresh read of the device's channels.
         let fresh = Udp::open(ip, device.arc, &seq, REPLY_TIMEOUT, &requests, &stop)
             .map_err(|e| format!("socket: {e}"))
-            .and_then(|mut udp| dante::read_channels(&mut udp).map_err(|e| e.to_string()));
+            .and_then(|mut udp| {
+                dante::read_device(&mut udp, &device.name).map_err(|e| e.to_string())
+            });
         {
             let mut st = dante.write().unwrap_or_else(|e| e.into_inner());
             match fresh {

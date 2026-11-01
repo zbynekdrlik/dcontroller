@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use dcontroller_api::{
     ChangeEntry, ChangeResult, Device, Devices, LatencyReport, Rename, RenameTarget, RxChannel,
-    Source, SubscriptionChange,
+    Settings, Source, SubscriptionChange,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -869,6 +869,54 @@ fn DeviceList(d: Devices) -> impl IntoView {
 #[derive(Clone, Copy)]
 struct Open(RwSignal<BTreeSet<String>>);
 
+/// The short settings line: sample rate and active latency.
+fn settings_line(s: &Settings) -> Option<String> {
+    let rate = s
+        .sample_rate
+        .map(|r| format!("{} kHz", f64::from(r) / 1000.0));
+    let lat = s
+        .latency_active_us
+        .or(s.latency_configured_us)
+        .map(|l| format!("latency {}", lat::ms(l)));
+    let parts: Vec<String> = [rate, lat].into_iter().flatten().collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// The settings in full, one `(name, value)` per row; only what the device reports.
+fn settings_rows(s: &Settings) -> Vec<(&'static str, String)> {
+    let mut rows = Vec::new();
+    if let Some(r) = s.sample_rate {
+        rows.push(("Sample rate", format!("{r} Hz")));
+    }
+    if let Some(p) = s.pullup {
+        rows.push((
+            "Pull-up",
+            if p == 0 {
+                "none".to_owned()
+            } else {
+                p.to_string()
+            },
+        ));
+    }
+    let opt = |v: Option<u32>| v.map(lat::ms);
+    for (name, v) in [
+        ("Latency, active", opt(s.latency_active_us)),
+        ("Latency, configured", opt(s.latency_configured_us)),
+        ("Latency, default", opt(s.latency_default_us)),
+    ] {
+        if let Some(v) = v {
+            rows.push((name, v));
+        }
+    }
+    if let (Some(lo), Some(hi)) = (s.latency_min_us, s.latency_max_us) {
+        rows.push((
+            "Latency, range",
+            format!("{} – {}", lat::ms(lo), lat::ms(hi)),
+        ));
+    }
+    rows
+}
+
 #[component]
 fn DeviceCard(dev: Device) -> impl IntoView {
     let Open(open) = expect_context::<Open>();
@@ -907,8 +955,16 @@ fn DeviceCard(dev: Device) -> impl IntoView {
                     <span class="model">{what}</span>
                     <span class="counts" data-testid="device-counts">{counts}</span>
                     <span class="subs">{format!("{subscribed} subscribed")}</span>
+                    {dev.settings.as_ref().and_then(settings_line).map(|l| view! {
+                        <span class="subs" data-testid="device-settings">{l}</span>
+                    })}
                     <span class="addr">{dev.address.clone()}</span>
                 </summary>
+                {dev.settings.as_ref().map(settings_rows).filter(|r| !r.is_empty()).map(|rows| view! {
+                    <table class="settings" data-testid="settings-table">
+                        {rows.into_iter().map(|(k, v)| view! { <tr><th>{k}</th><td>{v}</td></tr> }).collect_view()}
+                    </table>
+                })}
                 <div class="actions">
                     <button data-testid="rename-device" on:click={
                         let name = dev.name.clone();
@@ -1059,5 +1115,37 @@ mod tests {
             question(&p),
             "Change In 3 @ stage from Vox @ desk to Mix L @ desk?"
         );
+    }
+
+    #[test]
+    fn settings_line_and_rows_show_what_the_device_reports() {
+        let s = Settings {
+            sample_rate: Some(48000),
+            pullup: Some(0),
+            latency_configured_us: Some(1000),
+            latency_active_us: Some(1000),
+            latency_default_us: Some(1000),
+            latency_min_us: Some(150),
+            latency_max_us: Some(5000),
+        };
+        assert_eq!(
+            settings_line(&s).as_deref(),
+            Some("48 kHz · latency 1.00 ms")
+        );
+        let rows = settings_rows(&s);
+        assert_eq!(rows[0], ("Sample rate", "48000 Hz".to_owned()));
+        assert_eq!(rows[1], ("Pull-up", "none".to_owned()));
+        assert_eq!(
+            rows.last().unwrap(),
+            &("Latency, range", "0.15 ms – 5.00 ms".to_owned())
+        );
+        // A device that reports nothing shows nothing.
+        assert_eq!(settings_line(&Settings::default()), None);
+        assert!(settings_rows(&Settings::default()).is_empty());
+        let r441 = Settings {
+            sample_rate: Some(44100),
+            ..Settings::default()
+        };
+        assert_eq!(settings_line(&r441).as_deref(), Some("44.1 kHz"));
     }
 }
