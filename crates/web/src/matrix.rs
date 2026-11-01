@@ -144,6 +144,14 @@ mod tests {
                 device: d.into(),
             }),
             status: src.map(|_| status.to_string()),
+            state: src.map(|_| {
+                if status == "receiving" {
+                    "connected"
+                } else {
+                    "pending"
+                }
+                .to_string()
+            }),
         }
     }
 

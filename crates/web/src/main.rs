@@ -349,10 +349,11 @@ fn DeviceCard(dev: Device) -> impl IntoView {
 
 #[component]
 fn RxRow(r: RxChannel) -> impl IntoView {
-    let class = match (&r.source, r.receiving()) {
+    let class = match (&r.source, r.state.as_deref()) {
         (None, _) => "status none",
-        (Some(_), true) => "status ok",
-        (Some(_), false) => "status warn",
+        (Some(_), Some("connected")) => "status ok",
+        (Some(_), Some("error")) => "status err",
+        (Some(_), _) => "status warn",
     };
     let source = r
         .source

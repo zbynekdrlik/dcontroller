@@ -45,3 +45,4 @@ td.cell { min-width: 1.6rem; height: 1.6rem; text-align: center; color: #121821;
 td.cell.ok { background: #3fb67a; }
 td.cell.warn { background: #e8b84a; }
 td.elsewhere { color: #aab4c3; padding: 0.2rem 0.5rem !important; }
+.status.err { color: #ff8a80; }
