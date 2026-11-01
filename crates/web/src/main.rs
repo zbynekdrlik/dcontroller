@@ -17,6 +17,7 @@ use leptos::task::spawn_local;
 mod clock;
 mod lat;
 mod matrix;
+mod net;
 use matrix::{Grid, affected, cell, elsewhere};
 
 const VERSION: &str = env!("DC_VERSION");
@@ -103,6 +104,9 @@ fn App() -> impl IntoView {
                 <a href="#clock" data-testid="tab-clock"
                     class=move || if view_now.get() == View::Clock { "tab on" } else { "tab" }
                     on:click=move |_| view_now.set(View::Clock)>"Clock"</a>
+                <a href="#network" data-testid="tab-network"
+                    class=move || if view_now.get() == View::Network { "tab on" } else { "tab" }
+                    on:click=move |_| view_now.set(View::Network)>"Network"</a>
             </nav>
             <span class="version" data-testid="version">{VERSION}</span>
         </header>
@@ -118,6 +122,7 @@ fn App() -> impl IntoView {
                     View::Changes => view! { <ChangeLog/> }.into_any(),
                     View::Latency => view! { <LatencyView d=d/> }.into_any(),
                     View::Clock => view! { <ClockView d=d/> }.into_any(),
+                    View::Network => view! { <NetworkView d=d/> }.into_any(),
                 },
             }}
         </main>
@@ -135,6 +140,7 @@ enum View {
     Changes,
     Latency,
     Clock,
+    Network,
 }
 
 impl View {
@@ -144,6 +150,7 @@ impl View {
             "#devices" => View::Devices,
             "#changes" => View::Changes,
             "#clock" => View::Clock,
+            "#network" => View::Network,
             h if h.starts_with("#latency") => View::Latency,
             _ => View::Routing,
         }
@@ -958,6 +965,60 @@ fn clock_rows(c: &dcontroller_api::Clock) -> Vec<(&'static str, String)> {
     rows
 }
 
+/// The network rows of the device table: one per interface.
+fn network_rows(ports: &[dcontroller_api::NetPort]) -> Vec<(&'static str, String)> {
+    ports
+        .iter()
+        .take(2)
+        .zip(["Primary network", "Secondary network"])
+        .map(|(p, name)| (name, net::port_text(p)))
+        .collect()
+}
+
+/// The network view: every device's interfaces, as Dante Controller's
+/// Network Status tab.
+#[component]
+fn NetworkView(d: Devices) -> impl IntoView {
+    let rows = net::rows(&d);
+    let (line, warn) = net::summary(&rows);
+    let cell =
+        |p: &Option<dcontroller_api::NetPort>| p.as_ref().map(net::port_text).unwrap_or_default();
+    view! {
+        <p class=if warn { "status error" } else { "status" } data-testid="network-summary">{line}</p>
+        <div class="clock-wrap"><table class="clock" data-testid="network-table">
+            <thead><tr>
+                <th>"Device"</th><th>"Primary"</th><th>"MAC"</th><th>"Netmask"</th>
+                <th>"Gateway"</th><th>"Secondary"</th>
+            </tr></thead>
+            <tbody>
+                {rows.into_iter().map(|r| {
+                    let name = r.device.clone();
+                    match &r.primary {
+                        Some(p) => view! {
+                            <tr class=if r.warn { "warn" } else { "" } data-testid="network-row" data-name=name>
+                                <td>{r.device.clone()}</td>
+                                <td data-testid="network-primary">{net::port_text(p)}</td>
+                                <td>{p.mac.clone()}</td>
+                                <td>{p.netmask.clone()}</td>
+                                <td>{p.gateway.clone()}</td>
+                                <td data-testid="network-secondary">{cell(&r.secondary)}</td>
+                            </tr>
+                        }.into_any(),
+                        None => view! {
+                            <tr class="none" data-testid="network-row" data-name=name>
+                                <td>{r.device.clone()}</td>
+                                <td colspan="5" data-testid="network-none">
+                                    {r.error.clone().map_or_else(|| "not read yet".to_owned(), |e| format!("no network info: {e}"))}
+                                </td>
+                            </tr>
+                        }.into_any(),
+                    }
+                }).collect_view()}
+            </tbody>
+        </table></div>
+    }
+}
+
 /// The clock view: every device's PTP role and sync, as Dante Controller's
 /// Clock Status tab.
 #[component]
@@ -1048,6 +1109,7 @@ fn DeviceCard(dev: Device) -> impl IntoView {
                 {Some({
                     let mut rows = settings_rows(&dev.settings.clone().unwrap_or_default(), dev.info.as_ref());
                     rows.extend(dev.clock.as_ref().map(clock_rows).unwrap_or_default());
+                    rows.extend(dev.network.as_deref().map(network_rows).unwrap_or_default());
                     rows
                 }).filter(|r| !r.is_empty()).map(|rows| view! {
                     <table class="settings" data-testid="settings-table">
