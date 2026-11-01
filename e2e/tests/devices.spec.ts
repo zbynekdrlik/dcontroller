@@ -15,7 +15,7 @@ test.describe("devices", () => {
   });
 
   test("lists the discovered Dante device with its channels and subscription", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/#devices");
     const card = page.locator(`[data-testid="device"][data-name="${DEVICE}"]`);
     // Discovery plus the first ARC read: a few seconds on a real network.
     await expect(card.getByTestId("device-counts")).toHaveText("4 TX · 4 RX", { timeout: 30_000 });
@@ -43,7 +43,7 @@ test.describe("devices", () => {
   });
 
   test("an open device stays open while the list refreshes", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/#devices");
     const card = page.locator(`[data-testid="device"][data-name="${DEVICE}"]`);
     await expect(card.getByTestId("device-counts")).toHaveText("4 TX · 4 RX", { timeout: 30_000 });
     await card.getByTestId("device-name").click();
