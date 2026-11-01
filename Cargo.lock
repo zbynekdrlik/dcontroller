@@ -319,13 +319,13 @@ dependencies = [
 
 [[package]]
 name = "dante-audio-io"
-version = "0.4.21"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.4.21#1c57e74a21eb0387640592debd72fb119dcdac31"
+version = "0.4.22"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.4.22#c77cf651458998a73b2fb4e205bbed64b141f677"
 
 [[package]]
 name = "dante-stack"
-version = "0.4.21"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.4.21#1c57e74a21eb0387640592debd72fb119dcdac31"
+version = "0.4.22"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.4.22#c77cf651458998a73b2fb4e205bbed64b141f677"
 dependencies = [
  "dante-audio-io",
  "if-addrs",

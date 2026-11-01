@@ -144,9 +144,19 @@ pub enum Pick {
     Shared(usize),
 }
 
-/// One device heard: it; several: which is ours is unknown (two of our own
-/// devices can share an address on their own ports).
-pub fn pick(mut heard: Vec<latency::Latency>) -> Pick {
+/// The device's own heartbeats among those heard at its address: by its
+/// device id (its `_netaudio-cmc` record) when discovery has it, else the
+/// single device heard; several devices and no id: which is ours is
+/// unknown (two of our own devices can share an address on their own ports).
+pub fn pick(mut heard: Vec<latency::Latency>, id: Option<[u8; 8]>) -> Pick {
+    if let Some(id) = id {
+        return match heard.iter().position(|l| l.device_id == id) {
+            Some(i) => Pick::One(heard.swap_remove(i)),
+            None if heard.is_empty() => Pick::None,
+            // Heartbeats from the address, none with its id: not this device's.
+            None => Pick::Shared(heard.len()),
+        };
+    }
     match heard.len() {
         0 => Pick::None,
         1 => Pick::One(heard.remove(0)),
@@ -251,7 +261,9 @@ impl Watches {
                     }
                 }
             }
-            match latency::listen(ip, *device.arc.ip(), LISTEN).map(pick) {
+            match latency::listen(ip, *device.arc.ip(), LISTEN)
+                .map(|heard| pick(heard, device.device_id))
+            {
                 Ok(Pick::One(l)) => {
                     let mut d = data.lock().unwrap_or_else(|e| e.into_inner());
                     d.add(&l);
@@ -262,7 +274,7 @@ impl Watches {
                 Ok(Pick::None) => {}
                 Ok(Pick::Shared(n)) => {
                     let e = format!(
-                        "{SHARED}: {n} devices send heartbeats from {}; dcontroller cannot tell which is {} yet",
+                        "{SHARED}: {n} devices send heartbeats from {}; dcontroller cannot tell which is {} (no device id from discovery)",
                         device.arc.ip(),
                         device.name
                     );
@@ -309,10 +321,22 @@ mod tests {
     }
 
     #[test]
-    fn pick_takes_a_single_device_and_refuses_a_shared_address() {
-        assert_eq!(pick(vec![]), Pick::None);
-        assert_eq!(pick(vec![heard(1)]), Pick::One(heard(1)));
-        assert_eq!(pick(vec![heard(1), heard(2)]), Pick::Shared(2));
+    fn pick_takes_a_single_device_and_refuses_a_shared_address_without_its_id() {
+        assert_eq!(pick(vec![], None), Pick::None);
+        assert_eq!(pick(vec![heard(1)], None), Pick::One(heard(1)));
+        assert_eq!(pick(vec![heard(1), heard(2)], None), Pick::Shared(2));
+    }
+
+    #[test]
+    fn pick_takes_the_device_by_its_id_at_a_shared_address() {
+        assert_eq!(
+            pick(vec![heard(1), heard(2)], Some([2; 8])),
+            Pick::One(heard(2))
+        );
+        assert_eq!(pick(vec![heard(1)], Some([1; 8])), Pick::One(heard(1)));
+        assert_eq!(pick(vec![], Some([1; 8])), Pick::None);
+        // Only other devices' heartbeats at the address: none taken.
+        assert_eq!(pick(vec![heard(3)], Some([1; 8])), Pick::Shared(1));
     }
 
     #[test]

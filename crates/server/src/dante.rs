@@ -439,6 +439,7 @@ mod tests {
             name: name.into(),
             arc: SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, last), 4440),
             dbc: None,
+            device_id: None,
             txt,
         }
     }
