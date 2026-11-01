@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
 use dcontroller::{Config, VERSION, app};
@@ -42,11 +44,24 @@ async fn serve(path: PathBuf) -> anyhow::Result<()> {
         .await
         .with_context(|| format!("bind {}", cfg.bind))?;
     info!(addr = %listener.local_addr()?, "listening");
-    axum::serve(listener, app(&cfg.web_dir))
+    let stop = Arc::new(AtomicBool::new(false));
+    let dante = dcontroller::dante::start(cfg.dante_interface.clone(), Arc::clone(&stop));
+    axum::serve(listener, app(&cfg.web_dir, dante))
         .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
+            shutdown_signal().await;
             info!("shutdown");
         })
         .await?;
+    stop.store(true, Ordering::Relaxed);
     Ok(())
+}
+
+/// SIGINT or SIGTERM (systemd stops the service with SIGTERM).
+async fn shutdown_signal() {
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("install the SIGTERM handler");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = term.recv() => {}
+    }
 }

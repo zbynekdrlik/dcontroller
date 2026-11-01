@@ -1,19 +1,23 @@
 import { defineConfig } from "@playwright/test";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { root, routed, run } from "./env";
 
-// The real server binary serves the real trunk build; nothing is mocked.
-const root = resolve(__dirname, "..");
+// The real server binary serves the real trunk build and discovers a real
+// Dante device (global-setup.ts); nothing is mocked.
 const port = 18080;
-// Not under test-results: Playwright empties that directory when it starts.
-mkdirSync(resolve(__dirname, ".run"), { recursive: true });
-const config = resolve(__dirname, ".run", "config.toml");
-writeFileSync(config, `bind = "127.0.0.1:${port}"\nweb_dir = "${resolve(root, "crates/web/dist")}"\n`);
+const config = resolve(run, "config.toml");
+writeFileSync(
+  config,
+  `bind = "127.0.0.1:${port}"\nweb_dir = "${resolve(root, "crates/web/dist")}"\ndante_interface = "${routed.iface}"\n`,
+);
 
 export default defineConfig({
   testDir: "tests",
+  globalSetup: "./global-setup.ts",
   forbidOnly: !!process.env.CI,
   retries: 0,
+  workers: 1,
   reporter: [["list"]],
   use: { baseURL: `http://127.0.0.1:${port}` },
   projects: [{ name: "chromium", use: { browserName: "chromium" } }],

@@ -1,0 +1,122 @@
+//! The JSON the server's `/api/devices` sends and the web app reads. One
+//! definition for both sides, so they cannot drift apart.
+
+use serde::{Deserialize, Serialize};
+
+/// `GET /api/devices`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Devices {
+    /// Discovery runs (a Dante interface is configured and has an IPv4).
+    pub enabled: bool,
+    /// The Dante interface from the config, if any.
+    pub interface: Option<String>,
+    /// Why discovery does not run, when it does not.
+    pub error: Option<String>,
+    /// The devices, sorted by name (case aside).
+    pub devices: Vec<Device>,
+}
+
+/// One Dante device: what its mDNS records say, and its last ARC read.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Device {
+    pub name: String,
+    /// Its ARC address, `ip:port`.
+    pub address: String,
+    /// mDNS `mf`.
+    pub manufacturer: Option<String>,
+    /// The model: mDNS `router_info` (board name), else `model`.
+    pub model: Option<String>,
+    /// The last complete read; `None` before the first one.
+    pub channels: Option<Channels>,
+    /// Unix seconds of the last complete read.
+    pub read_at: Option<u64>,
+    /// The last read's error, when it failed (the previous read stays).
+    pub error: Option<String>,
+}
+
+/// A device's channels, read over ARC.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Channels {
+    pub tx: Vec<TxChannel>,
+    pub rx: Vec<RxChannel>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TxChannel {
+    /// From 1.
+    pub channel: u16,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RxChannel {
+    /// From 1.
+    pub channel: u16,
+    pub label: String,
+    /// The subscribed TX channel and device; `None` when not subscribed.
+    pub source: Option<Source>,
+    /// The subscription's state in words (`receiving`, `unresolved`, ...),
+    /// or its code in hex when unknown; `None` when not subscribed.
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Source {
+    pub channel: String,
+    pub device: String,
+}
+
+impl RxChannel {
+    /// `true` when the subscription receives audio.
+    pub fn receiving(&self) -> bool {
+        self.status.as_deref() == Some("receiving")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn devices_round_trip_through_json() {
+        let d = Devices {
+            enabled: true,
+            interface: Some("eth1".into()),
+            error: None,
+            devices: vec![Device {
+                name: "stage-box".into(),
+                address: "10.0.0.5:4440".into(),
+                manufacturer: Some("Yamaha".into()),
+                model: Some("Rio".into()),
+                channels: Some(Channels {
+                    tx: vec![TxChannel {
+                        channel: 1,
+                        label: "Vox".into(),
+                    }],
+                    rx: vec![RxChannel {
+                        channel: 1,
+                        label: "In 1".into(),
+                        source: Some(Source {
+                            channel: "Vox".into(),
+                            device: "desk".into(),
+                        }),
+                        status: Some("receiving".into()),
+                    }],
+                }),
+                read_at: Some(1),
+                error: None,
+            }],
+        };
+        let text = serde_json::to_string(&d).unwrap();
+        assert_eq!(serde_json::from_str::<Devices>(&text).unwrap(), d);
+        assert!(d.devices[0].channels.as_ref().unwrap().rx[0].receiving());
+    }
+
+    #[test]
+    fn only_receiving_status_counts_as_receiving() {
+        let mut rx = RxChannel::default();
+        assert!(!rx.receiving());
+        rx.status = Some("unresolved".into());
+        assert!(!rx.receiving());
+    }
+}

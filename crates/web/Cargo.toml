@@ -9,6 +9,9 @@ description = "dcontroller dashboard: Leptos CSR PWA, built to wasm by trunk."
 [dependencies]
 leptos = { version = "0.8", features = ["csr"] }
 console_error_panic_hook = "0.1"
+dcontroller-api = { path = "../api" }
+web-sys = { version = "0.3", features = ["HtmlDetailsElement"] }
+gloo-net = { version = "0.6", default-features = false, features = ["http", "json"] }
 
 [build-dependencies]
 buildver = { path = "../buildver" }

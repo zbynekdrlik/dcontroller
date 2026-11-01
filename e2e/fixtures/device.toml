@@ -1,0 +1,11 @@
+# A real Dante device for the E2E tests: dstack's own device binary
+# (dante-stack-dev --clock system) runs it on the box's routed address.
+# state_file is appended by global-setup.ts.
+name = "dc-e2e-device"
+manufacturer = "dcontroller-e2e"
+model = "test-box"
+sample_rate = 48000
+encoding = 24
+latency_ns = 10000000
+rx = ["Stage L", "Stage R", "Spare 3", "Spare 4"]
+tx = ["Mix L", "Mix R", "Talkback", "Click"]
