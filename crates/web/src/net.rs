@@ -118,8 +118,37 @@ mod tests {
         assert_eq!(link(100), "100 Mbit/s");
         assert_eq!(link(1000), "1 Gbit/s");
         assert_eq!(link(10000), "10 Gbit/s");
+        // dasio's 2.5 Gbit NIC, seen live as "2500 Mbit/s".
+        assert_eq!(link(2500), "2.5 Gbit/s");
         assert_eq!(port_text(&port(1000, "10.0.0.2")), "1 Gbit/s · 10.0.0.2");
         assert_eq!(port_text(&port(0, "0.0.0.0")), "no link");
+    }
+
+    #[test]
+    fn an_ultimo_device_at_100_mbit_is_no_warning_a_brooklyn_one_is() {
+        // UltimoX2 is a 100 Mbit platform: seen live, two Ultimo devices
+        // at 100 Mbit/s were flagged as slow.
+        let on = |platform: &str, mbit: u16| Device {
+            name: platform.into(),
+            network: Some(vec![port(mbit, "10.0.0.9")]),
+            info: Some(dcontroller_api::Info {
+                platform: Some(platform.into()),
+                ..dcontroller_api::Info::default()
+            }),
+            ..Device::default()
+        };
+        let d = Devices {
+            devices: vec![
+                on("UltimoX2", 100),
+                on("Brooklyn II", 100),
+                on("UltimoX2", 0),
+            ],
+            ..Devices::default()
+        };
+        let r = rows(&d);
+        assert!(!r[0].warn);
+        assert!(r[1].warn);
+        assert!(r[2].warn);
     }
 
     #[test]
