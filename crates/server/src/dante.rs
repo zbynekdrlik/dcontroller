@@ -16,7 +16,7 @@ use dante_stack::arc::client::{Exchange, REPLY_TIMEOUT, ReadError, Udp, read_dir
 use dante_stack::arc::control::{self, Call};
 use dante_stack::ctl::Requests;
 use dante_stack::discover::{Change, Device, Discovery};
-use dante_stack::info::client::{self as info_client, Board, ClockStatus, Product};
+use dante_stack::info::client::{self as info_client, Board, ClockStatus, NetInterface, Product};
 use dcontroller_api as api;
 use tracing::{info, warn};
 
@@ -47,6 +47,8 @@ struct Entry {
     info: Option<api::Info>,
     /// The last clock read: the status, or why there is none.
     clock: Option<Result<api::Clock, String>>,
+    /// The last network read: the interfaces, or why there are none.
+    network: Option<Result<Vec<api::NetPort>, String>>,
     read_at: Option<u64>,
     error: Option<String>,
     /// When the next read is due; `None` = now.
@@ -99,6 +101,7 @@ impl State {
                                 settings: None,
                                 info: None,
                                 clock: None,
+                                network: None,
                                 read_at: None,
                                 error: None,
                                 due: None,
@@ -152,6 +155,9 @@ impl State {
                 }
                 if r.clock.is_some() {
                     e.clock = r.clock;
+                }
+                if r.network.is_some() {
+                    e.network = r.network;
                 }
                 e.read_at = Some(unix);
                 e.error = None;
@@ -223,6 +229,8 @@ impl State {
                     info: e.info.clone(),
                     clock: e.clock.clone().and_then(Result::ok),
                     clock_error: e.clock.clone().and_then(Result::err),
+                    network: e.network.clone().and_then(Result::ok),
+                    network_error: e.network.clone().and_then(Result::err),
                     read_at: e.read_at,
                     error: e.error.clone(),
                 })
@@ -270,6 +278,31 @@ pub struct Read {
     pub info: Option<api::Info>,
     /// `None`: not read this time (the last one stays).
     pub clock: Option<Result<api::Clock, String>>,
+    /// `None`: not read this time (the last one stays).
+    pub network: Option<Result<Vec<api::NetPort>, String>>,
+}
+
+/// The network interfaces as the API shows them.
+pub fn network_view(ports: &[NetInterface]) -> Vec<api::NetPort> {
+    ports
+        .iter()
+        .map(|p| api::NetPort {
+            link_mbit: p.link_mbit,
+            mac: mac(&p.mac),
+            ip: p.ip.to_string(),
+            netmask: p.netmask.to_string(),
+            gateway: p.gateway.to_string(),
+            dns: p.dns.to_string(),
+        })
+        .collect()
+}
+
+/// Asks `device` for its network interfaces from our address `our` (UDP
+/// 8700, read-only).
+pub fn read_network(our: Ipv4Addr, device: &Device) -> Result<Vec<api::NetPort>, String> {
+    info_client::network_info(our, *device.arc.ip(), device.device_id, INFO_WAIT)
+        .map(|n| network_view(&n))
+        .map_err(|e| e.to_string())
 }
 
 /// A clock id as a MAC.
@@ -393,6 +426,7 @@ pub fn read_device(c: &mut impl Call, name: &str) -> Result<Read, ReadError> {
         settings,
         info: None,
         clock: None,
+        network: None,
     })
 }
 
@@ -577,6 +611,7 @@ fn run(
                         r.info = read_info(ip, &device, &mut udp);
                     }
                     r.clock = Some(read_clock(ip, &device));
+                    r.network = Some(read_network(ip, &device));
                     Ok(r)
                 });
             match &result {
@@ -584,6 +619,7 @@ fn run(
                     info!(device = %device.name, tx = r.channels.tx.len(), rx = r.channels.rx.len(),
                     settings = ?r.settings,
                     clock = ?r.clock,
+                    network = ?r.network,
                     ms = started.elapsed().as_millis() as u64, "dante: channels read")
                 }
                 Err(e) => warn!(device = %device.name, error = %e, "dante: channel read failed"),
@@ -648,7 +684,62 @@ mod tests {
             settings: None,
             info: None,
             clock: None,
+            network: None,
         }
+    }
+
+    #[test]
+    fn network_view_writes_addresses_and_a_read_replaces_the_last_one() {
+        let ports = [
+            NetInterface {
+                link_mbit: 1000,
+                flags: 1,
+                mac: [0, 0x1d, 0xc1, 0x0a, 0x0b, 0x0c],
+                ip: Ipv4Addr::new(10, 0, 0, 5),
+                netmask: Ipv4Addr::new(255, 255, 255, 0),
+                gateway: Ipv4Addr::new(10, 0, 0, 1),
+                dns: Ipv4Addr::UNSPECIFIED,
+            },
+            NetInterface {
+                link_mbit: 0,
+                flags: 0,
+                mac: [0, 0x1d, 0xc1, 0x0a, 0x0b, 0x0d],
+                ip: Ipv4Addr::UNSPECIFIED,
+                netmask: Ipv4Addr::UNSPECIFIED,
+                gateway: Ipv4Addr::UNSPECIFIED,
+                dns: Ipv4Addr::UNSPECIFIED,
+            },
+        ];
+        let v = network_view(&ports);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].link_mbit, 1000);
+        assert_eq!(v[0].mac, "00:1d:c1:0a:0b:0c");
+        assert_eq!(v[0].ip, "10.0.0.5");
+        assert_eq!(v[0].netmask, "255.255.255.0");
+        assert_eq!(v[0].gateway, "10.0.0.1");
+        assert_eq!(v[1].link_mbit, 0);
+        assert_eq!(v[1].ip, "0.0.0.0");
+
+        let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
+        s.apply(Change::Added(dev("Desk", 1)));
+        let now = Instant::now();
+        let with = |network| Read {
+            network,
+            ..read("Vox")
+        };
+        s.record(&dev("Desk", 1), Ok(with(Some(Ok(v.clone())))), now, 1);
+        assert_eq!(s.view().devices[0].network, Some(v.clone()));
+        s.record(&dev("Desk", 1), Ok(with(None)), now, 2);
+        assert_eq!(s.view().devices[0].network, Some(v));
+        s.record(
+            &dev("Desk", 1),
+            Ok(with(Some(Err("no reply".into())))),
+            now,
+            3,
+        );
+        let d = &s.view().devices[0];
+        assert_eq!(d.network, None);
+        assert_eq!(d.network_error.as_deref(), Some("no reply"));
     }
 
     fn status(ports: Vec<u16>, gm: [u8; 6]) -> ClockStatus {
@@ -833,6 +924,7 @@ mod tests {
                 settings: Some(settings_view(&set)),
                 info: None,
                 clock: None,
+                network: None,
             }),
             now,
             1,

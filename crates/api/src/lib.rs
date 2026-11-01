@@ -38,6 +38,10 @@ pub struct Device {
     /// not answer (`clock_error` says why).
     pub clock: Option<Clock>,
     pub clock_error: Option<String>,
+    /// Its network interfaces at the last read, primary first; `None`
+    /// before it or when it did not answer (`network_error` says why).
+    pub network: Option<Vec<NetPort>>,
+    pub network_error: Option<String>,
     /// Unix seconds of the last complete read.
     pub read_at: Option<u64>,
     /// The last read's error, when it failed (the previous read stays).
@@ -97,6 +101,18 @@ pub struct Clock {
     pub ports: Vec<String>,
     /// `none`, `valid`, `unknown`; `None` when the device does not say.
     pub word_clock: Option<String>,
+}
+
+/// One network interface of a device (UDP 8700 network info).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetPort {
+    /// Mbit/s; 0: no link.
+    pub link_mbit: u16,
+    pub mac: String,
+    pub ip: String,
+    pub netmask: String,
+    pub gateway: String,
+    pub dns: String,
 }
 
 /// A device's channels, read over ARC.
@@ -301,6 +317,12 @@ mod tests {
                     ..Clock::default()
                 }),
                 clock_error: None,
+                network: Some(vec![NetPort {
+                    link_mbit: 1000,
+                    ip: "10.0.0.5".into(),
+                    ..NetPort::default()
+                }]),
+                network_error: None,
                 read_at: Some(1),
                 error: None,
             }],
