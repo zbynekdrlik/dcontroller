@@ -432,13 +432,45 @@ mod tests {
     }
 
     #[test]
+    fn late_packets_of_a_slot_without_a_flow_are_not_credited_later() {
+        // A slot with no flow counts late packets nobody records; once a flow
+        // starts there, only the packets since count.
+        let none: BTreeMap<u16, FlowInfo> = BTreeMap::new();
+        let active: BTreeMap<u16, FlowInfo> = [(1, FlowInfo::default())].into();
+        let mut last = BTreeMap::new();
+        let beat = |late: u32| Beat {
+            device_id: [0; 8],
+            lateness: Some((48000, vec![0])),
+            late: Some(vec![late]),
+        };
+        assert!(beat_samples(&beat(0), &none, &mut last, 1).is_empty());
+        assert!(beat_samples(&beat(50_000), &none, &mut last, 2).is_empty());
+        assert_eq!(
+            beat_samples(&beat(50_003), &active, &mut last, 3)[0].late,
+            3
+        );
+    }
+
+    #[test]
     fn queued_heartbeats_of_one_device_get_seconds_of_their_own() {
         assert_eq!(stamp(None, 100), 100);
         assert_eq!(stamp(Some(99), 100), 100);
         assert_eq!(stamp(Some(100), 100), 101);
+        // Never more than a second or two ahead: one jittered pair of
+        // heartbeats must not push the device's later samples into the
+        // future for good.
         assert_eq!(stamp(Some(101), 100), 102);
-        // A clock that jumped back far (hours) is taken as it is.
+        assert_eq!(stamp(Some(102), 100), 100);
         assert_eq!(stamp(Some(100_000), 100), 100);
+        let mut prev = None;
+        for now in 0..100 {
+            // Two heartbeats in every tenth second.
+            for _ in 0..if now % 10 == 0 { 2 } else { 1 } {
+                let t = stamp(prev, now);
+                assert!(t <= now + 2, "second {now} stamped {t}");
+                prev = Some(t);
+            }
+        }
     }
 
     #[test]

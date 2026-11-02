@@ -892,6 +892,85 @@ mod tests {
     }
 
     #[test]
+    fn a_rollup_near_the_prune_edge_never_replaces_a_whole_minute_with_a_part() {
+        let st = Store::memory().unwrap();
+        let t0 = 1_800_000_000;
+        let samples: Vec<Sample> = (0..120).map(|k| s(1, t0 + k, 100, 0)).collect();
+        st.add("desk", &samples).unwrap();
+        st.rollup(t0 + 180, 600).unwrap();
+        // A day later, 30 s into the first minute: its first 30 seconds are
+        // pruned; a catch-up over the whole day must leave the minute whole.
+        let now = t0 + KEEP_SECONDS + 30;
+        st.rollup(now, 600).unwrap(); // prunes the minute's first 30 seconds
+        st.rollup(now, KEEP_SECONDS).unwrap();
+        let n: i64 = st
+            .conn()
+            .query_row("SELECT n FROM minute WHERE t = ?1", [t0], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 60);
+    }
+
+    #[test]
+    fn catch_up_reaches_each_devices_own_unrolled_seconds() {
+        let st = Store::memory().unwrap();
+        let t0 = 1_800_000_000;
+        // B has seconds from before a two-hour stop; A has fresh minutes.
+        st.add(
+            "b",
+            &(0..300).map(|k| s(1, t0 + k, 100, 0)).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let now = t0 + 7200;
+        st.add(
+            "a",
+            &(0..300)
+                .map(|k| s(1, now - 400 + k, 100, 0))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        st.rollup(now, 600).unwrap();
+        st.catch_up(now).unwrap();
+        let b: i64 = st
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM minute m JOIN device d ON d.id = m.device WHERE d.name = 'b'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(b, 5);
+    }
+
+    #[test]
+    fn device_rows_split_by_case_are_merged_by_the_schema() {
+        // Databases written before the fix may hold "stage-1" and "Stage-1".
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(&format!("{}; PRAGMA user_version = 1;", MIGRATIONS[0]))
+            .unwrap();
+        db.execute_batch(
+            "INSERT INTO device (id, name) VALUES (1, 'Stage-1'), (2, 'stage-1');
+             INSERT INTO flow VALUES (1, 1, 10, 1000, 48000, '[]', '[]');
+             INSERT INTO second VALUES (2, 1, 20, 400, 3), (1, 1, 20, 100, 1);",
+        )
+        .unwrap();
+        let st = Store::with(db).unwrap();
+        let ids: i64 = st
+            .conn()
+            .query_row("SELECT COUNT(*) FROM device", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ids, 1);
+        let h = st.history("stage-1", 0, 100, 100).unwrap();
+        assert_eq!(h.flows.len(), 1);
+        assert_eq!((h.flows[0].latency_us, h.flows[0].peak_us), (1000, 400));
+        // The schema refuses a second spelling from now on.
+        assert!(
+            st.conn()
+                .execute("INSERT INTO device (name) VALUES ('STAGE-1')", [])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn time_indexes_serve_the_rollup_and_pruning() {
         let st = Store::memory().unwrap();
         let names: Vec<String> = st

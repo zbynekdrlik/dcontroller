@@ -295,13 +295,17 @@ mod tests {
     }
 
     #[test]
-    fn only_the_latest_request_may_show_its_answer() {
+    fn only_the_latest_read_may_show_and_a_live_poll_waits_for_it() {
         // A slow 1 y read answered after a newer 5 min read must not replace it.
-        let mut r = Requests::default();
-        let year = r.next();
-        let five = r.next();
-        assert!(!r.is_latest(year));
-        assert!(r.is_latest(five));
+        let mut r = HistReads::default();
+        let year = r.start();
+        let five = r.start();
+        assert!(!r.done(year));
+        // A live poll does not start while a read runs: a read slower than
+        // the poll still gets shown.
+        assert!(r.busy());
+        assert!(r.done(five));
+        assert!(!r.busy());
     }
 
     #[test]
