@@ -5,7 +5,7 @@ import { test, expect, type ConsoleMessage, type Page } from "@playwright/test";
 const DEVICE = "dc-e2e-device";
 
 async function openMatrix(page: Page, device = DEVICE) {
-  await page.goto("/");
+  await page.goto("/#routing");
   const matrix = page.getByTestId("matrix");
   await expect(matrix.locator(`[data-testid="rx-device"][data-name="${device}"]`)).toBeVisible({ timeout: 30_000 });
   await expect(matrix.locator(`[data-testid="cell"][data-rx="${device}"][data-tx="${device}"]`)).not.toHaveText("", {

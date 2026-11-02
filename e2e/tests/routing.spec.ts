@@ -14,8 +14,8 @@ test.describe("routing matrix", () => {
     page.on("pageerror", (e) => console_msgs.push(`pageerror: ${e.message}`));
   });
 
-  test("is the start view and shows the subscription at device and channel level", async ({ page }) => {
-    await page.goto("/");
+  test("shows the subscription at device and channel level", async ({ page }) => {
+    await page.goto("/#routing");
     await expect(page.getByTestId("tab-routing")).toHaveClass(/\bon\b/);
     const matrix = page.getByTestId("matrix");
     const devCell = matrix.locator(`[data-testid="cell"][data-rx="${DEVICE}"][data-tx="${DEVICE}"]`);
@@ -49,7 +49,7 @@ test.describe("routing matrix", () => {
   });
 
   test("tabs switch between routing and devices and keep the view in the URL", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/#routing");
     await page.getByTestId("tab-devices").click();
     await expect(page).toHaveURL(/#devices$/);
     await expect(page.locator(`[data-testid="device"][data-name="${DEVICE}"]`)).toBeVisible({ timeout: 30_000 });

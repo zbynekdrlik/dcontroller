@@ -183,6 +183,11 @@ impl State {
             .is_some_and(|e| e.info.is_none())
     }
 
+    /// Our address on the Dante interface while discovery runs.
+    pub fn our_ip(&self) -> Option<Ipv4Addr> {
+        self.ip
+    }
+
     /// Our address and every listed device with RX channels (as last read):
     /// the receivers the recorder records.
     pub fn receivers(&self) -> Vec<(Ipv4Addr, Device)> {

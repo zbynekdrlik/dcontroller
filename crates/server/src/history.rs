@@ -88,12 +88,28 @@ impl Tier {
         }
     }
 
-    /// The table, and the SQL for a row's max, sum and count.
-    fn sql(self) -> (&'static str, &'static str, &'static str, &'static str) {
+    /// The rows of device `?1` at this resolution as `(slot, t, peak, sum,
+    /// n, late)`: the tier's own rows, then what the finer tiers hold past
+    /// its last rolled-up row, aggregated on the fly (the end of any range,
+    /// and everything before the first rollup).
+    fn source(self) -> String {
+        const SECONDS: &str =
+            "SELECT slot, t, peak, peak AS sum, 1 AS n, late FROM second WHERE device = ?1";
+        let minutes = String::from(
+            "SELECT slot, t, peak, sum, n, late FROM minute WHERE device = ?1 UNION ALL
+             SELECT slot, t - t % 60, MAX(peak), SUM(peak), COUNT(*), SUM(late) FROM second
+             WHERE device = ?1 AND t >= (SELECT COALESCE(MAX(t) + 60, 0) FROM minute WHERE device = ?1)
+             GROUP BY slot, t - t % 60"
+        );
         match self {
-            Tier::Second => ("second", "peak", "peak", "1"),
-            Tier::Minute => ("minute", "peak", "sum", "n"),
-            Tier::Hour => ("hour", "peak", "sum", "n"),
+            Tier::Second => SECONDS.to_owned(),
+            Tier::Minute => minutes,
+            Tier::Hour => format!(
+                "SELECT slot, t, peak, sum, n, late FROM hour WHERE device = ?1 UNION ALL
+                 SELECT slot, t - t % 3600, MAX(peak), SUM(sum), SUM(n), SUM(late) FROM ({minutes})
+                 WHERE t >= (SELECT COALESCE(MAX(t) + 3600, 0) FROM hour WHERE device = ?1)
+                 GROUP BY slot, t - t % 3600"
+            ),
         }
     }
 }
@@ -374,11 +390,11 @@ impl Store {
         else {
             return Ok(out);
         };
-        let (table, max, sum, n) = tier.sql();
+        let src = tier.source();
         let mut q = db
             .prepare(&format!(
-                "SELECT slot, t - (t - ?2) % ?4 AS b, MAX({max}), SUM({sum}), SUM({n}), SUM(late)
-                 FROM {table} WHERE device = ?1 AND t >= ?2 AND t <= ?3
+                "SELECT slot, t - (t - ?2) % ?4 AS b, MAX(peak), SUM(sum), SUM(n), SUM(late)
+                 FROM ({src}) WHERE t >= ?2 AND t <= ?3
                  GROUP BY slot, b ORDER BY slot, b"
             ))
             .map_err(|e| e.to_string())?;
@@ -436,7 +452,7 @@ impl Store {
         // The distribution and the count past the latency, over the stored values.
         let mut values = db
             .prepare(&format!(
-                "SELECT {max} FROM {table} WHERE device = ?1 AND slot = ?2 AND t >= ?3 AND t <= ?4"
+                "SELECT peak FROM ({src}) WHERE slot = ?2 AND t >= ?3 AND t <= ?4"
             ))
             .map_err(|e| e.to_string())?;
         for (f, (s, cnt)) in flows.iter_mut().zip(sums) {
@@ -553,6 +569,31 @@ mod tests {
         assert_eq!((f.max_us[0], f.mean_us[0]), (Some(20), Some(10)));
         assert_eq!(f.peak_us, 90);
         assert_eq!(f.avg_us, 45);
+    }
+
+    #[test]
+    fn longer_ranges_include_the_seconds_not_yet_rolled_up() {
+        let st = Store::memory().unwrap();
+        let t0 = 1_800_000_000; // a whole hour
+        let samples: Vec<Sample> = (0..7200)
+            .map(|k| s(1, t0 + k, if k == 7100 { 700 } else { 100 }, 0))
+            .collect();
+        st.add("desk", &samples).unwrap();
+        // Nothing rolled up yet: a 6 h range still has every minute.
+        let h = st.history("desk", t0, t0 + 6 * 3600).unwrap();
+        assert_eq!(h.tier_s, 60);
+        assert_eq!(h.flows[0].max_us.iter().flatten().count(), 120);
+        assert_eq!(h.flows[0].max_us[118], Some(700));
+        // The first hour rolled up, the second not: both read, once each.
+        st.rollup(t0 + 3600, 3600).unwrap();
+        let h = st.history("desk", t0, t0 + 6 * 3600).unwrap();
+        assert_eq!(h.flows[0].max_us.iter().flatten().count(), 120);
+        assert_eq!(h.flows[0].mean_us[0], Some(100));
+        // A 30 day range: two hours, the second from not-yet-rolled seconds.
+        let d = st.history("desk", t0, t0 + 30 * 24 * 3600).unwrap();
+        assert_eq!(d.tier_s, 3600);
+        assert_eq!(&d.flows[0].max_us[..3], &[Some(100), Some(700), None]);
+        assert_eq!(d.flows[0].histogram.iter().sum::<u64>(), 2);
     }
 
     #[test]
