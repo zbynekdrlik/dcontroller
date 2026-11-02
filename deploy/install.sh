@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Install or update dcontroller on the server box. Run as root from an
 # unpacked release directory holding: dcontroller (binary), web/ (trunk dist),
-# dcontroller.service. Keeps /etc/dcontroller/config.toml if present (it must
+# dcontroller.service (and dante-guard.*: an enabled guard gets this
+# release's rules). Keeps /etc/dcontroller/config.toml if present (it must
 # pass `dcontroller --check-config`); otherwise writes it from DC_BIND and
 # DC_IFACE.
 #
@@ -122,3 +123,16 @@ healthy || false
 served=$(curl -fsS -m 2 "http://$bind/api/version")
 trap - ERR INT TERM HUP
 echo "dcontroller $served active"
+
+# The Dante NIC guard, when installed: this release's rules (a new release
+# may open or close ports), for the config's interface. Routing is left as
+# dante-guard.sh set it.
+if systemctl is-enabled -q dante-guard.service 2>/dev/null && [ -x "$src/dante-guard.sh" ]; then
+    iface=$(sed -n 's/^dante_interface *= *"\([A-Za-z0-9._-]*\)".*/\1/p' "$cfg")
+    if [ -z "$iface" ]; then
+        echo "dante-guard is enabled but $cfg names no dante_interface; rules not refreshed" >&2
+        exit 1
+    fi
+    DC_IFACE="$iface" DC_GUARD_SKIP_ROUTING=1 "$src/dante-guard.sh" \
+        || { echo "dante-guard rules not refreshed" >&2; exit 1; }
+fi
