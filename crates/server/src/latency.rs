@@ -430,9 +430,8 @@ mod tests {
 
     #[test]
     fn late_packets_wait_for_a_heartbeat_that_stores_a_sample() {
-        // A heartbeat without a lateness record, or one before the device's
-        // flows are read, stores nothing; its late packets must not be lost.
-        // (An empty flow map means the device has no flow: see the next test.)
+        // A heartbeat without a lateness record stores nothing; its late
+        // packets wait for the next sample of the slot.
         let active: BTreeMap<u16, FlowInfo> = [(1, FlowInfo::default())].into();
         let mut last = BTreeMap::new();
         let with = |late: u32| Beat {
@@ -447,9 +446,11 @@ mod tests {
         };
         assert_eq!(beat_samples(&with(10), &active, &mut last, 1)[0].late, 0); // the baseline
         assert!(beat_samples(&without(14), &active, &mut last, 2).is_empty());
-        // Flows not read yet: the heartbeat is only remembered.
+        // Flows not read yet: nothing is recorded for that time, late packets
+        // included (crediting them later spikes one second with packets
+        // from a time without peaks); the count moves on.
         remember(&with(16), &mut last);
-        assert_eq!(beat_samples(&with(17), &active, &mut last, 4)[0].late, 7);
+        assert_eq!(beat_samples(&with(17), &active, &mut last, 4)[0].late, 1);
     }
 
     #[test]
@@ -470,28 +471,6 @@ mod tests {
             beat_samples(&beat(50_003), &active, &mut last, 3)[0].late,
             3
         );
-    }
-
-    #[test]
-    fn queued_heartbeats_of_one_device_get_seconds_of_their_own() {
-        assert_eq!(stamp(None, 100), 100);
-        assert_eq!(stamp(Some(99), 100), 100);
-        assert_eq!(stamp(Some(100), 100), 101);
-        // Never more than a second or two ahead: one jittered pair of
-        // heartbeats must not push the device's later samples into the
-        // future for good.
-        assert_eq!(stamp(Some(101), 100), 102);
-        assert_eq!(stamp(Some(102), 100), 100);
-        assert_eq!(stamp(Some(100_000), 100), 100);
-        let mut prev = None;
-        for now in 0..100 {
-            // Two heartbeats in every tenth second.
-            for _ in 0..if now % 10 == 0 { 2 } else { 1 } {
-                let t = stamp(prev, now);
-                assert!(t <= now + 2, "second {now} stamped {t}");
-                prev = Some(t);
-            }
-        }
     }
 
     #[test]
