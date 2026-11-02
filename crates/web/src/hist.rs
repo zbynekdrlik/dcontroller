@@ -337,6 +337,23 @@ mod tests {
     }
 
     #[test]
+    fn a_slow_read_still_shows_when_live_polls_follow_it() {
+        // Every read takes over 30 s: the polls after it ask the same range,
+        // so the slow answer is still the page's to show.
+        let mut r = HistReads::default();
+        let slow = r.start_at(0.0);
+        assert!(!r.busy_at(31_000.0));
+        let poll = r.poll_at(31_000.0);
+        assert!(r.done(slow));
+        assert!(r.done(poll));
+        // A choice made since (a range, a zoom) still drops an older answer.
+        let year = r.start_at(40_000.0);
+        let five = r.start_at(41_000.0);
+        assert!(!r.done(year));
+        assert!(r.done(five));
+    }
+
+    #[test]
     fn device_names_compare_case_aside() {
         assert!(same_name("Stage-1", "stage-1"));
         assert!(!same_name("stage-1", "stage-2"));
