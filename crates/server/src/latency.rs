@@ -411,8 +411,9 @@ mod tests {
 
     #[test]
     fn late_packets_wait_for_a_heartbeat_that_stores_a_sample() {
-        // A heartbeat without a lateness record (or before the flows are
-        // known) stores nothing; its late packets must not be lost.
+        // A heartbeat without a lateness record, or one before the device's
+        // flows are read, stores nothing; its late packets must not be lost.
+        // (An empty flow map means the device has no flow: see the next test.)
         let active: BTreeMap<u16, FlowInfo> = [(1, FlowInfo::default())].into();
         let mut last = BTreeMap::new();
         let with = |late: u32| Beat {
@@ -427,7 +428,8 @@ mod tests {
         };
         assert_eq!(beat_samples(&with(10), &active, &mut last, 1)[0].late, 0); // the baseline
         assert!(beat_samples(&without(14), &active, &mut last, 2).is_empty());
-        assert!(beat_samples(&with(16), &BTreeMap::new(), &mut last, 3).is_empty());
+        // Flows not read yet: the heartbeat is only remembered.
+        remember(&with(16), &mut last);
         assert_eq!(beat_samples(&with(17), &active, &mut last, 4)[0].late, 7);
     }
 
