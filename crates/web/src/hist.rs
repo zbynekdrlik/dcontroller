@@ -16,6 +16,69 @@ pub const RANGES: [(&str, i64); 7] = [
     ("1 y", 365 * 24 * 3600),
 ];
 
+/// The page's history reads: numbered, so an answer that comes after a
+/// newer read (a slow 1 y read after a 5 min click) is dropped, and busy
+/// while the newest runs, so a live poll never supersedes a slow read.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct HistReads {
+    last: u64,
+    /// The newest read a choice started (a range, a zoom, a device): an
+    /// answer older than it is stale; live polls of the same range are not.
+    chosen: u64,
+    /// When the newest read started (ms), while it runs.
+    running: Option<f64>,
+}
+
+/// How long a read holds the live poll before it is taken as lost, ms.
+pub const READ_HOLD_MS: f64 = 30_000.0;
+
+impl HistReads {
+    /// A new read a choice started, at `now_ms`: its number.
+    pub fn start_at(&mut self, now_ms: f64) -> u64 {
+        let n = self.poll_at(now_ms);
+        self.chosen = n;
+        n
+    }
+
+    /// A new live poll of the same range, at `now_ms`: its number.
+    pub fn poll_at(&mut self, now_ms: f64) -> u64 {
+        self.last += 1;
+        self.running = Some(now_ms);
+        self.last
+    }
+
+    /// A new read's number, at time zero (tests).
+    #[cfg(test)]
+    pub fn start(&mut self) -> u64 {
+        self.start_at(0.0)
+    }
+
+    /// Whether the newest read is still running, however long (tests).
+    #[cfg(test)]
+    pub fn busy(&self) -> bool {
+        self.running.is_some()
+    }
+
+    /// Read `n` answered: whether it may show (no choice was made since).
+    pub fn done(&mut self, n: u64) -> bool {
+        if n == self.last {
+            self.running = None;
+        }
+        n >= self.chosen
+    }
+
+    /// Whether the newest read still runs at `now_ms` and is not taken as
+    /// lost (a read that never answers stops holding the live poll).
+    pub fn busy_at(&self, now_ms: f64) -> bool {
+        self.running.is_some_and(|t| now_ms - t < READ_HOLD_MS)
+    }
+}
+
+/// Dante device names compare case aside.
+pub fn same_name(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
 /// The range a page opens with.
 pub const DEFAULT_RANGE: i64 = 3600;
 
@@ -272,6 +335,51 @@ mod tests {
         let q: serde_json::Value =
             serde_json::from_str(&chart_json(&quiet, 200, Scale::Share)).unwrap();
         assert!(q["late"].is_null());
+    }
+
+    #[test]
+    fn a_read_that_never_answers_stops_holding_the_live_poll() {
+        let mut r = HistReads::default();
+        let _hung = r.start_at(1_000.0);
+        assert!(r.busy_at(1_000.0 + 29_000.0));
+        assert!(!r.busy_at(1_000.0 + 31_000.0));
+    }
+
+    #[test]
+    fn a_slow_read_still_shows_when_live_polls_follow_it() {
+        // Every read takes over 30 s: the polls after it ask the same range,
+        // so the slow answer is still the page's to show.
+        let mut r = HistReads::default();
+        let slow = r.start_at(0.0);
+        assert!(!r.busy_at(31_000.0));
+        let poll = r.poll_at(31_000.0);
+        assert!(r.done(slow));
+        assert!(r.done(poll));
+        // A choice made since (a range, a zoom) still drops an older answer.
+        let year = r.start_at(40_000.0);
+        let five = r.start_at(41_000.0);
+        assert!(!r.done(year));
+        assert!(r.done(five));
+    }
+
+    #[test]
+    fn device_names_compare_case_aside() {
+        assert!(same_name("Stage-1", "stage-1"));
+        assert!(!same_name("stage-1", "stage-2"));
+    }
+
+    #[test]
+    fn only_the_latest_read_may_show_and_a_live_poll_waits_for_it() {
+        // A slow 1 y read answered after a newer 5 min read must not replace it.
+        let mut r = HistReads::default();
+        let year = r.start();
+        let five = r.start();
+        assert!(!r.done(year));
+        // A live poll does not start while a read runs: a read slower than
+        // the poll still gets shown.
+        assert!(r.busy());
+        assert!(r.done(five));
+        assert!(!r.busy());
     }
 
     #[test]

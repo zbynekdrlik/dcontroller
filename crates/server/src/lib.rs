@@ -150,9 +150,7 @@ async fn subscription(
 async fn overview(
     State(s): State<Shared>,
 ) -> Result<axum::Json<dcontroller_api::Overview>, StatusCode> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    let now = history::unix_now();
     tokio::task::spawn_blocking(move || s.history.overview(now))
         .await
         .map_err(|e| {
@@ -179,12 +177,10 @@ async fn history_report(
     axum::extract::Path(device): axum::extract::Path<String>,
     axum::extract::Query(r): axum::extract::Query<Range>,
 ) -> Result<axum::Json<dcontroller_api::History>, StatusCode> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    let now = history::unix_now();
     let to = r.to.unwrap_or(now);
-    let from = r.from.unwrap_or(to - 3600);
-    tokio::task::spawn_blocking(move || s.history.history(&device, from, to))
+    let from = r.from.unwrap_or(to.saturating_sub(3600));
+    tokio::task::spawn_blocking(move || s.history.history(&device, from, to, now))
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "history: task failed");

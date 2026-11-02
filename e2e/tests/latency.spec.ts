@@ -86,7 +86,9 @@ test.describe("latency history", () => {
   });
 
   test("an unknown receiver has an empty history", async ({ page }) => {
-    const r = await page.request.get("/api/history/no-such-device?from=1800000000&to=1800000300");
+    // The last five minutes (a range in the future is clamped to an hour ahead).
+    const now = Math.floor(Date.now() / 1000);
+    const r = await page.request.get(`/api/history/no-such-device?from=${now - 300}&to=${now}`);
     expect(r.ok()).toBe(true);
     const body = await r.json();
     expect(body.flows).toEqual([]);

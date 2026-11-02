@@ -86,7 +86,9 @@
     latency(el, json) {
       const d = JSON.parse(json);
       // The series set changed (flows came or went): build anew.
-      const shape = d.unit + "#" + d.flows.map((f) => f.label).join("|") + "#" + d.thresholds.length + "#" + !!d.late;
+      // Labels, latency lines and the floor live in the chart's options: a
+      // change to any of them builds it anew (a flow's latency changed).
+      const shape = [d.unit, d.flows.map((f) => f.label).join("|"), d.thresholds.map((th) => th.label + "=" + th.value).join("|"), !!d.late, d.floor].join("#");
       if (el._dc && el._dcShape === shape) {
         const data = [d.t];
         if (d.late) data.push(d.late.map((v) => (v ? v : null)));

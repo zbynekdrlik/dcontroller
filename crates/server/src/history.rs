@@ -32,7 +32,48 @@ const MIGRATIONS: &[&str] = &[
      CREATE TABLE flow (device INTEGER NOT NULL, slot INTEGER NOT NULL, since INTEGER NOT NULL,
          latency_us INTEGER NOT NULL, rate INTEGER NOT NULL, channels TEXT NOT NULL,
          sources TEXT NOT NULL, PRIMARY KEY (device, slot, since)) WITHOUT ROWID;",
+    // 2: time indexes for the rollup, the pruning and the overview.
+    "CREATE INDEX second_t ON second (t);
+     CREATE INDEX minute_t ON minute (t);
+     CREATE INDEX hour_t ON hour (t);",
+    // 3: one row per device name, case aside (Dante compares names so):
+    // rows split by case before v0.1.24 are merged into the oldest id.
+    "CREATE TEMP TABLE dup AS SELECT d.id AS id,
+         (SELECT MIN(e.id) FROM device e WHERE e.name = d.name COLLATE NOCASE) AS keep FROM device d;
+     DELETE FROM dup WHERE id = keep;
+     INSERT INTO second (device, slot, t, peak, late)
+         SELECT dup.keep, s.slot, s.t, s.peak, s.late FROM second s JOIN dup ON dup.id = s.device WHERE true
+         ON CONFLICT (device, t, slot) DO UPDATE SET peak = MAX(peak, excluded.peak), late = late + excluded.late;
+     INSERT INTO minute (device, slot, t, peak, sum, n, late)
+         SELECT dup.keep, m.slot, m.t, m.peak, m.sum, m.n, m.late FROM minute m JOIN dup ON dup.id = m.device WHERE true
+         ON CONFLICT (device, t, slot) DO UPDATE SET peak = MAX(peak, excluded.peak), sum = sum + excluded.sum,
+             n = n + excluded.n, late = late + excluded.late;
+     INSERT INTO hour (device, slot, t, peak, sum, n, late)
+         SELECT dup.keep, h.slot, h.t, h.peak, h.sum, h.n, h.late FROM hour h JOIN dup ON dup.id = h.device WHERE true
+         ON CONFLICT (device, t, slot) DO UPDATE SET peak = MAX(peak, excluded.peak), sum = sum + excluded.sum,
+             n = n + excluded.n, late = late + excluded.late;
+     INSERT OR IGNORE INTO flow (device, slot, since, latency_us, rate, channels, sources)
+         SELECT dup.keep, f.slot, f.since, f.latency_us, f.rate, f.channels, f.sources FROM flow f JOIN dup ON dup.id = f.device;
+     DELETE FROM second WHERE device IN (SELECT id FROM dup);
+     DELETE FROM minute WHERE device IN (SELECT id FROM dup);
+     DELETE FROM hour WHERE device IN (SELECT id FROM dup);
+     DELETE FROM flow WHERE device IN (SELECT id FROM dup);
+     DELETE FROM device WHERE id IN (SELECT id FROM dup);
+     DROP TABLE dup;
+     CREATE UNIQUE INDEX device_name_nocase ON device (name COLLATE NOCASE);",
 ];
+
+/// `t` rounded up to a whole `unit`.
+fn ceil(t: i64, unit: i64) -> i64 {
+    (t + unit - 1).div_euclid(unit) * unit
+}
+
+/// Now, unix seconds.
+pub fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
 
 /// One second of one flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,13 +95,14 @@ pub struct FlowInfo {
 }
 
 /// The tier a range reads from and the bucket size: seconds up to 2 h,
-/// minutes up to 7 days, hours beyond; at most [`api::HISTORY_POINTS`]
-/// buckets, each a whole number of the tier's unit.
-pub fn plan(span_s: i64) -> (Tier, i64) {
-    let span = span_s.max(1);
-    let tier = if span <= 2 * 3600 {
+/// minutes up to 7 days, hours beyond, and never a tier that has already
+/// dropped the range's start (`age_s`: how long ago it was); at most
+/// [`api::HISTORY_POINTS`] buckets, each a whole number of the tier's unit.
+pub fn plan(span_s: i64, age_s: i64) -> (Tier, i64) {
+    let span = span_s.clamp(1, KEEP_HOURS * 2);
+    let tier = if span <= 2 * 3600 && age_s <= KEEP_SECONDS {
         Tier::Second
-    } else if span <= 7 * 24 * 3600 {
+    } else if span <= 7 * 24 * 3600 && age_s <= KEEP_MINUTES {
         Tier::Minute
     } else {
         Tier::Hour
@@ -161,15 +203,28 @@ impl Store {
         self.db.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// The id of the device named `name`, case aside (as Dante compares
+    /// names), made when new.
     fn device_id(db: &Connection, name: &str) -> rusqlite::Result<i64> {
-        db.execute("INSERT OR IGNORE INTO device (name) VALUES (?1)", [name])?;
-        db.query_row("SELECT id FROM device WHERE name = ?1", [name], |r| {
-            r.get(0)
-        })
+        db.execute(
+            "INSERT INTO device (name) SELECT ?1
+             WHERE NOT EXISTS (SELECT 1 FROM device WHERE name = ?1 COLLATE NOCASE)",
+            [name],
+        )?;
+        // The device keeps the spelling it was last listed with.
+        db.execute(
+            "UPDATE device SET name = ?1 WHERE name = ?1 COLLATE NOCASE AND name <> ?1",
+            [name],
+        )?;
+        db.query_row(
+            "SELECT id FROM device WHERE name = ?1 COLLATE NOCASE",
+            [name],
+            |r| r.get(0),
+        )
     }
 
     /// Stores `samples` of `device` in one transaction (a second stored
-    /// twice keeps the later).
+    /// twice keeps the larger peak and adds the late packets).
     pub fn add(&self, device: &str, samples: &[Sample]) -> Result<(), String> {
         if samples.is_empty() {
             return Ok(());
@@ -180,7 +235,9 @@ impl Store {
         {
             let mut ins = tx
                 .prepare_cached(
-                    "INSERT OR REPLACE INTO second (device, slot, t, peak, late) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    "INSERT INTO second (device, slot, t, peak, late) VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT (device, t, slot) DO UPDATE SET
+                     peak = MAX(peak, excluded.peak), late = late + excluded.late",
                 )
                 .map_err(|e| e.to_string())?;
             for s in samples {
@@ -246,21 +303,37 @@ impl Store {
     /// last `window` seconds again, so a late write is counted), then drops
     /// what is past each tier's keep. `now` in unix seconds.
     pub fn rollup(&self, now: i64, window: i64) -> Result<(), String> {
-        let minute = now - now.rem_euclid(60);
-        let hour = now - now.rem_euclid(3600);
+        self.roll(now, window, now)
+    }
+
+    /// The rollup as of `at` (the window before it), with the prune edges
+    /// of the real `now`.
+    fn roll(&self, at: i64, window: i64, now: i64) -> Result<(), String> {
+        let minute = at - at.rem_euclid(60);
+        let hour = at - at.rem_euclid(3600);
         let db = self.conn();
         db.execute(
             "INSERT OR REPLACE INTO minute (device, slot, t, peak, sum, n, late)
              SELECT device, slot, t - t % 60, MAX(peak), SUM(peak), COUNT(*), SUM(late) FROM second
              WHERE t >= ?1 AND t < ?2 GROUP BY device, slot, t - t % 60",
-            params![minute - window - window.rem_euclid(60), minute],
+            // Whole minutes only: a partial one would replace a complete row
+            // (one starting before the window, or one the prune already cut).
+            params![
+                ((minute - window).div_euclid(60) * 60).max(ceil(now - KEEP_SECONDS, 60)),
+                minute
+            ],
         )
         .map_err(|e| format!("roll seconds: {e}"))?;
         db.execute(
             "INSERT OR REPLACE INTO hour (device, slot, t, peak, sum, n, late)
              SELECT device, slot, t - t % 3600, MAX(peak), SUM(sum), SUM(n), SUM(late) FROM minute
              WHERE t >= ?1 AND t < ?2 GROUP BY device, slot, t - t % 3600",
-            params![hour - 3600 - window, hour],
+            // Whole hours only, likewise.
+            params![
+                ((hour - 3600 - window).div_euclid(3600) * 3600)
+                    .max(ceil(now - KEEP_MINUTES, 3600)),
+                hour
+            ],
         )
         .map_err(|e| format!("roll minutes: {e}"))?;
         for (table, keep) in [
@@ -272,6 +345,40 @@ impl Store {
                 .map_err(|e| format!("prune {table}: {e}"))?;
         }
         Ok(())
+    }
+
+    /// Rolls up everything left unrolled (seconds and minutes from before a
+    /// restart or a stall, per device), an hour at a time so the store is
+    /// never held long, then as [`Store::rollup`].
+    pub fn catch_up(&self, now: i64) -> Result<(), String> {
+        let since: Option<i64> = {
+            let db = self.conn();
+            // Per device: its first second past its last minute, and its
+            // first minute past its last hour; the earliest of all.
+            db.query_row(
+                "SELECT MIN(f) FROM (
+                     SELECT MAX(s.first, COALESCE(m.last + 60, s.first)) AS f
+                     FROM (SELECT device, MIN(t) AS first FROM second GROUP BY device) s
+                     LEFT JOIN (SELECT device, MAX(t) AS last FROM minute GROUP BY device) m ON m.device = s.device
+                     UNION ALL
+                     SELECT MAX(m.first, COALESCE(h.last + 3600, m.first))
+                     FROM (SELECT device, MIN(t) AS first FROM minute GROUP BY device) m
+                     LEFT JOIN (SELECT device, MAX(t) AS last FROM hour GROUP BY device) h ON h.device = m.device)",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?
+        };
+        if let Some(since) = since.map(|t| t.max(now - KEEP_MINUTES)) {
+            // From the hour holding the oldest unrolled row, an hour at a
+            // time: each call rolls that hour's minutes, then its hour.
+            let mut at = since - since.rem_euclid(3600);
+            while at < now {
+                self.roll((at + 3600).min(now), 3600 + 60, now)?;
+                at += 3600;
+            }
+        }
+        self.rollup(now, 600)
     }
 
     /// Every receiver with samples in the last hour before `now`: its peak
@@ -298,31 +405,33 @@ impl Store {
             .map_err(|e| e.to_string())?
             .collect::<Result<_, _>>()
             .map_err(|e| e.to_string())?;
-        let late = |id: i64, from: i64| -> Result<u64, String> {
-            db.query_row(
-                "SELECT COALESCE(SUM(late), 0) FROM second WHERE device = ?1 AND t > ?2 AND t <= ?3",
-                params![id, from, now],
-                |r| r.get::<_, i64>(0),
+        let mut late_q = db
+            .prepare_cached(
+                "SELECT COALESCE(SUM(CASE WHEN t > ?2 THEN late ELSE 0 END), 0), COALESCE(SUM(late), 0)
+                 FROM second WHERE device = ?1 AND t > ?3 AND t <= ?4",
             )
-            .map(|v| u64::try_from(v).unwrap_or(0))
-            .map_err(|e| e.to_string())
-        };
+            .map_err(|e| e.to_string())?;
+        let mut per = db
+            .prepare_cached(
+                "SELECT slot, (t - ?2 - 1) / ?4 AS b, MAX(peak) FROM second
+                 WHERE device = ?1 AND t > ?2 AND t <= ?3 GROUP BY slot, b",
+            )
+            .map_err(|e| e.to_string())?;
         for (name, id, flows, last) in devices {
+            let (late_1h, late_24h): (i64, i64) = late_q
+                .query_row(params![id, hour, now - 24 * 3600, now], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .map_err(|e| e.to_string())?;
             let mut r = api::ReceiverSummary {
                 device: name,
                 flows,
-                late_1h: late(id, hour)?,
-                late_24h: late(id, now - 24 * 3600)?,
+                late_1h: u64::try_from(late_1h).unwrap_or(0),
+                late_24h: u64::try_from(late_24h).unwrap_or(0),
                 spark: vec![None; usize::try_from(api::SPARK_POINTS).unwrap_or(0)],
                 age_s: Some(now - last),
                 ..api::ReceiverSummary::default()
             };
-            let mut per = db
-                .prepare(
-                    "SELECT slot, (t - ?2 - 1) / ?4 AS b, MAX(peak) FROM second
-                     WHERE device = ?1 AND t > ?2 AND t <= ?3 GROUP BY slot, b",
-                )
-                .map_err(|e| e.to_string())?;
             let rows = per
                 .query_map(params![id, hour, now, step], |rw| {
                     Ok((
@@ -333,6 +442,9 @@ impl Store {
                 })
                 .map_err(|e| e.to_string())?;
             let mut latencies: Vec<(u16, u32)> = Vec::new();
+            // The flow closest to its latency (largest share); with no
+            // latency known, the largest peak.
+            let mut best: Option<(u32, u32)> = None;
             for row in rows {
                 let (slot, b, peak) = row.map_err(|e| e.to_string())?;
                 let lat = match latencies.iter().find(|(s, _)| *s == slot) {
@@ -345,15 +457,16 @@ impl Store {
                         l
                     }
                 };
-                if peak >= r.peak_us {
-                    r.peak_us = peak;
-                    r.latency_us = lat;
-                }
                 let share = if lat > 0 {
                     u32::try_from(u64::from(peak) * 1000 / u64::from(lat)).unwrap_or(u32::MAX)
                 } else {
                     0
                 };
+                if best.is_none_or(|(s, p)| (share, peak) > (s, p)) {
+                    best = Some((share, peak));
+                    r.peak_us = peak;
+                    r.latency_us = lat;
+                }
                 if let Some(cell) = usize::try_from(b).ok().and_then(|i| r.spark.get_mut(i)) {
                     *cell = Some(cell.map_or(share, |c| c.max(share)));
                 }
@@ -363,10 +476,22 @@ impl Store {
         Ok(out)
     }
 
-    /// The history of `device` from `from` to `to` (unix seconds).
-    pub fn history(&self, device: &str, from: i64, to: i64) -> Result<api::History, String> {
-        let (from, to) = (from.min(to), from.max(to));
-        let (tier, step) = plan(to - from);
+    /// The history of `device` from `from` to `to` (unix seconds), asked
+    /// at `now`. The range is clamped to what is kept (a year back, an hour
+    /// ahead), so any request stays small.
+    pub fn history(
+        &self,
+        device: &str,
+        from: i64,
+        to: i64,
+        now: i64,
+    ) -> Result<api::History, String> {
+        let (lo, hi) = (
+            now.saturating_sub(KEEP_HOURS + 3600),
+            now.saturating_add(3600),
+        );
+        let (from, to) = (from.min(to).clamp(lo, hi), from.max(to).clamp(lo, hi));
+        let (tier, step) = plan(to - from, now - from);
         let mut out = api::History {
             device: device.to_owned(),
             from,
@@ -382,9 +507,11 @@ impl Store {
             .collect();
         let db = self.conn();
         let Some(id) = db
-            .query_row("SELECT id FROM device WHERE name = ?1", [device], |r| {
-                r.get::<_, i64>(0)
-            })
+            .query_row(
+                "SELECT id FROM device WHERE name = ?1 COLLATE NOCASE",
+                [device],
+                |r| r.get::<_, i64>(0),
+            )
             .optional()
             .map_err(|e| e.to_string())?
         else {
@@ -503,15 +630,15 @@ mod tests {
 
     #[test]
     fn plan_picks_the_tier_by_span_and_keeps_the_buckets_few() {
-        assert_eq!(plan(300), (Tier::Second, 1));
-        assert_eq!(plan(3600), (Tier::Second, 3));
-        assert_eq!(plan(2 * 3600), (Tier::Second, 5));
-        assert_eq!(plan(6 * 3600), (Tier::Minute, 60));
-        assert_eq!(plan(7 * 24 * 3600), (Tier::Minute, 420));
-        assert_eq!(plan(30 * 24 * 3600), (Tier::Hour, 3600));
-        assert_eq!(plan(365 * 24 * 3600), (Tier::Hour, 6 * 3600));
+        assert_eq!(plan(300, 0), (Tier::Second, 1));
+        assert_eq!(plan(3600, 0), (Tier::Second, 3));
+        assert_eq!(plan(2 * 3600, 0), (Tier::Second, 5));
+        assert_eq!(plan(6 * 3600, 0), (Tier::Minute, 60));
+        assert_eq!(plan(7 * 24 * 3600, 0), (Tier::Minute, 420));
+        assert_eq!(plan(30 * 24 * 3600, 0), (Tier::Hour, 3600));
+        assert_eq!(plan(365 * 24 * 3600, 0), (Tier::Hour, 6 * 3600));
         for span in [1, 59, 7200, 7201, 600_000, 31_536_000] {
-            assert!(span / plan(span).1 <= api::HISTORY_POINTS, "span {span}");
+            assert!(span / plan(span, 0).1 <= api::HISTORY_POINTS, "span {span}");
         }
     }
 
@@ -530,7 +657,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let h = st.history("desk", t0, t0 + 299).unwrap();
+        let h = st.history("desk", t0, t0 + 299, t0 + 299).unwrap();
         assert_eq!((h.tier_s, h.step_s), (1, 1));
         assert_eq!(h.t.len(), 300);
         assert_eq!(h.t[0], t0);
@@ -549,7 +676,7 @@ mod tests {
         // A slot with no description recorded reads latency 0.
         assert_eq!(h.flows[1].latency_us, 0);
         // An unknown device: the time axis, no flows.
-        let none = st.history("nobody", t0, t0 + 59).unwrap();
+        let none = st.history("nobody", t0, t0 + 59, t0 + 59).unwrap();
         assert!(none.flows.is_empty());
         assert_eq!(none.t.len(), 60);
     }
@@ -562,7 +689,7 @@ mod tests {
             .map(|k| s(1, t0 + k, (k % 10) as u32 * 10, 0))
             .collect();
         st.add("desk", &samples).unwrap();
-        let h = st.history("desk", t0, t0 + 3599).unwrap();
+        let h = st.history("desk", t0, t0 + 3599, t0 + 3599).unwrap();
         assert_eq!(h.step_s, 3);
         let f = &h.flows[0];
         // Bucket 0: seconds 0, 1, 2 -> peaks 0, 10, 20.
@@ -580,17 +707,23 @@ mod tests {
             .collect();
         st.add("desk", &samples).unwrap();
         // Nothing rolled up yet: a 6 h range still has every minute.
-        let h = st.history("desk", t0, t0 + 6 * 3600).unwrap();
+        let h = st
+            .history("desk", t0, t0 + 6 * 3600, t0 + 6 * 3600)
+            .unwrap();
         assert_eq!(h.tier_s, 60);
         assert_eq!(h.flows[0].max_us.iter().flatten().count(), 120);
         assert_eq!(h.flows[0].max_us[118], Some(700));
         // The first hour rolled up, the second not: both read, once each.
         st.rollup(t0 + 3600, 3600).unwrap();
-        let h = st.history("desk", t0, t0 + 6 * 3600).unwrap();
+        let h = st
+            .history("desk", t0, t0 + 6 * 3600, t0 + 6 * 3600)
+            .unwrap();
         assert_eq!(h.flows[0].max_us.iter().flatten().count(), 120);
         assert_eq!(h.flows[0].mean_us[0], Some(100));
         // A 30 day range: two hours, the second from not-yet-rolled seconds.
-        let d = st.history("desk", t0, t0 + 30 * 24 * 3600).unwrap();
+        let d = st
+            .history("desk", t0, t0 + 30 * 24 * 3600, t0 + 30 * 24 * 3600)
+            .unwrap();
         assert_eq!(d.tier_s, 3600);
         assert_eq!(&d.flows[0].max_us[..3], &[Some(100), Some(700), None]);
         assert_eq!(d.flows[0].histogram.iter().sum::<u64>(), 2);
@@ -613,7 +746,9 @@ mod tests {
         st.add("desk", &samples).unwrap();
         st.rollup(t0 + 7200, 7200).unwrap();
         // A 6 h range reads minutes: the minute holding second 90 has its peak.
-        let h = st.history("desk", t0, t0 + 6 * 3600).unwrap();
+        let h = st
+            .history("desk", t0, t0 + 6 * 3600, t0 + 6 * 3600)
+            .unwrap();
         assert_eq!((h.tier_s, h.step_s), (60, 60));
         let f = &h.flows[0];
         assert_eq!(f.max_us[1], Some(900));
@@ -622,15 +757,26 @@ mod tests {
         assert_eq!(f.max_us[0], Some(100));
         assert_eq!(f.max_us.iter().flatten().count(), 120);
         // A 30 day range reads hours.
-        let d = st.history("desk", t0, t0 + 30 * 24 * 3600).unwrap();
+        let d = st
+            .history("desk", t0, t0 + 30 * 24 * 3600, t0 + 30 * 24 * 3600)
+            .unwrap();
         assert_eq!(d.tier_s, 3600);
         assert_eq!(d.flows[0].max_us[0], Some(900));
         assert_eq!(d.flows[0].late_total, 1);
         // A day later the seconds are gone, the minutes stay.
         st.rollup(t0 + 7200 + KEEP_SECONDS + 60, 60).unwrap();
-        let gone = st.history("desk", t0, t0 + 3599).unwrap();
-        assert!(gone.flows.is_empty());
-        let kept = st.history("desk", t0, t0 + 6 * 3600).unwrap();
+        // Asked as of then, an old hour reads minutes: the seconds are gone.
+        let later = t0 + 7200 + KEEP_SECONDS + 60;
+        let gone = st.history("desk", t0, t0 + 3599, later).unwrap();
+        assert_eq!(gone.tier_s, 60);
+        let secs: i64 = st
+            .conn()
+            .query_row("SELECT COUNT(*) FROM second", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(secs, 0);
+        let kept = st
+            .history("desk", t0, t0 + 6 * 3600, t0 + 6 * 3600)
+            .unwrap();
         assert_eq!(kept.flows[0].max_us[1], Some(900));
     }
 
@@ -649,11 +795,11 @@ mod tests {
             .unwrap();
         assert_eq!(count, 2);
         assert_eq!(
-            st.history("desk", t0, t0 + 50).unwrap().flows[0].latency_us,
+            st.history("desk", t0, t0 + 50, t0 + 50).unwrap().flows[0].latency_us,
             1000
         );
         assert_eq!(
-            st.history("desk", t0, t0 + 200).unwrap().flows[0].latency_us,
+            st.history("desk", t0, t0 + 200, t0 + 200).unwrap().flows[0].latency_us,
             250
         );
     }
@@ -685,13 +831,261 @@ mod tests {
         let r = &o.receivers[0];
         assert_eq!(r.device, "stage");
         assert_eq!(r.flows, 2);
-        assert_eq!((r.peak_us, r.latency_us), (400, 1000));
+        // The flow closest to its latency: 200 of 250 µs (80 %), not 400 of 1000.
+        assert_eq!((r.peak_us, r.latency_us), (200, 250));
         assert_eq!((r.late_1h, r.late_24h), (2, 7));
         assert_eq!(r.age_s, Some(5));
         assert_eq!(r.spark.len(), 60);
         assert_eq!(r.spark[0], Some(400)); // 400 of 1000 µs
         assert_eq!(r.spark[59], Some(800)); // 200 of 250 µs beats 300 of 1000
         assert_eq!(r.spark[30], None);
+    }
+
+    #[test]
+    fn device_names_match_case_aside() {
+        // The recorder once stored samples under "stage-1" and flows under
+        // "Stage-1": two device rows, and neither page found both.
+        let st = Store::memory().unwrap();
+        let now = 1_800_000_000;
+        st.set_flow("Stage-1", 1, &flow(1000), now - 60).unwrap();
+        st.add("stage-1", &[s(1, now - 5, 400, 0)]).unwrap();
+        let ids: i64 = st
+            .conn()
+            .query_row("SELECT COUNT(*) FROM device", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ids, 1);
+        let h = st.history("Stage-1", now - 60, now, now).unwrap();
+        assert_eq!(h.flows[0].latency_us, 1000);
+        assert_eq!(h.flows[0].peak_us, 400);
+        assert_eq!(st.overview(now).unwrap().receivers[0].latency_us, 1000);
+    }
+
+    #[test]
+    fn the_rollup_every_minute_keeps_whole_hours_and_minutes() {
+        // The recorder rolls up every minute with a 600 s window; the hour
+        // row must still hold all its 3600 seconds afterwards.
+        let st = Store::memory().unwrap();
+        let t0 = 1_800_000_000; // a whole hour
+        let samples: Vec<Sample> = (0..7200).map(|k| s(1, t0 + k, 100, 1)).collect();
+        st.add("desk", &samples).unwrap();
+        for m in 1..=125 {
+            st.rollup(t0 + m * 60 + 7, 600).unwrap();
+        }
+        let (n, late): (i64, i64) = st
+            .conn()
+            .query_row("SELECT n, late FROM hour WHERE t = ?1", [t0], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((n, late), (3600, 3600));
+        let mins: i64 = st
+            .conn()
+            .query_row("SELECT MIN(n) FROM minute", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(mins, 60);
+    }
+
+    #[test]
+    fn a_second_stored_twice_keeps_its_peak_and_adds_its_late_packets() {
+        let st = Store::memory().unwrap();
+        st.add("desk", &[s(1, 100, 700, 3)]).unwrap();
+        st.add("desk", &[s(1, 100, 200, 2)]).unwrap();
+        let (peak, late): (i64, i64) = st
+            .conn()
+            .query_row("SELECT peak, late FROM second", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((peak, late), (700, 5));
+    }
+
+    #[test]
+    fn an_extreme_range_is_clamped_and_stays_small() {
+        let st = Store::memory().unwrap();
+        let now = 1_800_000_000;
+        for (from, to) in [
+            (i64::MIN, 0),
+            (0, i64::MAX),
+            (i64::MIN, i64::MAX),
+            (now, now - 10),
+        ] {
+            let h = st.history("desk", from, to, now).unwrap();
+            assert!(
+                h.t.len() as i64 <= api::HISTORY_POINTS + 1,
+                "{from}..{to}: {}",
+                h.t.len()
+            );
+            assert!(
+                h.from >= now - KEEP_HOURS - 3600 && h.to <= now + 3600,
+                "{from}..{to}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_old_short_range_reads_a_tier_that_still_holds_it() {
+        let st = Store::memory().unwrap();
+        let t0 = 1_800_000_000;
+        let samples: Vec<Sample> = (0..3600).map(|k| s(1, t0 + k, 100, 0)).collect();
+        st.add("desk", &samples).unwrap();
+        st.rollup(t0 + 3600 + 60, 3600 + 60).unwrap();
+        // Three days later the seconds are pruned; an hour from then reads minutes.
+        let now = t0 + 3 * 24 * 3600;
+        st.rollup(now, 60).unwrap();
+        let h = st.history("desk", t0, t0 + 3599, now).unwrap();
+        assert_eq!(h.tier_s, 60);
+        assert_eq!(h.flows[0].max_us.iter().flatten().count(), 60);
+    }
+
+    #[test]
+    fn seconds_left_from_before_a_restart_are_rolled_up_on_start() {
+        let st = Store::memory().unwrap();
+        let t0 = 1_800_000_000;
+        let samples: Vec<Sample> = (0..600).map(|k| s(1, t0 + k, 100, 0)).collect();
+        st.add("desk", &samples).unwrap();
+        // Back after an hour: a normal rollup covers only its window.
+        let now = t0 + 3600;
+        st.add("desk", &[s(1, now - 30, 100, 0)]).unwrap();
+        st.catch_up(now).unwrap();
+        let mins: i64 = st
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM minute WHERE t < ?1",
+                [t0 + 600],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(mins, 10);
+    }
+
+    #[test]
+    fn a_rollup_near_the_prune_edge_never_replaces_a_whole_minute_with_a_part() {
+        let st = Store::memory().unwrap();
+        let t0 = 1_800_000_000;
+        let samples: Vec<Sample> = (0..120).map(|k| s(1, t0 + k, 100, 0)).collect();
+        st.add("desk", &samples).unwrap();
+        st.rollup(t0 + 180, 600).unwrap();
+        // A day later, 30 s into the first minute: its first 30 seconds are
+        // pruned; a catch-up over the whole day must leave the minute whole.
+        let now = t0 + KEEP_SECONDS + 30;
+        st.rollup(now, 600).unwrap(); // prunes the minute's first 30 seconds
+        st.rollup(now, KEEP_SECONDS).unwrap();
+        let n: i64 = st
+            .conn()
+            .query_row("SELECT n FROM minute WHERE t = ?1", [t0], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 60);
+    }
+
+    #[test]
+    fn catch_up_reaches_each_devices_own_unrolled_seconds() {
+        let st = Store::memory().unwrap();
+        let t0 = 1_800_000_000;
+        // B has seconds from before a two-hour stop; A has fresh minutes.
+        st.add(
+            "b",
+            &(0..300).map(|k| s(1, t0 + k, 100, 0)).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let now = t0 + 7200;
+        st.add(
+            "a",
+            &(0..300)
+                .map(|k| s(1, now - 400 + k, 100, 0))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        st.rollup(now, 600).unwrap();
+        st.catch_up(now).unwrap();
+        let b: i64 = st
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM minute m JOIN device d ON d.id = m.device WHERE d.name = 'b'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(b, 5);
+    }
+
+    #[test]
+    fn device_rows_split_by_case_are_merged_by_the_schema() {
+        // Databases written before the fix may hold "stage-1" and "Stage-1".
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(&format!("{}; PRAGMA user_version = 1;", MIGRATIONS[0]))
+            .unwrap();
+        db.execute_batch(
+            "INSERT INTO device (id, name) VALUES (1, 'Stage-1'), (2, 'stage-1');
+             INSERT INTO flow VALUES (1, 1, 10, 1000, 48000, '[]', '[]');
+             INSERT INTO second VALUES (2, 1, 20, 400, 3), (1, 1, 20, 100, 1);",
+        )
+        .unwrap();
+        let st = Store::with(db).unwrap();
+        let ids: i64 = st
+            .conn()
+            .query_row("SELECT COUNT(*) FROM device", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ids, 1);
+        let h = st.history("stage-1", 0, 100, 100).unwrap();
+        assert_eq!(h.flows.len(), 1);
+        assert_eq!((h.flows[0].latency_us, h.flows[0].peak_us), (1000, 400));
+        // The schema refuses a second spelling from now on.
+        assert!(
+            st.conn()
+                .execute("INSERT INTO device (name) VALUES ('STAGE-1')", [])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn catch_up_builds_the_hours_left_from_before_a_long_stop() {
+        // Stopped at :30 with minutes but no hour row; back three days later.
+        let st = Store::memory().unwrap();
+        let t0 = 1_800_000_000; // a whole hour
+        st.add(
+            "desk",
+            &(0..1800).map(|k| s(1, t0 + k, 100, 1)).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        st.rollup(t0 + 1800, 1800).unwrap();
+        let now = t0 + 3 * 24 * 3600;
+        st.catch_up(now).unwrap();
+        let (n, late): (i64, i64) = st
+            .conn()
+            .query_row("SELECT n, late FROM hour WHERE t = ?1", [t0], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((n, late), (1800, 1800));
+    }
+
+    #[test]
+    fn a_device_keeps_its_latest_spelling() {
+        let st = Store::memory().unwrap();
+        st.add("stage-1", &[s(1, 100, 1, 0)]).unwrap();
+        st.add("Stage-1", &[s(1, 101, 1, 0)]).unwrap();
+        let name: String = st
+            .conn()
+            .query_row("SELECT name FROM device", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(name, "Stage-1");
+        assert_eq!(st.overview(200).unwrap().receivers[0].device, "Stage-1");
+    }
+
+    #[test]
+    fn time_indexes_serve_the_rollup_and_pruning() {
+        let st = Store::memory().unwrap();
+        let names: Vec<String> = st
+            .conn()
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for i in ["hour_t", "minute_t", "second_t"] {
+            assert!(names.contains(&i.to_owned()), "{i} in {names:?}");
+        }
     }
 
     #[test]
@@ -710,7 +1104,7 @@ mod tests {
             .unwrap();
         assert_eq!(v, i64::try_from(MIGRATIONS.len()).unwrap());
         assert_eq!(
-            st.history("desk", 1_800_000_000, 1_800_000_010)
+            st.history("desk", 1_800_000_000, 1_800_000_010, 1_800_000_010)
                 .unwrap()
                 .flows
                 .len(),

@@ -65,6 +65,7 @@ fn App() -> impl IntoView {
         data: RwSignal::new(None),
         overview: RwSignal::new(None),
         scale: RwSignal::new(hist::Scale::Share),
+        reads: StoredValue::new(hist::HistReads::default()),
     };
     provide_context(hst);
     // The hash is the page's address: a link, back or forward moves the view
@@ -100,13 +101,13 @@ fn App() -> impl IntoView {
             view_now.get(),
         );
         if v == View::Latency {
-            pages::load_history(hst);
+            pages::load_history(hst, false);
         }
     });
     let _ = set_interval_with_handle(
         move || {
             if view_now.get_untracked() == View::Latency && hst.live() {
-                pages::load_history(hst);
+                pages::load_history(hst, true);
             }
         },
         pages::HIST_POLL,

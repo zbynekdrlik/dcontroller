@@ -14,10 +14,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::Ipv4Addr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use dstack::arc::client::{REPLY_TIMEOUT, Udp};
 use dstack::arc::control;
@@ -27,7 +27,7 @@ use dstack::latency::{Beat, Listener};
 use tracing::{info, warn};
 
 use crate::dante::Shared;
-use crate::history::{FlowInfo, Sample, Store};
+use crate::history::{FlowInfo, Sample, Store, unix_now};
 
 /// How often buffered samples are written.
 pub const FLUSH_EVERY: Duration = Duration::from_secs(5);
@@ -42,12 +42,6 @@ const TICK: Duration = Duration::from_millis(500);
 
 /// A running heartbeat listener: our address, it, and its heartbeats.
 type Listening = (Ipv4Addr, Listener, Receiver<(Ipv4Addr, Beat)>);
-
-fn unix_now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-}
 
 /// The flows of a device with their RX channel labels and sources.
 pub fn describe(flows: &[control::RxFlow], rx: &[control::RxChannel]) -> BTreeMap<u16, FlowInfo> {
@@ -92,22 +86,24 @@ pub fn owner(devices: &[Device], from: Ipv4Addr, id: [u8; 8]) -> Option<&Device>
 
 /// One heartbeat's samples at `t` (unix seconds): a peak per active flow
 /// (lateness samples at the beat's rate, in µs, as dstack's `Gather`), and
-/// the late packets since the device's previous heartbeat (`last` holds each
-/// slot's cumulative count; a count that went down started again).
+/// the late packets since the last sample stored for that slot (`last`
+/// holds each slot's cumulative count; the first heartbeat sets it; a count
+/// that went down started again). A heartbeat that stores no sample for a
+/// slot (no lateness record, no flow known yet) leaves its count pending.
 pub fn beat_samples(
     beat: &Beat,
     active: &BTreeMap<u16, FlowInfo>,
     last: &mut BTreeMap<u16, u32>,
     t: i64,
 ) -> Vec<Sample> {
-    let mut late: BTreeMap<u16, u32> = BTreeMap::new();
-    for (slot, &total) in (1u16..).zip(beat.late.iter().flatten()) {
-        let delta = match last.insert(slot, total) {
-            Some(prev) if total >= prev => total - prev,
-            Some(_) => total,
-            None => 0,
-        };
-        late.insert(slot, delta);
+    let totals: BTreeMap<u16, u32> = (1u16..).zip(beat.late.iter().flatten().copied()).collect();
+    for (&slot, &total) in &totals {
+        if active.contains_key(&slot) {
+            last.entry(slot).or_insert(total);
+        } else {
+            // No flow on this slot: its late packets are nobody's.
+            last.insert(slot, total);
+        }
     }
     let Some((rate, lateness)) = &beat.lateness else {
         return Vec::new();
@@ -115,44 +111,82 @@ pub fn beat_samples(
     (1u16..)
         .zip(lateness)
         .filter(|(slot, _)| active.contains_key(slot))
-        .map(|(slot, &samples)| Sample {
-            slot,
-            t,
-            peak_us: u32::try_from(u64::from(samples) * 1_000_000 / u64::from((*rate).max(1)))
-                .unwrap_or(u32::MAX),
-            late: late.get(&slot).copied().unwrap_or(0),
+        .map(|(slot, &samples)| {
+            let late = match (totals.get(&slot), last.get(&slot)) {
+                (Some(&total), Some(&prev)) => {
+                    last.insert(slot, total);
+                    if total >= prev { total - prev } else { total }
+                }
+                _ => 0,
+            };
+            Sample {
+                slot,
+                t,
+                peak_us: u32::try_from(u64::from(samples) * 1_000_000 / u64::from((*rate).max(1)))
+                    .unwrap_or(u32::MAX),
+                late,
+            }
         })
         .collect()
 }
 
-/// Starts the recorder thread.
+/// Moves the late counts on for a device whose flows are not read yet:
+/// nothing is recorded for that time, its late packets included (crediting
+/// them later would put them all on one second).
+pub fn remember(beat: &Beat, last: &mut BTreeMap<u16, u32>) {
+    for (slot, &total) in (1u16..).zip(beat.late.iter().flatten()) {
+        last.insert(slot, total);
+    }
+}
+
+/// Starts the recorder: the heartbeat thread, and the flows thread that
+/// keeps each receiver's flows read (so a slow device never holds the
+/// heartbeats up).
 pub fn start(dante: Shared, store: Arc<Store>, stop: Arc<AtomicBool>) {
+    let flows: Flows = Arc::default();
+    {
+        let (dante, store, stop, flows) = (
+            Arc::clone(&dante),
+            Arc::clone(&store),
+            Arc::clone(&stop),
+            Arc::clone(&flows),
+        );
+        std::thread::Builder::new()
+            .name("recorder-flows".into())
+            .spawn(move || read_flows_loop(&dante, &store, &stop, &flows))
+            .expect("spawn the recorder's flows thread");
+    }
     std::thread::Builder::new()
         .name("recorder".into())
-        .spawn(move || run(&dante, &store, &stop))
+        .spawn(move || run(&dante, &store, &stop, &flows))
         .expect("spawn the recorder");
 }
+
+/// Each receiver's flows as last read, by name (lowercase); shared, so a
+/// heartbeat takes them without copying.
+type Flows = Arc<Mutex<HashMap<String, Arc<BTreeMap<u16, FlowInfo>>>>>;
 
 /// What the recorder keeps per receiver.
 #[derive(Default)]
 struct Receiving {
-    flows: BTreeMap<u16, FlowInfo>,
-    flows_read: Option<Instant>,
+    /// The device's name as discovery lists it (the store matches case aside).
+    name: String,
     last_late: BTreeMap<u16, u32>,
     buffer: Vec<Sample>,
     stored: u64,
 }
 
-fn run(dante: &Shared, store: &Store, stop: &AtomicBool) {
-    let seq = AtomicU16::new(1);
-    let requests = Requests::default();
+fn run(dante: &Shared, store: &Store, stop: &AtomicBool, flows: &Flows) {
     let mut listening: Option<Listening> = None;
     let mut devices: Vec<Device> = Vec::new();
     let mut state: HashMap<String, Receiving> = HashMap::new();
     let mut looked: Option<Instant> = None;
     let mut flushed = Instant::now();
     let mut rolled = Instant::now();
-    info!("recorder: started");
+    match store.catch_up(unix_now()) {
+        Ok(()) => info!("recorder: started, history caught up"),
+        Err(e) => warn!(error = %e, "recorder: started, catch-up rollup failed"),
+    }
     while !stop.load(Ordering::Relaxed) {
         if looked.is_none_or(|t| t.elapsed() >= LOOK_EVERY) {
             looked = Some(Instant::now());
@@ -165,11 +199,11 @@ fn run(dante: &Shared, store: &Store, stop: &AtomicBool) {
                 .iter()
                 .map(|d| d.name.to_ascii_lowercase())
                 .collect();
-            state.retain(|name, r| {
-                let keep = names.contains(name);
+            state.retain(|key, r| {
+                let keep = names.contains(key);
                 if !keep {
-                    flush(store, name, r);
-                    info!(device = %name, samples = r.stored, "recorder: receiver gone");
+                    flush(store, r);
+                    info!(device = %r.name, samples = r.stored, "recorder: receiver gone");
                 }
                 keep
             });
@@ -186,31 +220,6 @@ fn run(dante: &Shared, store: &Store, stop: &AtomicBool) {
                     }
                 }
             }
-            // Flows, read again when due (one device at a time; beats queue meanwhile).
-            if let Some(ip) = ip {
-                for d in &devices {
-                    let r = state.entry(d.name.to_ascii_lowercase()).or_default();
-                    if r.flows_read.is_some_and(|t| t.elapsed() < FLOWS_EVERY) {
-                        continue;
-                    }
-                    r.flows_read = Some(Instant::now());
-                    match read_flows(ip, d, &seq, &requests, stop) {
-                        Ok(f) => {
-                            let now = unix_now();
-                            for (slot, info) in &f {
-                                if let Err(e) = store.set_flow(&d.name, *slot, info, now) {
-                                    warn!(device = %d.name, error = %e, "recorder: flow not stored");
-                                }
-                            }
-                            if r.flows.is_empty() && !f.is_empty() {
-                                info!(device = %d.name, flows = f.len(), "recorder: recording");
-                            }
-                            r.flows = f;
-                        }
-                        Err(e) => warn!(device = %d.name, error = %e, "recorder: flows not read"),
-                    }
-                }
-            }
         }
         let Some((_, _, rx)) = listening.as_ref() else {
             std::thread::sleep(TICK);
@@ -219,9 +228,22 @@ fn run(dante: &Shared, store: &Store, stop: &AtomicBool) {
         match rx.recv_timeout(TICK) {
             Ok((from, beat)) => {
                 if let Some(d) = owner(&devices, from, beat.device_id) {
-                    let r = state.entry(d.name.to_ascii_lowercase()).or_default();
-                    let batch = beat_samples(&beat, &r.flows, &mut r.last_late, unix_now());
-                    r.buffer.extend(batch);
+                    let key = d.name.to_ascii_lowercase();
+                    let active = flows
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(&key)
+                        .cloned();
+                    let r = state.entry(key).or_default();
+                    r.name.clone_from(&d.name);
+                    let Some(active) = active else {
+                        remember(&beat, &mut r.last_late);
+                        continue;
+                    };
+                    // Stamped as it is taken: the beat loop waits on nothing
+                    // but the store, and a second written twice is merged.
+                    r.buffer
+                        .extend(beat_samples(&beat, &active, &mut r.last_late, unix_now()));
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -233,8 +255,8 @@ fn run(dante: &Shared, store: &Store, stop: &AtomicBool) {
         }
         if flushed.elapsed() >= FLUSH_EVERY {
             flushed = Instant::now();
-            for (name, r) in &mut state {
-                flush(store, name, r);
+            for r in state.values_mut() {
+                flush(store, r);
             }
         }
         if rolled.elapsed() >= ROLLUP_EVERY {
@@ -249,21 +271,76 @@ fn run(dante: &Shared, store: &Store, stop: &AtomicBool) {
             }
         }
     }
-    for (name, r) in &mut state {
-        flush(store, name, r);
+    for r in state.values_mut() {
+        flush(store, r);
     }
     info!("recorder: stopped");
 }
 
+/// Keeps every receiver's flows read, one device at a time, each again
+/// after [`FLOWS_EVERY`]; records a changed description.
+fn read_flows_loop(dante: &Shared, store: &Store, stop: &AtomicBool, flows: &Flows) {
+    let seq = AtomicU16::new(1);
+    let requests = Requests::default();
+    let mut read_at: HashMap<String, Instant> = HashMap::new();
+    while !stop.load(Ordering::Relaxed) {
+        let (ip, receivers) = {
+            let st = dante.read().unwrap_or_else(|e| e.into_inner());
+            (st.our_ip(), st.receivers())
+        };
+        let names: Vec<String> = receivers
+            .iter()
+            .map(|(_, d)| d.name.to_ascii_lowercase())
+            .collect();
+        read_at.retain(|k, _| names.contains(k));
+        flows
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|k, _| names.contains(k));
+        if let Some(ip) = ip {
+            for (_, d) in &receivers {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let key = d.name.to_ascii_lowercase();
+                if read_at.get(&key).is_some_and(|t| t.elapsed() < FLOWS_EVERY) {
+                    continue;
+                }
+                read_at.insert(key.clone(), Instant::now());
+                match read_flows(ip, d, &seq, &requests, stop) {
+                    Ok(f) => {
+                        let now = unix_now();
+                        for (slot, info) in &f {
+                            if let Err(e) = store.set_flow(&d.name, *slot, info, now) {
+                                warn!(device = %d.name, error = %e, "recorder: flow not stored");
+                            }
+                        }
+                        let mut map = flows.lock().unwrap_or_else(|e| e.into_inner());
+                        if map.get(&key).is_none_or(|m| m.is_empty()) && !f.is_empty() {
+                            info!(device = %d.name, flows = f.len(), "recorder: recording");
+                        }
+                        map.insert(key, Arc::new(f));
+                    }
+                    Err(e) => warn!(device = %d.name, error = %e, "recorder: flows not read"),
+                }
+            }
+        }
+        let until = Instant::now() + LOOK_EVERY;
+        while Instant::now() < until && !stop.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+}
+
 /// Writes a receiver's buffered samples.
-fn flush(store: &Store, name: &str, r: &mut Receiving) {
+fn flush(store: &Store, r: &mut Receiving) {
     if r.buffer.is_empty() {
         return;
     }
     let n = r.buffer.len() as u64;
-    match store.add(name, &r.buffer) {
+    match store.add(&r.name, &r.buffer) {
         Ok(()) => r.stored += n,
-        Err(e) => warn!(device = %name, error = %e, samples = n, "recorder: samples not stored"),
+        Err(e) => warn!(device = %r.name, error = %e, samples = n, "recorder: samples not stored"),
     }
     r.buffer.clear();
 }
@@ -335,6 +412,51 @@ mod tests {
             device_id: id.map(|i| [i; 8]),
             txt: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn late_packets_wait_for_a_heartbeat_that_stores_a_sample() {
+        // A heartbeat without a lateness record stores nothing; its late
+        // packets wait for the next sample of the slot.
+        let active: BTreeMap<u16, FlowInfo> = [(1, FlowInfo::default())].into();
+        let mut last = BTreeMap::new();
+        let with = |late: u32| Beat {
+            device_id: [0; 8],
+            lateness: Some((48000, vec![0])),
+            late: Some(vec![late]),
+        };
+        let without = |late: u32| Beat {
+            device_id: [0; 8],
+            lateness: None,
+            late: Some(vec![late]),
+        };
+        assert_eq!(beat_samples(&with(10), &active, &mut last, 1)[0].late, 0); // the baseline
+        assert!(beat_samples(&without(14), &active, &mut last, 2).is_empty());
+        // Flows not read yet: nothing is recorded for that time, late packets
+        // included (crediting them later spikes one second with packets
+        // from a time without peaks); the count moves on.
+        remember(&with(16), &mut last);
+        assert_eq!(beat_samples(&with(17), &active, &mut last, 4)[0].late, 1);
+    }
+
+    #[test]
+    fn late_packets_of_a_slot_without_a_flow_are_not_credited_later() {
+        // A slot with no flow counts late packets nobody records; once a flow
+        // starts there, only the packets since count.
+        let none: BTreeMap<u16, FlowInfo> = BTreeMap::new();
+        let active: BTreeMap<u16, FlowInfo> = [(1, FlowInfo::default())].into();
+        let mut last = BTreeMap::new();
+        let beat = |late: u32| Beat {
+            device_id: [0; 8],
+            lateness: Some((48000, vec![0])),
+            late: Some(vec![late]),
+        };
+        assert!(beat_samples(&beat(0), &none, &mut last, 1).is_empty());
+        assert!(beat_samples(&beat(50_000), &none, &mut last, 2).is_empty());
+        assert_eq!(
+            beat_samples(&beat(50_003), &active, &mut last, 3)[0].late,
+            3
+        );
     }
 
     #[test]

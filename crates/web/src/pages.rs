@@ -31,6 +31,7 @@ pub struct Hist {
     pub data: RwSignal<Option<Result<History, String>>>,
     pub overview: RwSignal<Option<Result<Overview, String>>>,
     pub scale: RwSignal<hist::Scale>,
+    pub reads: StoredValue<hist::HistReads>,
 }
 
 impl Hist {
@@ -55,8 +56,12 @@ async fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, String
     res.json::<T>().await.map_err(|e| e.to_string())
 }
 
-/// Reads the chosen receiver's history for the chosen range or zoom.
-pub fn load_history(h: Hist) {
+/// Reads the chosen receiver's history for the chosen range or zoom; a
+/// live poll (`poll`) waits while a read runs.
+pub fn load_history(h: Hist, poll: bool) {
+    if poll && h.reads.get_value().busy_at(js_sys::Date::now()) {
+        return;
+    }
     let Some(dev) = h.device.get_untracked() else {
         return;
     };
@@ -68,9 +73,21 @@ pub fn load_history(h: Hist) {
         "/api/history/{}?from={from}&to={to}",
         String::from(js_sys::encode_uri_component(&dev))
     );
+    let mut reads = h.reads.get_value();
+    let n = if poll {
+        reads.poll_at(js_sys::Date::now())
+    } else {
+        reads.start_at(js_sys::Date::now())
+    };
+    h.reads.set_value(reads);
     spawn_local(async move {
         let r = get_json::<History>(&url).await;
-        if h.device.get_untracked().as_deref() == Some(dev.as_str()) {
+        // Only the newest read's answer shows (a range, zoom or device
+        // chosen since makes this one stale).
+        let mut reads = h.reads.get_value();
+        let show = reads.done(n);
+        h.reads.set_value(reads);
+        if show {
             h.data.set(Some(r));
         }
     });
@@ -325,7 +342,7 @@ pub fn LatencyPage() -> impl IntoView {
                 );
                 let on = {
                     let n = name.clone();
-                    move || h.device.get().as_deref() == Some(n.as_str())
+                    move || h.device.get().is_some_and(|d| hist::same_name(&d, &n))
                 };
                 let pick = {
                     let n = name.clone();
