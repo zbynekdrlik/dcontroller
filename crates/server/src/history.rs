@@ -530,7 +530,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let h = st.history("desk", t0, t0 + 299).unwrap();
+        let h = st.history("desk", t0, t0 + 299, t0 + 299).unwrap();
         assert_eq!((h.tier_s, h.step_s), (1, 1));
         assert_eq!(h.t.len(), 300);
         assert_eq!(h.t[0], t0);
@@ -549,7 +549,7 @@ mod tests {
         // A slot with no description recorded reads latency 0.
         assert_eq!(h.flows[1].latency_us, 0);
         // An unknown device: the time axis, no flows.
-        let none = st.history("nobody", t0, t0 + 59).unwrap();
+        let none = st.history("nobody", t0, t0 + 59, t0 + 59).unwrap();
         assert!(none.flows.is_empty());
         assert_eq!(none.t.len(), 60);
     }
@@ -562,7 +562,7 @@ mod tests {
             .map(|k| s(1, t0 + k, (k % 10) as u32 * 10, 0))
             .collect();
         st.add("desk", &samples).unwrap();
-        let h = st.history("desk", t0, t0 + 3599).unwrap();
+        let h = st.history("desk", t0, t0 + 3599, t0 + 3599).unwrap();
         assert_eq!(h.step_s, 3);
         let f = &h.flows[0];
         // Bucket 0: seconds 0, 1, 2 -> peaks 0, 10, 20.
@@ -580,17 +580,23 @@ mod tests {
             .collect();
         st.add("desk", &samples).unwrap();
         // Nothing rolled up yet: a 6 h range still has every minute.
-        let h = st.history("desk", t0, t0 + 6 * 3600).unwrap();
+        let h = st
+            .history("desk", t0, t0 + 6 * 3600, t0 + 6 * 3600)
+            .unwrap();
         assert_eq!(h.tier_s, 60);
         assert_eq!(h.flows[0].max_us.iter().flatten().count(), 120);
         assert_eq!(h.flows[0].max_us[118], Some(700));
         // The first hour rolled up, the second not: both read, once each.
         st.rollup(t0 + 3600, 3600).unwrap();
-        let h = st.history("desk", t0, t0 + 6 * 3600).unwrap();
+        let h = st
+            .history("desk", t0, t0 + 6 * 3600, t0 + 6 * 3600)
+            .unwrap();
         assert_eq!(h.flows[0].max_us.iter().flatten().count(), 120);
         assert_eq!(h.flows[0].mean_us[0], Some(100));
         // A 30 day range: two hours, the second from not-yet-rolled seconds.
-        let d = st.history("desk", t0, t0 + 30 * 24 * 3600).unwrap();
+        let d = st
+            .history("desk", t0, t0 + 30 * 24 * 3600, t0 + 30 * 24 * 3600)
+            .unwrap();
         assert_eq!(d.tier_s, 3600);
         assert_eq!(&d.flows[0].max_us[..3], &[Some(100), Some(700), None]);
         assert_eq!(d.flows[0].histogram.iter().sum::<u64>(), 2);
@@ -613,7 +619,9 @@ mod tests {
         st.add("desk", &samples).unwrap();
         st.rollup(t0 + 7200, 7200).unwrap();
         // A 6 h range reads minutes: the minute holding second 90 has its peak.
-        let h = st.history("desk", t0, t0 + 6 * 3600).unwrap();
+        let h = st
+            .history("desk", t0, t0 + 6 * 3600, t0 + 6 * 3600)
+            .unwrap();
         assert_eq!((h.tier_s, h.step_s), (60, 60));
         let f = &h.flows[0];
         assert_eq!(f.max_us[1], Some(900));
@@ -622,15 +630,26 @@ mod tests {
         assert_eq!(f.max_us[0], Some(100));
         assert_eq!(f.max_us.iter().flatten().count(), 120);
         // A 30 day range reads hours.
-        let d = st.history("desk", t0, t0 + 30 * 24 * 3600).unwrap();
+        let d = st
+            .history("desk", t0, t0 + 30 * 24 * 3600, t0 + 30 * 24 * 3600)
+            .unwrap();
         assert_eq!(d.tier_s, 3600);
         assert_eq!(d.flows[0].max_us[0], Some(900));
         assert_eq!(d.flows[0].late_total, 1);
         // A day later the seconds are gone, the minutes stay.
         st.rollup(t0 + 7200 + KEEP_SECONDS + 60, 60).unwrap();
-        let gone = st.history("desk", t0, t0 + 3599).unwrap();
-        assert!(gone.flows.is_empty());
-        let kept = st.history("desk", t0, t0 + 6 * 3600).unwrap();
+        // Asked as of then, an old hour reads minutes: the seconds are gone.
+        let later = t0 + 7200 + KEEP_SECONDS + 60;
+        let gone = st.history("desk", t0, t0 + 3599, later).unwrap();
+        assert_eq!(gone.tier_s, 60);
+        let secs: i64 = st
+            .conn()
+            .query_row("SELECT COUNT(*) FROM second", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(secs, 0);
+        let kept = st
+            .history("desk", t0, t0 + 6 * 3600, t0 + 6 * 3600)
+            .unwrap();
         assert_eq!(kept.flows[0].max_us[1], Some(900));
     }
 
@@ -649,11 +668,11 @@ mod tests {
             .unwrap();
         assert_eq!(count, 2);
         assert_eq!(
-            st.history("desk", t0, t0 + 50).unwrap().flows[0].latency_us,
+            st.history("desk", t0, t0 + 50, t0 + 50).unwrap().flows[0].latency_us,
             1000
         );
         assert_eq!(
-            st.history("desk", t0, t0 + 200).unwrap().flows[0].latency_us,
+            st.history("desk", t0, t0 + 200, t0 + 200).unwrap().flows[0].latency_us,
             250
         );
     }
@@ -685,13 +704,147 @@ mod tests {
         let r = &o.receivers[0];
         assert_eq!(r.device, "stage");
         assert_eq!(r.flows, 2);
-        assert_eq!((r.peak_us, r.latency_us), (400, 1000));
+        // The flow closest to its latency: 240 of 250 µs, not 400 of 1000.
+        assert_eq!((r.peak_us, r.latency_us), (200, 250));
         assert_eq!((r.late_1h, r.late_24h), (2, 7));
         assert_eq!(r.age_s, Some(5));
         assert_eq!(r.spark.len(), 60);
         assert_eq!(r.spark[0], Some(400)); // 400 of 1000 µs
         assert_eq!(r.spark[59], Some(800)); // 200 of 250 µs beats 300 of 1000
         assert_eq!(r.spark[30], None);
+    }
+
+    #[test]
+    fn device_names_match_case_aside() {
+        // The recorder once stored samples under "stage-1" and flows under
+        // "Stage-1": two device rows, and neither page found both.
+        let st = Store::memory().unwrap();
+        let now = 1_800_000_000;
+        st.set_flow("Stage-1", 1, &flow(1000), now - 60).unwrap();
+        st.add("stage-1", &[s(1, now - 5, 400, 0)]).unwrap();
+        let ids: i64 = st
+            .conn()
+            .query_row("SELECT COUNT(*) FROM device", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ids, 1);
+        let h = st.history("Stage-1", now - 60, now, now).unwrap();
+        assert_eq!(h.flows[0].latency_us, 1000);
+        assert_eq!(h.flows[0].peak_us, 400);
+        assert_eq!(st.overview(now).unwrap().receivers[0].latency_us, 1000);
+    }
+
+    #[test]
+    fn the_rollup_every_minute_keeps_whole_hours_and_minutes() {
+        // The recorder rolls up every minute with a 600 s window; the hour
+        // row must still hold all its 3600 seconds afterwards.
+        let st = Store::memory().unwrap();
+        let t0 = 1_800_000_000; // a whole hour
+        let samples: Vec<Sample> = (0..7200).map(|k| s(1, t0 + k, 100, 1)).collect();
+        st.add("desk", &samples).unwrap();
+        for m in 1..=125 {
+            st.rollup(t0 + m * 60 + 7, 600).unwrap();
+        }
+        let (n, late): (i64, i64) = st
+            .conn()
+            .query_row("SELECT n, late FROM hour WHERE t = ?1", [t0], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((n, late), (3600, 3600));
+        let mins: i64 = st
+            .conn()
+            .query_row("SELECT MIN(n) FROM minute", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(mins, 60);
+    }
+
+    #[test]
+    fn a_second_stored_twice_keeps_its_peak_and_adds_its_late_packets() {
+        let st = Store::memory().unwrap();
+        st.add("desk", &[s(1, 100, 700, 3)]).unwrap();
+        st.add("desk", &[s(1, 100, 200, 2)]).unwrap();
+        let (peak, late): (i64, i64) = st
+            .conn()
+            .query_row("SELECT peak, late FROM second", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((peak, late), (700, 5));
+    }
+
+    #[test]
+    fn an_extreme_range_is_clamped_and_stays_small() {
+        let st = Store::memory().unwrap();
+        let now = 1_800_000_000;
+        for (from, to) in [
+            (i64::MIN, 0),
+            (0, i64::MAX),
+            (i64::MIN, i64::MAX),
+            (now, now - 10),
+        ] {
+            let h = st.history("desk", from, to, now).unwrap();
+            assert!(
+                h.t.len() as i64 <= api::HISTORY_POINTS + 1,
+                "{from}..{to}: {}",
+                h.t.len()
+            );
+            assert!(
+                h.from >= now - KEEP_HOURS - 3600 && h.to <= now + 3600,
+                "{from}..{to}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_old_short_range_reads_a_tier_that_still_holds_it() {
+        let st = Store::memory().unwrap();
+        let t0 = 1_800_000_000;
+        let samples: Vec<Sample> = (0..3600).map(|k| s(1, t0 + k, 100, 0)).collect();
+        st.add("desk", &samples).unwrap();
+        st.rollup(t0 + 3600 + 60, 3600 + 60).unwrap();
+        // Three days later the seconds are pruned; an hour from then reads minutes.
+        let now = t0 + 3 * 24 * 3600;
+        st.rollup(now, 60).unwrap();
+        let h = st.history("desk", t0, t0 + 3599, now).unwrap();
+        assert_eq!(h.tier_s, 60);
+        assert_eq!(h.flows[0].max_us.iter().flatten().count(), 60);
+    }
+
+    #[test]
+    fn seconds_left_from_before_a_restart_are_rolled_up_on_start() {
+        let st = Store::memory().unwrap();
+        let t0 = 1_800_000_000;
+        let samples: Vec<Sample> = (0..600).map(|k| s(1, t0 + k, 100, 0)).collect();
+        st.add("desk", &samples).unwrap();
+        // Back after an hour: a normal rollup covers only its window.
+        let now = t0 + 3600;
+        st.add("desk", &[s(1, now - 30, 100, 0)]).unwrap();
+        st.catch_up(now).unwrap();
+        let mins: i64 = st
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM minute WHERE t < ?1",
+                [t0 + 600],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(mins, 10);
+    }
+
+    #[test]
+    fn time_indexes_serve_the_rollup_and_pruning() {
+        let st = Store::memory().unwrap();
+        let names: Vec<String> = st
+            .conn()
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for i in ["hour_t", "minute_t", "second_t"] {
+            assert!(names.contains(&i.to_owned()), "{i} in {names:?}");
+        }
     }
 
     #[test]
@@ -710,7 +863,7 @@ mod tests {
             .unwrap();
         assert_eq!(v, i64::try_from(MIGRATIONS.len()).unwrap());
         assert_eq!(
-            st.history("desk", 1_800_000_000, 1_800_000_010)
+            st.history("desk", 1_800_000_000, 1_800_000_010, 1_800_000_010)
                 .unwrap()
                 .flows
                 .len(),

@@ -185,3 +185,21 @@ async fn api_changes_is_a_json_list() {
     let list: Vec<dcontroller_api::ChangeEntry> = serde_json::from_str(&body).unwrap();
     assert!(list.is_empty());
 }
+
+#[tokio::test]
+async fn an_extreme_history_range_answers_small_and_does_not_hang() {
+    let d = web();
+    for q in [
+        "from=-9223372036854775808&to=0",
+        "from=0&to=9223372036854775807",
+    ] {
+        let (s, body, _) = get(d.path(), &format!("/api/history/desk?{q}")).await;
+        assert_eq!(s, StatusCode::OK, "{q}");
+        let h: dcontroller_api::History = serde_json::from_str(&body).unwrap();
+        assert!(
+            h.t.len() as i64 <= dcontroller_api::HISTORY_POINTS + 1,
+            "{q}: {}",
+            h.t.len()
+        );
+    }
+}

@@ -275,6 +275,16 @@ mod tests {
     }
 
     #[test]
+    fn only_the_latest_request_may_show_its_answer() {
+        // A slow 1 y read answered after a newer 5 min read must not replace it.
+        let mut r = Requests::default();
+        let year = r.next();
+        let five = r.next();
+        assert!(!r.is_latest(year));
+        assert!(r.is_latest(five));
+    }
+
+    #[test]
     fn sparklines_break_at_gaps_and_scale_to_the_latency_at_least() {
         assert_eq!(
             spark_path(&[Some(0), Some(500), Some(1000)], 100.0, 10.0, 1000),

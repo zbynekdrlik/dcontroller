@@ -338,6 +338,38 @@ mod tests {
     }
 
     #[test]
+    fn late_packets_wait_for_a_heartbeat_that_stores_a_sample() {
+        // A heartbeat without a lateness record (or before the flows are
+        // known) stores nothing; its late packets must not be lost.
+        let active: BTreeMap<u16, FlowInfo> = [(1, FlowInfo::default())].into();
+        let mut last = BTreeMap::new();
+        let with = |late: u32| Beat {
+            device_id: [0; 8],
+            lateness: Some((48000, vec![0])),
+            late: Some(vec![late]),
+        };
+        let without = |late: u32| Beat {
+            device_id: [0; 8],
+            lateness: None,
+            late: Some(vec![late]),
+        };
+        assert_eq!(beat_samples(&with(10), &active, &mut last, 1)[0].late, 0); // the baseline
+        assert!(beat_samples(&without(14), &active, &mut last, 2).is_empty());
+        assert!(beat_samples(&with(16), &BTreeMap::new(), &mut last, 3).is_empty());
+        assert_eq!(beat_samples(&with(17), &active, &mut last, 4)[0].late, 7);
+    }
+
+    #[test]
+    fn queued_heartbeats_of_one_device_get_seconds_of_their_own() {
+        assert_eq!(stamp(None, 100), 100);
+        assert_eq!(stamp(Some(99), 100), 100);
+        assert_eq!(stamp(Some(100), 100), 101);
+        assert_eq!(stamp(Some(101), 100), 102);
+        // A clock that jumped back far (hours) is taken as it is.
+        assert_eq!(stamp(Some(100_000), 100), 100);
+    }
+
+    #[test]
     fn a_heartbeat_belongs_to_the_device_at_its_address_with_its_id() {
         let devs = vec![
             dev("a", 1, Some(1)),
