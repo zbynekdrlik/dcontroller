@@ -98,7 +98,12 @@ pub fn beat_samples(
 ) -> Vec<Sample> {
     let totals: BTreeMap<u16, u32> = (1u16..).zip(beat.late.iter().flatten().copied()).collect();
     for (&slot, &total) in &totals {
-        last.entry(slot).or_insert(total);
+        if active.contains_key(&slot) {
+            last.entry(slot).or_insert(total);
+        } else {
+            // No flow on this slot: its late packets are nobody's.
+            last.insert(slot, total);
+        }
     }
     let Some((rate, lateness)) = &beat.lateness else {
         return Vec::new();
@@ -125,12 +130,22 @@ pub fn beat_samples(
         .collect()
 }
 
+/// Remembers a heartbeat's late counts as the baseline of slots seen for
+/// the first time, for a device whose flows are not read yet: its late
+/// packets count once a flow is known.
+pub fn remember(beat: &Beat, last: &mut BTreeMap<u16, u32>) {
+    for (slot, &total) in (1u16..).zip(beat.late.iter().flatten()) {
+        last.entry(slot).or_insert(total);
+    }
+}
+
 /// The second a device's heartbeat is stored at: now, or the second after
-/// the device's last one when heartbeats queued up (one a second each);
-/// a clock that went back by an hour or more is taken as it is.
+/// the device's last one when two came in one second, but never more than
+/// two seconds ahead of now (so jitter never shifts a device for good;
+/// past that the second is shared and the store merges it).
 pub fn stamp(prev: Option<i64>, now: i64) -> i64 {
     match prev {
-        Some(p) if p >= now && p - now < 3600 => p + 1,
+        Some(p) if p >= now && p < now + 2 => p + 1,
         _ => now,
     }
 }
@@ -158,8 +173,9 @@ pub fn start(dante: Shared, store: Arc<Store>, stop: Arc<AtomicBool>) {
         .expect("spawn the recorder");
 }
 
-/// Each receiver's flows as last read, by name (lowercase).
-type Flows = Arc<Mutex<HashMap<String, BTreeMap<u16, FlowInfo>>>>;
+/// Each receiver's flows as last read, by name (lowercase); shared, so a
+/// heartbeat takes them without copying.
+type Flows = Arc<Mutex<HashMap<String, Arc<BTreeMap<u16, FlowInfo>>>>>;
 
 /// What the recorder keeps per receiver.
 #[derive(Default)]
@@ -229,11 +245,14 @@ fn run(dante: &Shared, store: &Store, stop: &AtomicBool, flows: &Flows) {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .get(&key)
-                        .cloned()
-                        .unwrap_or_default();
+                        .cloned();
                     let r = state.entry(key).or_default();
                     r.name.clone_from(&d.name);
                     let t = stamp(r.last_t, unix_now());
+                    let Some(active) = active else {
+                        remember(&beat, &mut r.last_late);
+                        continue;
+                    };
                     let batch = beat_samples(&beat, &active, &mut r.last_late, t);
                     if !batch.is_empty() {
                         r.last_t = Some(t);
@@ -311,10 +330,10 @@ fn read_flows_loop(dante: &Shared, store: &Store, stop: &AtomicBool, flows: &Flo
                             }
                         }
                         let mut map = flows.lock().unwrap_or_else(|e| e.into_inner());
-                        if map.get(&key).is_none_or(BTreeMap::is_empty) && !f.is_empty() {
+                        if map.get(&key).is_none_or(|m| m.is_empty()) && !f.is_empty() {
                             info!(device = %d.name, flows = f.len(), "recorder: recording");
                         }
-                        map.insert(key, f);
+                        map.insert(key, Arc::new(f));
                     }
                     Err(e) => warn!(device = %d.name, error = %e, "recorder: flows not read"),
                 }

@@ -16,23 +16,35 @@ pub const RANGES: [(&str, i64); 7] = [
     ("1 y", 365 * 24 * 3600),
 ];
 
-/// Numbers the page's history reads, so an answer that comes after a
-/// newer request (a slow 1 y read after a 5 min click) is dropped.
+/// The page's history reads: numbered, so an answer that comes after a
+/// newer read (a slow 1 y read after a 5 min click) is dropped, and busy
+/// while the newest runs, so a live poll never supersedes a slow read.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Requests {
+pub struct HistReads {
     last: u64,
+    running: bool,
 }
 
-impl Requests {
-    /// A new request's number.
-    pub fn next(&mut self) -> u64 {
+impl HistReads {
+    /// A new read's number.
+    pub fn start(&mut self) -> u64 {
         self.last += 1;
+        self.running = true;
         self.last
     }
 
-    /// Whether `n` is still the newest request.
-    pub fn is_latest(&self, n: u64) -> bool {
-        n == self.last
+    /// Read `n` answered: whether it may show (it is the newest).
+    pub fn done(&mut self, n: u64) -> bool {
+        let latest = n == self.last;
+        if latest {
+            self.running = false;
+        }
+        latest
+    }
+
+    /// Whether the newest read is still running.
+    pub fn busy(&self) -> bool {
+        self.running
     }
 }
 

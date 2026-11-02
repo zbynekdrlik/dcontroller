@@ -36,7 +36,37 @@ const MIGRATIONS: &[&str] = &[
     "CREATE INDEX second_t ON second (t);
      CREATE INDEX minute_t ON minute (t);
      CREATE INDEX hour_t ON hour (t);",
+    // 3: one row per device name, case aside (Dante compares names so):
+    // rows split by case before v0.1.24 are merged into the oldest id.
+    "CREATE TEMP TABLE dup AS SELECT d.id AS id,
+         (SELECT MIN(e.id) FROM device e WHERE e.name = d.name COLLATE NOCASE) AS keep FROM device d;
+     DELETE FROM dup WHERE id = keep;
+     INSERT INTO second (device, slot, t, peak, late)
+         SELECT dup.keep, s.slot, s.t, s.peak, s.late FROM second s JOIN dup ON dup.id = s.device WHERE true
+         ON CONFLICT (device, t, slot) DO UPDATE SET peak = MAX(peak, excluded.peak), late = late + excluded.late;
+     INSERT INTO minute (device, slot, t, peak, sum, n, late)
+         SELECT dup.keep, m.slot, m.t, m.peak, m.sum, m.n, m.late FROM minute m JOIN dup ON dup.id = m.device WHERE true
+         ON CONFLICT (device, t, slot) DO UPDATE SET peak = MAX(peak, excluded.peak), sum = sum + excluded.sum,
+             n = n + excluded.n, late = late + excluded.late;
+     INSERT INTO hour (device, slot, t, peak, sum, n, late)
+         SELECT dup.keep, h.slot, h.t, h.peak, h.sum, h.n, h.late FROM hour h JOIN dup ON dup.id = h.device WHERE true
+         ON CONFLICT (device, t, slot) DO UPDATE SET peak = MAX(peak, excluded.peak), sum = sum + excluded.sum,
+             n = n + excluded.n, late = late + excluded.late;
+     INSERT OR IGNORE INTO flow (device, slot, since, latency_us, rate, channels, sources)
+         SELECT dup.keep, f.slot, f.since, f.latency_us, f.rate, f.channels, f.sources FROM flow f JOIN dup ON dup.id = f.device;
+     DELETE FROM second WHERE device IN (SELECT id FROM dup);
+     DELETE FROM minute WHERE device IN (SELECT id FROM dup);
+     DELETE FROM hour WHERE device IN (SELECT id FROM dup);
+     DELETE FROM flow WHERE device IN (SELECT id FROM dup);
+     DELETE FROM device WHERE id IN (SELECT id FROM dup);
+     DROP TABLE dup;
+     CREATE UNIQUE INDEX device_name_nocase ON device (name COLLATE NOCASE);",
 ];
+
+/// `t` rounded up to a whole `unit`.
+fn ceil(t: i64, unit: i64) -> i64 {
+    (t + unit - 1).div_euclid(unit) * unit
+}
 
 /// Now, unix seconds.
 pub fn unix_now() -> i64 {
@@ -275,8 +305,12 @@ impl Store {
             "INSERT OR REPLACE INTO minute (device, slot, t, peak, sum, n, late)
              SELECT device, slot, t - t % 60, MAX(peak), SUM(peak), COUNT(*), SUM(late) FROM second
              WHERE t >= ?1 AND t < ?2 GROUP BY device, slot, t - t % 60",
-            // Whole minutes only: a partial one would replace a complete row.
-            params![(minute - window).div_euclid(60) * 60, minute],
+            // Whole minutes only: a partial one would replace a complete row
+            // (one starting before the window, or one the prune already cut).
+            params![
+                ((minute - window).div_euclid(60) * 60).max(ceil(now - KEEP_SECONDS, 60)),
+                minute
+            ],
         )
         .map_err(|e| format!("roll seconds: {e}"))?;
         db.execute(
@@ -284,7 +318,11 @@ impl Store {
              SELECT device, slot, t - t % 3600, MAX(peak), SUM(sum), SUM(n), SUM(late) FROM minute
              WHERE t >= ?1 AND t < ?2 GROUP BY device, slot, t - t % 3600",
             // Whole hours only, likewise.
-            params![(hour - 3600 - window).div_euclid(3600) * 3600, hour],
+            params![
+                ((hour - 3600 - window).div_euclid(3600) * 3600)
+                    .max(ceil(now - KEEP_MINUTES, 3600)),
+                hour
+            ],
         )
         .map_err(|e| format!("roll minutes: {e}"))?;
         for (table, keep) in [
@@ -304,7 +342,11 @@ impl Store {
         let since: Option<i64> = {
             let db = self.conn();
             db.query_row(
-                "SELECT COALESCE((SELECT MAX(t) + 60 FROM minute), (SELECT MIN(t) FROM second))",
+                // Per device: its first second past its last rolled-up minute;
+                // the earliest of those over all devices.
+                "SELECT MIN(MAX(s.first, COALESCE(m.last + 60, s.first)))
+                 FROM (SELECT device, MIN(t) AS first FROM second GROUP BY device) s
+                 LEFT JOIN (SELECT device, MAX(t) AS last FROM minute GROUP BY device) m ON m.device = s.device",
                 [],
                 |r| r.get(0),
             )

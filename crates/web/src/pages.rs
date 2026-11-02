@@ -31,7 +31,7 @@ pub struct Hist {
     pub data: RwSignal<Option<Result<History, String>>>,
     pub overview: RwSignal<Option<Result<Overview, String>>>,
     pub scale: RwSignal<hist::Scale>,
-    pub requests: StoredValue<hist::Requests>,
+    pub reads: StoredValue<hist::HistReads>,
 }
 
 impl Hist {
@@ -56,8 +56,12 @@ async fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, String
     res.json::<T>().await.map_err(|e| e.to_string())
 }
 
-/// Reads the chosen receiver's history for the chosen range or zoom.
-pub fn load_history(h: Hist) {
+/// Reads the chosen receiver's history for the chosen range or zoom; a
+/// live poll (`poll`) waits while a read runs.
+pub fn load_history(h: Hist, poll: bool) {
+    if poll && h.reads.get_value().busy() {
+        return;
+    }
     let Some(dev) = h.device.get_untracked() else {
         return;
     };
@@ -69,14 +73,17 @@ pub fn load_history(h: Hist) {
         "/api/history/{}?from={from}&to={to}",
         String::from(js_sys::encode_uri_component(&dev))
     );
-    let mut reqs = h.requests.get_value();
-    let n = reqs.next();
-    h.requests.set_value(reqs);
+    let mut reads = h.reads.get_value();
+    let n = reads.start();
+    h.reads.set_value(reads);
     spawn_local(async move {
         let r = get_json::<History>(&url).await;
-        // Only the newest request's answer shows (a range, zoom or device
+        // Only the newest read's answer shows (a range, zoom or device
         // chosen since makes this one stale).
-        if h.requests.get_value().is_latest(n) {
+        let mut reads = h.reads.get_value();
+        let show = reads.done(n);
+        h.reads.set_value(reads);
+        if show {
             h.data.set(Some(r));
         }
     });
