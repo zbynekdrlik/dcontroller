@@ -2,6 +2,7 @@
 
 pub mod change;
 pub mod dante;
+pub mod history;
 pub mod latency;
 pub mod meters;
 
@@ -42,6 +43,13 @@ pub struct Config {
     /// The changes log: every subscription change, one JSON line each.
     #[serde(default = "default_changes_log")]
     pub changes_log: PathBuf,
+    /// The latency history (SQLite), recorded for every receiver.
+    #[serde(default = "default_history_db")]
+    pub history_db: PathBuf,
+}
+
+fn default_history_db() -> PathBuf {
+    PathBuf::from("/var/lib/dcontroller/history.db")
 }
 
 fn default_changes_log() -> PathBuf {
@@ -105,7 +113,7 @@ async fn api_not_found() -> StatusCode {
 pub struct Shared {
     pub dante: dante::Shared,
     pub changes: std::sync::Arc<change::Changes>,
-    pub latency: std::sync::Arc<latency::Watches>,
+    pub history: std::sync::Arc<history::Store>,
     pub meters: std::sync::Arc<meters::Watches>,
 }
 
@@ -139,15 +147,33 @@ async fn subscription(
         })
 }
 
-async fn latency_report(
+/// `?from=&to=` of `/api/history`, unix seconds; `to` defaults to now and
+/// `from` to an hour before `to`.
+#[derive(Debug, Deserialize)]
+pub struct Range {
+    pub from: Option<i64>,
+    pub to: Option<i64>,
+}
+
+async fn history_report(
     State(s): State<Shared>,
     axum::extract::Path(device): axum::extract::Path<String>,
-) -> Result<axum::Json<dcontroller_api::LatencyReport>, StatusCode> {
-    tokio::task::spawn_blocking(move || s.latency.report(&s.dante, &device))
+    axum::extract::Query(r): axum::extract::Query<Range>,
+) -> Result<axum::Json<dcontroller_api::History>, StatusCode> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    let to = r.to.unwrap_or(now);
+    let from = r.from.unwrap_or(to - 3600);
+    tokio::task::spawn_blocking(move || s.history.history(&device, from, to))
         .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "history: task failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
         .map(axum::Json)
         .map_err(|e| {
-            tracing::error!(error = %e, "latency: task failed");
+            tracing::error!(error = %e, "history: read failed");
             StatusCode::INTERNAL_SERVER_ERROR
         })
 }
@@ -225,7 +251,7 @@ pub fn app(web_dir: &Path, shared: Shared) -> Router {
         .route("/api/rename", axum::routing::post(rename))
         .route("/api/setting", axum::routing::post(setting))
         .route("/api/changes", get(changes))
-        .route("/api/latency/{device}", get(latency_report))
+        .route("/api/history/{device}", get(history_report))
         .route("/api/meters/{device}", get(meter_report))
         .route("/api", any(api_not_found))
         .route("/api/", any(api_not_found))

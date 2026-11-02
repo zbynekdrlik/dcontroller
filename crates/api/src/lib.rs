@@ -291,6 +291,70 @@ pub struct ChannelLevel {
     pub muted: bool,
 }
 
+/// `GET /api/history/{device}?from=&to=`: a receiver's packet latency per
+/// RX flow over a time range, from the server's recorder, bucketed to at
+/// most [`HISTORY_POINTS`] points.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct History {
+    pub device: String,
+    /// The range asked for, unix seconds.
+    pub from: i64,
+    pub to: i64,
+    /// Seconds per bucket.
+    pub step_s: i64,
+    /// The stored resolution the buckets come from, seconds (1, 60, 3600).
+    pub tier_s: i64,
+    /// Each bucket's start, unix seconds; the flows' series align with it.
+    pub t: Vec<i64>,
+    pub flows: Vec<FlowHistory>,
+    /// Why there is nothing, when there is nothing.
+    pub error: Option<String>,
+}
+
+/// The most buckets a history answer has.
+pub const HISTORY_POINTS: i64 = 1500;
+
+/// One RX flow's history: its description as last recorded and a value
+/// per bucket of [`History::t`] (`None`: nothing recorded then).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlowHistory {
+    pub slot: u16,
+    pub latency_us: u32,
+    pub rate: u32,
+    pub channels: Vec<String>,
+    pub sources: Vec<String>,
+    /// The largest per-second peak lateness in each bucket, µs.
+    pub max_us: Vec<Option<u32>>,
+    /// The mean of the per-second peaks in each bucket, µs.
+    pub mean_us: Vec<Option<u32>>,
+    /// Late packets in each bucket.
+    pub late: Vec<u64>,
+    /// Over the whole range: the largest peak, the mean, the late packets,
+    /// and how many stored values (of `tier_s` each) passed the latency.
+    pub peak_us: u32,
+    pub avg_us: u32,
+    pub late_total: u64,
+    pub over: u64,
+    /// The stored values' distribution over [`latency_bins`]'s edges.
+    pub histogram: Vec<u64>,
+}
+
+/// The histogram's upper edges for a flow of latency `latency_us`, µs:
+/// eight up to the latency, then 1.5× and 2×; one more bin holds the rest.
+pub fn latency_bins(latency_us: u32) -> Vec<u32> {
+    let l = latency_us.max(8);
+    let mut edges: Vec<u32> = (1..=8).map(|k| l * k / 8).collect();
+    edges.push(l + l / 2);
+    edges.push(l * 2);
+    edges
+}
+
+/// The bin of `value_us` among `edges` (`edges.len()` for over the last);
+/// a value on an edge belongs below it.
+pub fn latency_bin(edges: &[u32], value_us: u32) -> usize {
+    edges.partition_point(|&e| e < value_us)
+}
+
 /// `GET /api/latency/{device}`: the receiver's packet latency per RX flow,
 /// as Dante Controller's Latency tab shows it, gathered from its heartbeats
 /// while someone watches.
@@ -406,6 +470,19 @@ mod tests {
         assert_eq!(Setting::EncodingBits(24).what(), "encoding");
         let back = serde_json::to_string(&c).unwrap();
         assert_eq!(serde_json::from_str::<SettingChange>(&back).unwrap(), c);
+    }
+
+    #[test]
+    fn latency_bins_split_at_eighths_then_past_the_latency() {
+        let e = latency_bins(1000);
+        assert_eq!(e, vec![125, 250, 375, 500, 625, 750, 875, 1000, 1500, 2000]);
+        assert_eq!(latency_bin(&e, 0), 0);
+        assert_eq!(latency_bin(&e, 125), 0);
+        assert_eq!(latency_bin(&e, 126), 1);
+        assert_eq!(latency_bin(&e, 1000), 7);
+        assert_eq!(latency_bin(&e, 1001), 8);
+        assert_eq!(latency_bin(&e, 5000), 10);
+        assert_eq!(latency_bins(0).len(), 10);
     }
 
     #[test]
