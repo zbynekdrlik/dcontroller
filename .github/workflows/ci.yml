@@ -188,6 +188,18 @@ jobs:
           send dcontroller
           if send nobody; then echo "foreign user sent on the Dante NIC"; exit 1; fi
           if sudo python3 -I -c 'import socket;s=socket.socket(2,2);s.bind(("10.99.7.2",0));s.sendto(b"x",("10.99.7.9",9))'; then echo "root sent on the Dante NIC"; exit 1; fi
+          # An update refreshes the guard's rules: a stale rule file (no meter
+          # ports, as before v0.1.21) comes back whole from install.sh.
+          sudo DC_BIND=127.0.0.1:8790 DC_IFACE=dante0 "$rel/install.sh"
+          sudo sed -i '/8810-8825/d' /etc/dcontroller/dante-guard.nft
+          sudo systemctl restart dante-guard.service
+          if sudo nft list chain inet dante_guard in | grep -q 8810; then echo "stale rules not stale"; exit 1; fi
+          sudo "$rel/install.sh"
+          sudo grep -q 'udp dport 8810-8825 accept' /etc/dcontroller/dante-guard.nft
+          sudo nft list chain inet dante_guard in | grep -q 'udp dport 8810-8825 accept'
+          sudo grep -q 'oifname != "dante0"' /etc/dcontroller/dante-guard.nft
+          send dcontroller
+          if send nobody; then echo "foreign user sent after the update"; exit 1; fi
           # Other interfaces are untouched.
           sudo -u nobody python3 -I -c 'import socket;s=socket.socket(2,2);s.sendto(b"x",("127.0.0.1",9))'
           sudo systemctl stop dante-guard.service
