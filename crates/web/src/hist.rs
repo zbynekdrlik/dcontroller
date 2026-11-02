@@ -53,44 +53,65 @@ pub fn over_text(over: u64, tier_s: i64) -> String {
     format!("{over} {unit}")
 }
 
+/// How the chart's y axis reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scale {
+    /// Each flow's peak as a share of its own latency (100 % = at it): flows
+    /// of different latencies on one axis.
+    Share,
+    /// The peaks in ms, with a line per distinct latency.
+    Ms,
+}
+
 #[derive(Serialize)]
-struct ChartFlow<'a> {
+struct ChartFlow {
     label: String,
-    color: &'a str,
-    max_us: &'a [Option<u32>],
+    color: &'static str,
+    values: Vec<Option<f64>>,
 }
 
 #[derive(Serialize)]
 struct Threshold {
     label: String,
     color: &'static str,
-    us: u32,
+    value: f64,
 }
 
 #[derive(Serialize)]
 struct Chart<'a> {
     t: &'a [i64],
-    flows: Vec<ChartFlow<'a>>,
+    unit: &'static str,
+    flows: Vec<ChartFlow>,
     thresholds: Vec<Threshold>,
     /// Late packets per bucket over all flows; `None` when there are none.
     late: Option<Vec<u64>>,
-    /// The y axis reaches at least the smallest latency, so the margin shows.
-    floor_ms: f64,
+    /// The y axis reaches at least the (smallest) latency, so the margin shows.
+    floor: f64,
     height: u32,
 }
 
 /// The chart's data for `dcChart.latency`: a line per flow (its largest
-/// peak per bucket), a dashed line per distinct flow latency, and late
-/// packets as bars when there are any.
-pub fn chart_json(h: &History, height: u32) -> String {
+/// peak per bucket), the latency line(s), and late packets as bars when
+/// there are any. `Share` leaves out a flow whose latency is not known.
+pub fn chart_json(h: &History, height: u32, scale: Scale) -> String {
     let flows = h
         .flows
         .iter()
         .enumerate()
+        .filter(|(_, f)| scale == Scale::Ms || f.latency_us > 0)
         .map(|(i, f)| ChartFlow {
             label: label(f),
             color: color(i),
-            max_us: &f.max_us,
+            values: f
+                .max_us
+                .iter()
+                .map(|v| {
+                    v.map(|us| match scale {
+                        Scale::Ms => f64::from(us) / 1000.0,
+                        Scale::Share => f64::from(us) * 100.0 / f64::from(f.latency_us),
+                    })
+                })
+                .collect(),
         })
         .collect();
     let mut lats: Vec<u32> = h
@@ -101,14 +122,22 @@ pub fn chart_json(h: &History, height: u32) -> String {
         .collect();
     lats.sort_unstable();
     lats.dedup();
-    let thresholds = lats
-        .iter()
-        .map(|&us| Threshold {
-            label: format!("latency {}", ms(us)),
+    let thresholds: Vec<Threshold> = match scale {
+        Scale::Ms => lats
+            .iter()
+            .map(|&us| Threshold {
+                label: format!("latency {}", ms(us)),
+                color: "#f87171",
+                value: f64::from(us) / 1000.0,
+            })
+            .collect(),
+        Scale::Share if lats.is_empty() => Vec::new(),
+        Scale::Share => vec![Threshold {
+            label: "latency".into(),
             color: "#f87171",
-            us,
-        })
-        .collect();
+            value: 100.0,
+        }],
+    };
     let late: Vec<u64> = (0..h.t.len())
         .map(|i| {
             h.flows
@@ -119,10 +148,14 @@ pub fn chart_json(h: &History, height: u32) -> String {
         .collect();
     let chart = Chart {
         t: &h.t,
+        unit: match scale {
+            Scale::Ms => "ms",
+            Scale::Share => "%",
+        },
+        floor: thresholds.first().map_or(0.0, |t| t.value * 1.05),
         flows,
         thresholds,
         late: late.iter().any(|&l| l > 0).then_some(late),
-        floor_ms: f64::from(lats.first().copied().unwrap_or(0)) / 1000.0 * 1.05,
         height,
     };
     serde_json::to_string(&chart).unwrap_or_else(|_| "{}".into())
@@ -201,24 +234,43 @@ mod tests {
             ],
             ..History::default()
         };
-        let v: serde_json::Value = serde_json::from_str(&chart_json(&h, 300)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&chart_json(&h, 300, Scale::Ms)).unwrap();
         assert_eq!(v["t"], serde_json::json!([10, 20, 30]));
+        assert_eq!(v["unit"], "ms");
         assert_eq!(v["flows"].as_array().unwrap().len(), 3);
         assert_eq!(v["flows"][0]["label"], "Flow 1 · desk");
         assert_eq!(v["flows"][0]["color"], PALETTE[0]);
-        assert_eq!(v["flows"][0]["max_us"], serde_json::json!([100, null, 300]));
+        assert_eq!(v["flows"][0]["values"], serde_json::json!([0.1, null, 0.3]));
         assert_eq!(v["thresholds"].as_array().unwrap().len(), 2);
-        assert_eq!(v["thresholds"][0]["us"], 250);
+        assert_eq!(v["thresholds"][0]["value"], 0.25);
         assert_eq!(v["thresholds"][1]["label"], "latency 1.00 ms");
         assert_eq!(v["late"], serde_json::json!([0, 1, 2]));
         assert_eq!(v["height"], 300);
+        // As a share of each flow's own latency: one 100 % line for all.
+        let p: serde_json::Value =
+            serde_json::from_str(&chart_json(&h, 300, Scale::Share)).unwrap();
+        assert_eq!(p["unit"], "%");
+        assert_eq!(
+            p["flows"][0]["values"],
+            serde_json::json!([10.0, null, 30.0])
+        );
+        assert_eq!(
+            p["flows"][2]["values"],
+            serde_json::json!([null, null, 4.0])
+        );
+        assert_eq!(
+            p["thresholds"],
+            serde_json::json!([{"label": "latency", "color": "#f87171", "value": 100.0}])
+        );
+        assert_eq!(p["floor"], 105.0);
         // No late packets: no bars.
         let quiet = History {
             t: vec![1],
             flows: vec![flow(1, 1000, vec![Some(1)], vec![0])],
             ..History::default()
         };
-        let q: serde_json::Value = serde_json::from_str(&chart_json(&quiet, 200)).unwrap();
+        let q: serde_json::Value =
+            serde_json::from_str(&chart_json(&quiet, 200, Scale::Share)).unwrap();
         assert!(q["late"].is_null());
     }
 

@@ -64,6 +64,7 @@ fn App() -> impl IntoView {
         zoom: RwSignal::new(None),
         data: RwSignal::new(None),
         overview: RwSignal::new(None),
+        scale: RwSignal::new(hist::Scale::Share),
     };
     provide_context(hst);
     // The hash is the page's address: a link, back or forward moves the view

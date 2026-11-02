@@ -7,12 +7,10 @@
 "use strict";
 (() => {
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  const ms = (us) => (us == null ? null : us / 1000);
-
-  // A tooltip-free, legend-as-table readout; values in ms with two decimals.
-  const fmt = (v) => (v == null ? "–" : `${v.toFixed(2)} ms`);
 
   function build(el, d) {
+    // The legend reads the value under the cursor in the chart's unit.
+    const fmt = (v) => (v == null ? "–" : d.unit === "%" ? `${v.toFixed(0)} %` : `${v.toFixed(2)} ms`);
     const grid = { stroke: css("--grid") || "#243049", width: 1 };
     const axis = { stroke: css("--muted") || "#8b97ad", grid, ticks: grid, font: "11px system-ui, sans-serif" };
     const series = [{}];
@@ -26,7 +24,7 @@
         spanGaps: false,
         value: (_, v) => fmt(v),
       });
-      data.push(f.max_us.map(ms));
+      data.push(f.values);
     }
     for (const th of d.thresholds) {
       series.push({
@@ -37,7 +35,7 @@
         points: { show: false },
         value: (_, v) => fmt(v),
       });
-      data.push(d.t.map(() => ms(th.us)));
+      data.push(d.t.map(() => th.value));
     }
     if (d.late) {
       series.push({
@@ -57,10 +55,11 @@
       cursor: { drag: { x: true, y: false, setScale: false }, points: { size: 6 } },
       select: { show: true },
       legend: { live: true },
-      scales: { x: { time: true }, y: { auto: true, range: (u, lo, hi) => [0, Math.max(hi * 1.1, d.floor_ms || 0.1)] }, late: { auto: true } },
+      scales: { x: { time: true }, y: { auto: true, range: (u, lo, hi) => [0, Math.max(hi * 1.1, d.floor || 0.1)] }, late: { auto: true } },
       axes: [
         axis,
-        { ...axis, label: "ms", labelSize: 14, size: 52, values: (u, v) => v.map((x) => x.toFixed(2)) },
+        { ...axis, label: d.unit === "%" ? "% of latency" : "ms", labelSize: 14, size: 52,
+          values: (u, v) => v.map((x) => (d.unit === "%" ? x.toFixed(0) : x.toFixed(2))) },
         { ...axis, scale: "late", side: 1, grid: { show: false }, size: 36, show: !!d.late, values: (u, v) => v.map((x) => (Number.isInteger(x) ? x : "")) },
       ],
       series,
@@ -85,9 +84,9 @@
     latency(el, json) {
       const d = JSON.parse(json);
       // The series set changed (flows came or went): build anew.
-      const shape = d.flows.map((f) => f.label).join("|") + "#" + d.thresholds.length + "#" + !!d.late;
+      const shape = d.unit + "#" + d.flows.map((f) => f.label).join("|") + "#" + d.thresholds.length + "#" + !!d.late;
       if (el._dc && el._dcShape === shape) {
-        const data = [d.t, ...d.flows.map((f) => f.max_us.map(ms)), ...d.thresholds.map((th) => d.t.map(() => ms(th.us)))];
+        const data = [d.t, ...d.flows.map((f) => f.values), ...d.thresholds.map((th) => d.t.map(() => th.value))];
         if (d.late) data.push(d.late.map((v) => (v ? v : null)));
         el._dc.setData(data);
         return;

@@ -109,6 +109,8 @@ table.grid, table.changes, table.clock, table.rx, table.settings { border-collap
 table.grid th, table.changes th, table.clock th { text-align: left; font-weight: 600; color: var(--muted); font-size: 0.76rem;
   text-transform: uppercase; letter-spacing: 0.05em; padding: 0.45rem 0.7rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
 table.grid td, table.changes td, table.clock td { padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--grid); vertical-align: middle; }
+table.grid td.strong { white-space: nowrap; }
+table.grid td.muted { max-width: 18rem; }
 table.grid tbody tr:hover td, table.clock tbody tr:hover td { background: var(--surface-2); }
 table.changes tr.err td:last-child { color: var(--bad); }
 table.clock tr.lead td:nth-child(2) { color: var(--ok); font-weight: 600; }

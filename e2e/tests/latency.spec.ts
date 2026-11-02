@@ -38,7 +38,15 @@ test.describe("latency history", () => {
     const chart = page.getByTestId("lat-chart");
     await expect(chart.locator("canvas")).toBeVisible();
     await expect(chart.locator(".u-legend")).toContainText(`Flow 1 · ${DEVICE}`);
+    // The default scale is each flow's share of its own latency: one 100 % line.
+    await expect(page.getByTestId("lat-scale-share")).toHaveClass(/\bon\b/);
+    await expect(chart.locator(".u-legend")).toContainText("latency");
+    await expect(chart.locator(".u-legend")).not.toContainText("latency 10.00 ms");
+    // In ms, the latency line is named with its value.
+    await page.getByTestId("lat-scale-ms").click();
+    await expect(page.getByTestId("lat-scale-ms")).toHaveClass(/\bon\b/);
     await expect(chart.locator(".u-legend")).toContainText("latency 10.00 ms");
+    await page.getByTestId("lat-scale-share").click();
 
     // The page shows what the server recorded.
     const h = await page.evaluate((d) => fetch(`/api/history/${d}`).then((x) => x.json()), DEVICE);

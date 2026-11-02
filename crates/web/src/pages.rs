@@ -30,6 +30,7 @@ pub struct Hist {
     pub zoom: RwSignal<Option<(i64, i64)>>,
     pub data: RwSignal<Option<Result<History, String>>>,
     pub overview: RwSignal<Option<Result<Overview, String>>>,
+    pub scale: RwSignal<hist::Scale>,
 }
 
 impl Hist {
@@ -269,6 +270,7 @@ pub fn LatencyPage() -> impl IntoView {
     // Draw on every new read; wire the zoom events once.
     Effect::new(move |_| {
         let data = h.data.get();
+        let scale = h.scale.get();
         let Some(el) = chart_ref.get() else {
             return;
         };
@@ -296,7 +298,7 @@ pub fn LatencyPage() -> impl IntoView {
             on_unzoom.forget();
         }
         if let Some(Ok(hd)) = data.filter(|d| d.as_ref().is_ok_and(|x| !x.flows.is_empty())) {
-            chart_latency(el.unchecked_ref(), &hist::chart_json(&hd, 320));
+            chart_latency(el.unchecked_ref(), &hist::chart_json(&hd, 320, scale));
         }
     });
     let receivers = move || {
@@ -372,8 +374,18 @@ pub fn LatencyPage() -> impl IntoView {
         });
         let live = (h.zoom.get().is_none() && h.range.get() <= 24 * 3600)
             .then(|| view! { <span class="live" data-testid="lat-live">"live"</span> });
+        let scale_btn = |s: hist::Scale, label: &'static str, id: &'static str| {
+            view! {
+                <button data-testid=id class=move || if h.scale.get() == s { "seg on" } else { "seg" }
+                    on:click=move |_| h.scale.set(s)>{label}</button>
+            }
+        };
         view! {
             <div class="seg-group">{ranges}</div>
+            <div class="seg-group">
+                {scale_btn(hist::Scale::Share, "% of latency", "lat-scale-share")}
+                {scale_btn(hist::Scale::Ms, "ms", "lat-scale-ms")}
+            </div>
             {zoom}
             {live}
         }
