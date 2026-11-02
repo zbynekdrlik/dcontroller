@@ -3,18 +3,23 @@
 //! port (dstack `meter`); the server holds one only while someone watches
 //! the device: the first request starts a watch, and a watch nobody asked
 //! for in [`IDLE`] sends the stop and ends. Frames that stop for [`STALE`]
-//! renew the subscription.
+//! renew the subscription (dstack renews it every 3 s; this is a backstop).
+//!
+//! Devices send their frames from another source port than the one the
+//! subscription went to, so the Dante NIC guard (`deploy/dante-guard.nft`)
+//! cannot see them as replies: each watch binds one port of [`PORTS`], and
+//! the guard opens exactly that range.
 
 use std::collections::HashMap;
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::SocketAddrV4;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use dante_stack::cmc;
-use dante_stack::discover::Device;
-use dante_stack::meter::{self, Frame, Level, Meter};
 use dcontroller_api as api;
+use dstack::cmc;
+use dstack::discover::Device;
+use dstack::meter::{self, Frame, Level, Meter};
 use tracing::{info, warn};
 
 use crate::dante::Shared;
@@ -27,6 +32,15 @@ pub const STALE: Duration = Duration::from_secs(5);
 const TICK: Duration = Duration::from_millis(500);
 /// The controller name the device sees.
 pub const NAME: &str = "dcontroller";
+/// The local ports meter frames come to, one per watch (the guard opens
+/// this range: keep `deploy/dante-guard.nft` in step).
+pub const PORTS: std::ops::RangeInclusive<u16> = 8810..=8825;
+
+/// The first port of [`PORTS`] no watch holds.
+pub fn free_port(used: impl IntoIterator<Item = u16>) -> Option<u16> {
+    let used: Vec<u16> = used.into_iter().collect();
+    PORTS.clone().find(|p| !used.contains(p))
+}
 
 /// The levels of `raw` (one byte per channel) with the channels' labels by
 /// number (from 1); a channel without a label shows its number.
@@ -89,6 +103,7 @@ struct Watched {
 
 struct Watch {
     asked: Instant,
+    port: u16,
     data: Arc<Mutex<Watched>>,
 }
 
@@ -144,21 +159,32 @@ impl Watches {
                 ..api::MeterReport::default()
             };
         };
+        let Some(port) = free_port(map.values().map(|w| w.port)) else {
+            return api::MeterReport {
+                device: name.to_owned(),
+                error: Some(format!(
+                    "{} devices' meters are open already, the most at once; close one",
+                    PORTS.clone().count()
+                )),
+                ..api::MeterReport::default()
+            };
+        };
         let data = Arc::new(Mutex::new(Watched::default()));
         map.insert(
             key.clone(),
             Watch {
                 asked: Instant::now(),
+                port,
                 data: Arc::clone(&data),
             },
         );
         drop(map);
-        info!(device = %device.name, "meters: watch started");
+        info!(device = %device.name, port, "meters: watch started");
         let me = Arc::clone(self);
         let report = view(&data.lock().unwrap_or_else(|e| e.into_inner()));
         std::thread::Builder::new()
             .name("meters".into())
-            .spawn(move || me.run(&key, ip, &iface, &device, &data))
+            .spawn(move || me.run(&key, SocketAddrV4::new(ip, port), &iface, &device, &data))
             .expect("spawn a meters thread");
         report
     }
@@ -171,7 +197,14 @@ impl Watches {
             .is_some_and(|w| w.asked.elapsed() < IDLE)
     }
 
-    fn run(&self, key: &str, ip: Ipv4Addr, iface: &str, device: &Device, data: &Mutex<Watched>) {
+    fn run(
+        &self,
+        key: &str,
+        bind: SocketAddrV4,
+        iface: &str,
+        device: &Device,
+        data: &Mutex<Watched>,
+    ) {
         let at = SocketAddrV4::new(*device.arc.ip(), cmc::PORT);
         let set_error = |e: String| {
             warn!(device = %device.name, error = %e, "meters: no subscription");
@@ -181,7 +214,7 @@ impl Watches {
         while self.asked_lately(key) {
             let Some((_, frames, since)) = sub.as_mut() else {
                 match mac_of(iface).and_then(|mac| {
-                    Meter::start(ip, at, NAME, mac).map_err(|e| format!("subscribe: {e}"))
+                    Meter::start_at(bind, at, NAME, mac).map_err(|e| format!("subscribe: {e}"))
                 }) {
                     Ok((m, rx)) => sub = Some((m, rx, Instant::now())),
                     Err(e) => {
@@ -272,6 +305,18 @@ mod tests {
         assert!(ours(&f, Some([7; 8])));
         assert!(!ours(&f, Some([8; 8])));
         assert!(ours(&f, None));
+    }
+
+    #[test]
+    fn each_watch_takes_the_first_free_port_of_the_range() {
+        assert_eq!(free_port([]), Some(8810));
+        assert_eq!(free_port([8810, 8811]), Some(8812));
+        assert_eq!(free_port([8811]), Some(8810));
+        assert_eq!(free_port(PORTS), None);
+        assert_eq!(PORTS.clone().count(), 16);
+        // The guard opens the same range.
+        let guard = include_str!("../../../deploy/dante-guard.nft");
+        assert!(guard.contains("udp dport 8810-8825 accept"));
     }
 
     #[test]

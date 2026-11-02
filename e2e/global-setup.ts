@@ -3,10 +3,10 @@ import { copyFileSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { run, root, routed } from "./env";
 
-// A real Dante device (dstack's dante-stack-dev) on the routed address, so
+// A real Dante device (dstack's dstack-dev) on the routed address, so
 // the server discovers and reads it like any device on the Dante network.
 export default async function globalSetup() {
-  const bin = resolve(root, "target/debug/dante-stack-dev");
+  const bin = resolve(root, "target/debug/dstack-dev");
   const device = resolve(run, "device.toml");
   const state = resolve(run, "state.toml");
   copyFileSync(resolve(__dirname, "fixtures/state.toml"), state);
@@ -21,7 +21,7 @@ export default async function globalSetup() {
   );
   const failed = new Promise<never>((_, reject) => {
     child.once("error", reject);
-    child.once("exit", (code) => reject(new Error(`dante-stack-dev exited with ${code}`)));
+    child.once("exit", (code) => reject(new Error(`dstack-dev exited with ${code}`)));
   });
   // Up once it answers on its control socket.
   const deadline = Date.now() + 20_000;
@@ -36,7 +36,7 @@ export default async function globalSetup() {
     if (ok) break;
     if (Date.now() > deadline) {
       child.kill("SIGTERM");
-      throw new Error("dante-stack-dev did not come up in 20 s");
+      throw new Error("dstack-dev did not come up in 20 s");
     }
     await new Promise((r) => setTimeout(r, 250));
   }
@@ -45,6 +45,6 @@ export default async function globalSetup() {
     const exited = new Promise<number | null>((res) => child.once("exit", res));
     child.kill("SIGTERM");
     const code = await exited;
-    if (code !== 0) throw new Error(`dante-stack-dev stopped with ${code}`);
+    if (code !== 0) throw new Error(`dstack-dev stopped with ${code}`);
   };
 }

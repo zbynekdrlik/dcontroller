@@ -11,12 +11,12 @@ use std::sync::atomic::{AtomicBool, AtomicU16};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use dante_stack::arc::client::{REPLY_TIMEOUT, Udp};
-use dante_stack::arc::control;
-use dante_stack::ctl::Requests;
-use dante_stack::discover::Device;
-use dante_stack::latency;
 use dcontroller_api as api;
+use dstack::arc::client::{REPLY_TIMEOUT, Udp};
+use dstack::arc::control;
+use dstack::ctl::Requests;
+use dstack::discover::Device;
+use dstack::latency;
 use tracing::{info, warn};
 
 use crate::dante::{self, Shared};
