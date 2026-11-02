@@ -130,23 +130,12 @@ pub fn beat_samples(
         .collect()
 }
 
-/// Remembers a heartbeat's late counts as the baseline of slots seen for
-/// the first time, for a device whose flows are not read yet: its late
-/// packets count once a flow is known.
+/// Moves the late counts on for a device whose flows are not read yet:
+/// nothing is recorded for that time, its late packets included (crediting
+/// them later would put them all on one second).
 pub fn remember(beat: &Beat, last: &mut BTreeMap<u16, u32>) {
     for (slot, &total) in (1u16..).zip(beat.late.iter().flatten()) {
-        last.entry(slot).or_insert(total);
-    }
-}
-
-/// The second a device's heartbeat is stored at: now, or the second after
-/// the device's last one when two came in one second, but never more than
-/// two seconds ahead of now (so jitter never shifts a device for good;
-/// past that the second is shared and the store merges it).
-pub fn stamp(prev: Option<i64>, now: i64) -> i64 {
-    match prev {
-        Some(p) if p >= now && p < now + 2 => p + 1,
-        _ => now,
+        last.insert(slot, total);
     }
 }
 
@@ -183,7 +172,6 @@ struct Receiving {
     /// The device's name as discovery lists it (the store matches case aside).
     name: String,
     last_late: BTreeMap<u16, u32>,
-    last_t: Option<i64>,
     buffer: Vec<Sample>,
     stored: u64,
 }
@@ -248,16 +236,14 @@ fn run(dante: &Shared, store: &Store, stop: &AtomicBool, flows: &Flows) {
                         .cloned();
                     let r = state.entry(key).or_default();
                     r.name.clone_from(&d.name);
-                    let t = stamp(r.last_t, unix_now());
                     let Some(active) = active else {
                         remember(&beat, &mut r.last_late);
                         continue;
                     };
-                    let batch = beat_samples(&beat, &active, &mut r.last_late, t);
-                    if !batch.is_empty() {
-                        r.last_t = Some(t);
-                    }
-                    r.buffer.extend(batch);
+                    // Stamped as it is taken: the beat loop waits on nothing
+                    // but the store, and a second written twice is merged.
+                    r.buffer
+                        .extend(beat_samples(&beat, &active, &mut r.last_late, unix_now()));
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}

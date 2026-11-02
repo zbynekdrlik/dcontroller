@@ -59,7 +59,7 @@ async fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, String
 /// Reads the chosen receiver's history for the chosen range or zoom; a
 /// live poll (`poll`) waits while a read runs.
 pub fn load_history(h: Hist, poll: bool) {
-    if poll && h.reads.get_value().busy() {
+    if poll && h.reads.get_value().busy_at(js_sys::Date::now()) {
         return;
     }
     let Some(dev) = h.device.get_untracked() else {
@@ -74,7 +74,7 @@ pub fn load_history(h: Hist, poll: bool) {
         String::from(js_sys::encode_uri_component(&dev))
     );
     let mut reads = h.reads.get_value();
-    let n = reads.start();
+    let n = reads.start_at(js_sys::Date::now());
     h.reads.set_value(reads);
     spawn_local(async move {
         let r = get_json::<History>(&url).await;
@@ -338,7 +338,7 @@ pub fn LatencyPage() -> impl IntoView {
                 );
                 let on = {
                     let n = name.clone();
-                    move || h.device.get().as_deref() == Some(n.as_str())
+                    move || h.device.get().is_some_and(|d| hist::same_name(&d, &n))
                 };
                 let pick = {
                     let n = name.clone();

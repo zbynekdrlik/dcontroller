@@ -19,33 +19,55 @@ pub const RANGES: [(&str, i64); 7] = [
 /// The page's history reads: numbered, so an answer that comes after a
 /// newer read (a slow 1 y read after a 5 min click) is dropped, and busy
 /// while the newest runs, so a live poll never supersedes a slow read.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct HistReads {
     last: u64,
-    running: bool,
+    /// When the newest read started (ms), while it runs.
+    running: Option<f64>,
 }
 
+/// How long a read holds the live poll before it is taken as lost, ms.
+pub const READ_HOLD_MS: f64 = 30_000.0;
+
 impl HistReads {
-    /// A new read's number.
-    pub fn start(&mut self) -> u64 {
+    /// A new read's number, started at `now_ms`.
+    pub fn start_at(&mut self, now_ms: f64) -> u64 {
         self.last += 1;
-        self.running = true;
+        self.running = Some(now_ms);
         self.last
+    }
+
+    /// A new read's number, at time zero (tests).
+    #[cfg(test)]
+    pub fn start(&mut self) -> u64 {
+        self.start_at(0.0)
+    }
+
+    /// Whether the newest read is still running, however long (tests).
+    #[cfg(test)]
+    pub fn busy(&self) -> bool {
+        self.running.is_some()
     }
 
     /// Read `n` answered: whether it may show (it is the newest).
     pub fn done(&mut self, n: u64) -> bool {
         let latest = n == self.last;
         if latest {
-            self.running = false;
+            self.running = None;
         }
         latest
     }
 
-    /// Whether the newest read is still running.
-    pub fn busy(&self) -> bool {
-        self.running
+    /// Whether the newest read still runs at `now_ms` and is not taken as
+    /// lost (a read that never answers stops holding the live poll).
+    pub fn busy_at(&self, now_ms: f64) -> bool {
+        self.running.is_some_and(|t| now_ms - t < READ_HOLD_MS)
     }
+}
+
+/// Dante device names compare case aside.
+pub fn same_name(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
 }
 
 /// The range a page opens with.

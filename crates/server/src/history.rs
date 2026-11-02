@@ -211,6 +211,11 @@ impl Store {
              WHERE NOT EXISTS (SELECT 1 FROM device WHERE name = ?1 COLLATE NOCASE)",
             [name],
         )?;
+        // The device keeps the spelling it was last listed with.
+        db.execute(
+            "UPDATE device SET name = ?1 WHERE name = ?1 COLLATE NOCASE AND name <> ?1",
+            [name],
+        )?;
         db.query_row(
             "SELECT id FROM device WHERE name = ?1 COLLATE NOCASE",
             [name],
@@ -298,8 +303,14 @@ impl Store {
     /// last `window` seconds again, so a late write is counted), then drops
     /// what is past each tier's keep. `now` in unix seconds.
     pub fn rollup(&self, now: i64, window: i64) -> Result<(), String> {
-        let minute = now - now.rem_euclid(60);
-        let hour = now - now.rem_euclid(3600);
+        self.roll(now, window, now)
+    }
+
+    /// The rollup as of `at` (the window before it), with the prune edges
+    /// of the real `now`.
+    fn roll(&self, at: i64, window: i64, now: i64) -> Result<(), String> {
+        let minute = at - at.rem_euclid(60);
+        let hour = at - at.rem_euclid(3600);
         let db = self.conn();
         db.execute(
             "INSERT OR REPLACE INTO minute (device, slot, t, peak, sum, n, late)
@@ -336,24 +347,38 @@ impl Store {
         Ok(())
     }
 
-    /// Rolls up everything since the last rolled-up minute (seconds left
-    /// from before a restart or a stall), then as [`Store::rollup`].
+    /// Rolls up everything left unrolled (seconds and minutes from before a
+    /// restart or a stall, per device), an hour at a time so the store is
+    /// never held long, then as [`Store::rollup`].
     pub fn catch_up(&self, now: i64) -> Result<(), String> {
         let since: Option<i64> = {
             let db = self.conn();
+            // Per device: its first second past its last minute, and its
+            // first minute past its last hour; the earliest of all.
             db.query_row(
-                // Per device: its first second past its last rolled-up minute;
-                // the earliest of those over all devices.
-                "SELECT MIN(MAX(s.first, COALESCE(m.last + 60, s.first)))
-                 FROM (SELECT device, MIN(t) AS first FROM second GROUP BY device) s
-                 LEFT JOIN (SELECT device, MAX(t) AS last FROM minute GROUP BY device) m ON m.device = s.device",
+                "SELECT MIN(f) FROM (
+                     SELECT MAX(s.first, COALESCE(m.last + 60, s.first)) AS f
+                     FROM (SELECT device, MIN(t) AS first FROM second GROUP BY device) s
+                     LEFT JOIN (SELECT device, MAX(t) AS last FROM minute GROUP BY device) m ON m.device = s.device
+                     UNION ALL
+                     SELECT MAX(m.first, COALESCE(h.last + 3600, m.first))
+                     FROM (SELECT device, MIN(t) AS first FROM minute GROUP BY device) m
+                     LEFT JOIN (SELECT device, MAX(t) AS last FROM hour GROUP BY device) h ON h.device = m.device)",
                 [],
                 |r| r.get(0),
             )
             .map_err(|e| e.to_string())?
         };
-        let window = since.map_or(600, |t| (now - t).clamp(600, KEEP_SECONDS));
-        self.rollup(now, window)
+        if let Some(since) = since.map(|t| t.max(now - KEEP_MINUTES)) {
+            // From the hour holding the oldest unrolled row, an hour at a
+            // time: each call rolls that hour's minutes, then its hour.
+            let mut at = since - since.rem_euclid(3600);
+            while at < now {
+                self.roll((at + 3600).min(now), 3600 + 60, now)?;
+                at += 3600;
+            }
+        }
+        self.rollup(now, 600)
     }
 
     /// Every receiver with samples in the last hour before `now`: its peak
