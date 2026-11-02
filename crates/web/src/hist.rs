@@ -307,6 +307,20 @@ mod tests {
     }
 
     #[test]
+    fn a_read_that_never_answers_stops_holding_the_live_poll() {
+        let mut r = HistReads::default();
+        let _hung = r.start_at(1_000.0);
+        assert!(r.busy_at(1_000.0 + 29_000.0));
+        assert!(!r.busy_at(1_000.0 + 31_000.0));
+    }
+
+    #[test]
+    fn device_names_compare_case_aside() {
+        assert!(same_name("Stage-1", "stage-1"));
+        assert!(!same_name("stage-1", "stage-2"));
+    }
+
+    #[test]
     fn only_the_latest_read_may_show_and_a_live_poll_waits_for_it() {
         // A slow 1 y read answered after a newer 5 min read must not replace it.
         let mut r = HistReads::default();

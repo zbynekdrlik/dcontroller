@@ -806,7 +806,7 @@ mod tests {
         let r = &o.receivers[0];
         assert_eq!(r.device, "stage");
         assert_eq!(r.flows, 2);
-        // The flow closest to its latency: 240 of 250 µs, not 400 of 1000.
+        // The flow closest to its latency: 200 of 250 µs (80 %), not 400 of 1000.
         assert_eq!((r.peak_us, r.latency_us), (200, 250));
         assert_eq!((r.late_1h, r.late_24h), (2, 7));
         assert_eq!(r.age_s, Some(5));
@@ -1010,6 +1010,41 @@ mod tests {
                 .execute("INSERT INTO device (name) VALUES ('STAGE-1')", [])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn catch_up_builds_the_hours_left_from_before_a_long_stop() {
+        // Stopped at :30 with minutes but no hour row; back three days later.
+        let st = Store::memory().unwrap();
+        let t0 = 1_800_000_000; // a whole hour
+        st.add(
+            "desk",
+            &(0..1800).map(|k| s(1, t0 + k, 100, 1)).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        st.rollup(t0 + 1800, 1800).unwrap();
+        let now = t0 + 3 * 24 * 3600;
+        st.catch_up(now).unwrap();
+        let (n, late): (i64, i64) = st
+            .conn()
+            .query_row("SELECT n, late FROM hour WHERE t = ?1", [t0], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((n, late), (1800, 1800));
+    }
+
+    #[test]
+    fn a_device_keeps_its_latest_spelling() {
+        let st = Store::memory().unwrap();
+        st.add("stage-1", &[s(1, 100, 1, 0)]).unwrap();
+        st.add("Stage-1", &[s(1, 101, 1, 0)]).unwrap();
+        let name: String = st
+            .conn()
+            .query_row("SELECT name FROM device", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(name, "Stage-1");
+        assert_eq!(st.overview(200).unwrap().receivers[0].device, "Stage-1");
     }
 
     #[test]
