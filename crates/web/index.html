@@ -3,12 +3,17 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#1b2430" />
+    <meta name="theme-color" content="#0b0f17" />
     <title>dcontroller</title>
     <link data-trunk rel="css" href="public/style.css" />
     <link data-trunk rel="copy-file" href="public/manifest.webmanifest" />
     <link data-trunk rel="copy-file" href="public/sw.js" />
     <link data-trunk rel="copy-file" href="public/icon.svg" />
+    <link data-trunk rel="copy-dir" href="public/vendor" />
+    <link data-trunk rel="copy-file" href="public/charts.js" />
+    <link rel="stylesheet" href="/vendor/uplot/uPlot.min.css" />
+    <script src="/vendor/uplot/uPlot.iife.min.js"></script>
+    <script src="/charts.js"></script>
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
     <!-- No SRI on the wasm/js preloads: Chromium ignores integrity on fetch preloads and warns in the console; the assets are same-origin. -->

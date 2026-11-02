@@ -47,10 +47,16 @@ async fn serve(path: PathBuf) -> anyhow::Result<()> {
     let stop = Arc::new(AtomicBool::new(false));
     let dante = dcontroller::dante::start(cfg.dante_interface.clone(), Arc::clone(&stop));
     info!(changes_log = %cfg.changes_log.display(), "changes log");
+    let history = Arc::new(
+        dcontroller::history::Store::open(&cfg.history_db)
+            .map_err(|e| anyhow::anyhow!("history {}: {e}", cfg.history_db.display()))?,
+    );
+    info!(history_db = %cfg.history_db.display(), "history");
+    dcontroller::latency::start(Arc::clone(&dante), Arc::clone(&history), Arc::clone(&stop));
     let shared = dcontroller::Shared {
         dante,
         changes: Arc::new(dcontroller::change::Changes::new(cfg.changes_log.clone())),
-        latency: Arc::default(),
+        history,
         meters: Arc::default(),
     };
     axum::serve(listener, app(&cfg.web_dir, shared))

@@ -183,6 +183,24 @@ impl State {
             .is_some_and(|e| e.info.is_none())
     }
 
+    /// Our address on the Dante interface while discovery runs.
+    pub fn our_ip(&self) -> Option<Ipv4Addr> {
+        self.ip
+    }
+
+    /// Our address and every listed device with RX channels (as last read):
+    /// the receivers the recorder records.
+    pub fn receivers(&self) -> Vec<(Ipv4Addr, Device)> {
+        let Some(ip) = self.ip else {
+            return Vec::new();
+        };
+        self.devices
+            .values()
+            .filter(|e| e.channels.as_ref().is_some_and(|c| !c.rx.is_empty()))
+            .map(|e| (ip, e.device.clone()))
+            .collect()
+    }
+
     /// The Dante interface's name, when discovery runs on one.
     pub fn interface(&self) -> Option<String> {
         self.interface.clone().filter(|_| self.enabled)

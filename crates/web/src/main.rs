@@ -8,17 +8,19 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use dcontroller_api::{
-    ChangeEntry, ChangeResult, ChannelLevel, Device, Devices, Info, LatencyReport, MeterReport,
-    Rename, RenameTarget, RxChannel, SettingChange, Settings, Source, SubscriptionChange,
+    ChangeEntry, ChangeResult, ChannelLevel, Device, Devices, Info, MeterReport, Rename,
+    RenameTarget, RxChannel, SettingChange, Settings, Source, SubscriptionChange,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 mod clock;
+mod hist;
 mod lat;
 mod matrix;
 mod mtr;
 mod net;
+mod pages;
 mod settings;
 use matrix::{Grid, affected, cell, elsewhere};
 
@@ -56,29 +58,72 @@ fn App() -> impl IntoView {
         result: RwSignal::new(None),
     };
     provide_context(ctl);
-    let lat = Lat {
-        device: RwSignal::new(lat_device_from_hash()),
-        report: RwSignal::new(None),
+    let hst = pages::Hist {
+        device: RwSignal::new(hash_device("#latency/")),
+        range: RwSignal::new(hist::DEFAULT_RANGE),
+        zoom: RwSignal::new(None),
+        data: RwSignal::new(None),
+        overview: RwSignal::new(None),
+        scale: RwSignal::new(hist::Scale::Share),
     };
-    provide_context(lat);
-    // The latency of the chosen receiver, every 2 s while the latency view is open.
-    let poll_latency = move || {
-        if view_now.get_untracked() != View::Latency {
-            return;
-        }
-        let Some(dev) = lat.device.get_untracked() else {
-            return;
-        };
-        spawn_local(async move {
-            let r = fetch_latency(&dev).await;
-            // Only if still the chosen device.
-            if lat.device.get_untracked().as_deref() == Some(dev.as_str()) {
-                lat.report.set(Some(r));
+    provide_context(hst);
+    // The hash is the page's address: a link, back or forward moves the view
+    // (and the chosen latency receiver) with it.
+    {
+        let on_hash = wasm_bindgen::closure::Closure::<dyn Fn()>::new(move || {
+            let v = View::from_hash();
+            if view_now.get_untracked() != v {
+                view_now.set(v);
+            }
+            if v == View::Latency {
+                let d = hash_device("#latency/");
+                if d.is_some() && hst.device.get_untracked() != d {
+                    hst.zoom.set(None);
+                    hst.data.set(None);
+                    hst.device.set(d);
+                }
             }
         });
-    };
-    poll_latency();
-    let _ = set_interval_with_handle(poll_latency, LAT_POLL);
+        let _ = window().add_event_listener_with_callback(
+            "hashchange",
+            wasm_bindgen::JsCast::unchecked_ref(on_hash.as_ref()),
+        );
+        on_hash.forget();
+    }
+    // The history of the chosen receiver: at once on any change, then
+    // every few seconds while the range is live.
+    Effect::new(move |_| {
+        let (_, _, _, v) = (
+            hst.device.get(),
+            hst.range.get(),
+            hst.zoom.get(),
+            view_now.get(),
+        );
+        if v == View::Latency {
+            pages::load_history(hst);
+        }
+    });
+    let _ = set_interval_with_handle(
+        move || {
+            if view_now.get_untracked() == View::Latency && hst.live() {
+                pages::load_history(hst);
+            }
+        },
+        pages::HIST_POLL,
+    );
+    Effect::new(move |_| {
+        if matches!(view_now.get(), View::Overview | View::Latency) {
+            pages::load_overview(hst);
+        }
+    });
+    let _ = set_interval_with_handle(
+        move || {
+            if matches!(view_now.get_untracked(), View::Overview | View::Latency) {
+                pages::load_overview(hst);
+            }
+        },
+        pages::OVERVIEW_POLL,
+    );
     let mtr = Mtr {
         device: RwSignal::new(hash_device("#meters/")),
         report: RwSignal::new(None),
@@ -104,60 +149,71 @@ fn App() -> impl IntoView {
         let _ = (mtr.device.get(), view_now.get());
         poll_meters();
     });
-    // A new choice or opening the view asks at once.
-    Effect::new(move |_| {
-        let _ = (lat.device.get(), view_now.get());
-        poll_latency();
-    });
     let load = move || spawn_local(async move { devices.set(Some(fetch_devices().await)) });
     load();
     // The interval lives as long as the page.
     let _ = set_interval_with_handle(load, POLL);
+    // Which page shows, and whether the device list is there: the
+    // overview and latency pages stay mounted across device refreshes.
+    let page = Memo::new(move |_| {
+        let state = devices.with(|d| match d {
+            None => 0,
+            Some(Err(_)) => 1,
+            Some(Ok(_)) => 2,
+        });
+        (view_now.get(), state)
+    });
+    let iface = move || match devices.get() {
+        Some(Ok(d)) if d.enabled => format!("Dante on {}", d.interface.unwrap_or_default()),
+        Some(Ok(_)) => "Dante discovery off".to_owned(),
+        Some(Err(_)) => "server not reachable".to_owned(),
+        None => "connecting…".to_owned(),
+    };
     view! {
-        <header class="bar">
-            <h1>"dcontroller"</h1>
-            <nav class="tabs">
-                <a href="#routing" data-testid="tab-routing"
-                    class=move || if view_now.get() == View::Routing { "tab on" } else { "tab" }
-                    on:click=move |_| view_now.set(View::Routing)>"Routing"</a>
-                <a href="#devices" data-testid="tab-devices"
-                    class=move || if view_now.get() == View::Devices { "tab on" } else { "tab" }
-                    on:click=move |_| view_now.set(View::Devices)>"Devices"</a>
-                <a href="#changes" data-testid="tab-changes"
-                    class=move || if view_now.get() == View::Changes { "tab on" } else { "tab" }
-                    on:click=move |_| view_now.set(View::Changes)>"Changes"</a>
-                <a href="#latency" data-testid="tab-latency"
-                    class=move || if view_now.get() == View::Latency { "tab on" } else { "tab" }
-                    on:click=move |_| view_now.set(View::Latency)>"Latency"</a>
-                <a href="#meters" data-testid="tab-meters"
-                    class=move || if view_now.get() == View::Meters { "tab on" } else { "tab" }
-                    on:click=move |_| view_now.set(View::Meters)>"Meters"</a>
-                <a href="#clock" data-testid="tab-clock"
-                    class=move || if view_now.get() == View::Clock { "tab on" } else { "tab" }
-                    on:click=move |_| view_now.set(View::Clock)>"Clock"</a>
-                <a href="#network" data-testid="tab-network"
-                    class=move || if view_now.get() == View::Network { "tab on" } else { "tab" }
-                    on:click=move |_| view_now.set(View::Network)>"Network"</a>
+        <div class="app">
+        <aside class="side">
+            <div class="brand">{logo()}<span>"dcontroller"</span></div>
+            <nav class="nav">
+                {View::ALL.into_iter().map(|v| view! {
+                    <a href=v.hash() data-testid=format!("tab-{}", v.slug())
+                        class=move || if view_now.get() == v { "nav-item on" } else { "nav-item" }
+                        on:click=move |_| view_now.set(v)>
+                        {icon(v)}<span>{v.title()}</span>
+                    </a>
+                }).collect_view()}
             </nav>
-            <span class="version" data-testid="version">{VERSION}</span>
-        </header>
-        <main>
-            {move || match devices.get() {
-                None => view! { <p class="status" data-testid="status">"Loading…"</p> }.into_any(),
-                Some(Err(e)) => view! {
-                    <p class="status error" data-testid="status">{format!("Server not reachable: {e}")}</p>
+            <div class="side-foot">
+                <span class="iface" data-testid="iface">{iface}</span>
+                <span class="version" data-testid="version">{VERSION}</span>
+            </div>
+        </aside>
+        <main class="main">
+            <header class="page-head"><h1>{move || view_now.get().title()}</h1></header>
+            {move || match page.get() {
+                (_, 0) => view! { <p class="status" data-testid="status">"Loading…"</p> }.into_any(),
+                (_, 1) => view! {
+                    <p class="status error" data-testid="status">{move || match devices.get() {
+                        Some(Err(e)) => format!("Server not reachable: {e}"),
+                        _ => String::new(),
+                    }}</p>
                 }.into_any(),
-                Some(Ok(d)) => match view_now.get() {
-                    View::Devices => view! { <DeviceList d=d/> }.into_any(),
-                    View::Routing => view! { <Routing d=d/> }.into_any(),
-                    View::Changes => view! { <ChangeLog/> }.into_any(),
-                    View::Latency => view! { <LatencyView d=d/> }.into_any(),
-                    View::Meters => view! { <MeterView d=d/> }.into_any(),
-                    View::Clock => view! { <ClockView d=d/> }.into_any(),
-                    View::Network => view! { <NetworkView d=d/> }.into_any(),
-                },
+                (View::Overview, _) => view! { <pages::OverviewPage/> }.into_any(),
+                (View::Latency, _) => view! { <pages::LatencyPage/> }.into_any(),
+                (v, _) => (move || match devices.get() {
+                    Some(Ok(d)) => match v {
+                        View::Devices => view! { <DeviceList d=d/> }.into_any(),
+                        View::Routing => view! { <Routing d=d/> }.into_any(),
+                        View::Changes => view! { <ChangeLog/> }.into_any(),
+                        View::Meters => view! { <MeterView d=d/> }.into_any(),
+                        View::Clock => view! { <ClockView d=d/> }.into_any(),
+                        View::Network => view! { <NetworkView d=d/> }.into_any(),
+                        View::Overview | View::Latency => ().into_any(),
+                    },
+                    _ => ().into_any(),
+                }).into_any(),
             }}
         </main>
+        </div>
         <ConfirmDialog/>
         <RenameDialog/>
         <SettingDialog/>
@@ -166,44 +222,105 @@ fn App() -> impl IntoView {
 }
 
 /// The page's view, kept in the URL hash.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum View {
+    Overview,
     Routing,
     Devices,
-    Changes,
     Latency,
     Meters,
     Clock,
     Network,
+    Changes,
 }
 
 impl View {
+    /// The views in the sidebar's order.
+    const ALL: [View; 8] = [
+        View::Overview,
+        View::Routing,
+        View::Devices,
+        View::Latency,
+        View::Meters,
+        View::Clock,
+        View::Network,
+        View::Changes,
+    ];
+
+    fn slug(self) -> &'static str {
+        match self {
+            View::Overview => "overview",
+            View::Routing => "routing",
+            View::Devices => "devices",
+            View::Latency => "latency",
+            View::Meters => "meters",
+            View::Clock => "clock",
+            View::Network => "network",
+            View::Changes => "changes",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            View::Overview => "Overview",
+            View::Routing => "Routing",
+            View::Devices => "Devices",
+            View::Latency => "Latency",
+            View::Meters => "Meters",
+            View::Clock => "Clock",
+            View::Network => "Network",
+            View::Changes => "Changes",
+        }
+    }
+
+    fn hash(self) -> String {
+        format!("#{}", self.slug())
+    }
+
     fn from_hash() -> View {
         let hash = window().location().hash().unwrap_or_default();
-        match hash.as_str() {
-            "#devices" => View::Devices,
-            "#changes" => View::Changes,
-            "#clock" => View::Clock,
-            "#network" => View::Network,
-            h if h.starts_with("#latency") => View::Latency,
-            h if h.starts_with("#meters") => View::Meters,
-            _ => View::Routing,
-        }
+        let head = hash
+            .trim_start_matches('#')
+            .split('/')
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        View::ALL
+            .into_iter()
+            .find(|v| v.slug() == head)
+            .unwrap_or(View::Overview)
     }
 }
 
-/// How often the latency view asks for the chosen receiver's latency.
-const LAT_POLL: Duration = Duration::from_secs(2);
-
-/// The latency view's receiver (kept in the hash `#latency/<name>`) and its last report.
-#[derive(Clone, Copy)]
-struct Lat {
-    device: RwSignal<Option<String>>,
-    report: RwSignal<Option<Result<LatencyReport, String>>>,
+/// The sidebar's icon for a view (inline SVG, stroke icons).
+fn icon(v: View) -> impl IntoView {
+    let d = match v {
+        View::Overview => "M3 13h8V3H3zM13 21h8V11h-8zM3 21h8v-6H3zM13 9h8V3h-8z",
+        View::Routing => {
+            "M4 4h4v4H4zM16 4h4v4h-4zM4 16h4v4H4zM16 16h4v4h-4zM8 6h8M6 8v8M18 8v8M8 18h8"
+        }
+        View::Devices => "M4 5h16v6H4zM4 13h16v6H4zM7 8h.01M7 16h.01",
+        View::Latency => "M3 12h4l3-8 4 16 3-8h4",
+        View::Meters => "M5 20V10M10 20V4M15 20v-7M20 20V8",
+        View::Clock => "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 7v5l3 3",
+        View::Network => "M12 3v6M5 21v-4h14v4M12 9v8M5 13h14M5 13v4M19 13v4",
+        View::Changes => "M4 6h16M4 12h10M4 18h7M17 15l3 3-3 3",
+    };
+    view! {
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d=d /></svg>
+    }
 }
 
-fn lat_device_from_hash() -> Option<String> {
-    hash_device("#latency/")
+/// The brand mark: a waveform in a rounded square.
+fn logo() -> impl IntoView {
+    view! {
+        <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+            <rect x="1" y="1" width="30" height="30" rx="8" fill="var(--accent)" />
+            <path d="M7 16h3l2-6 3 12 3-9 2 3h5" fill="none" stroke="#0b0f17" stroke-width="2.4"
+                stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+    }
 }
 
 /// The device named in the hash after `prefix` (`#latency/<name>`).
@@ -214,63 +331,6 @@ fn hash_device(prefix: &str) -> Option<String> {
         .ok()
         .map(String::from)
         .filter(|n| !n.is_empty())
-}
-
-async fn fetch_latency(device: &str) -> Result<LatencyReport, String> {
-    let url = format!(
-        "/api/latency/{}",
-        String::from(js_sys::encode_uri_component(device))
-    );
-    let res = gloo_net::http::Request::get(&url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !res.ok() {
-        return Err(format!("server answered {}", res.status()));
-    }
-    res.json::<LatencyReport>().await.map_err(|e| e.to_string())
-}
-
-/// Packet latency per RX flow of one receiver, as Dante Controller's
-/// Latency tab: a histogram of the per-second peaks against the flow's
-/// latency, the peaks over time, and the late packets.
-#[component]
-fn LatencyView(d: Devices) -> impl IntoView {
-    let lat = expect_context::<Lat>();
-    let receivers: Vec<String> = d
-        .devices
-        .iter()
-        .filter(|dev| dev.channels.as_ref().is_some_and(|c| !c.rx.is_empty()))
-        .map(|dev| dev.name.clone())
-        .collect();
-    let line = status_line(&d);
-    view! {
-        <p class="status" data-testid="status">{line}</p>
-        <div class="receivers">
-            {receivers.into_iter().map(|name| {
-                let n = name.clone();
-                let href = format!("#latency/{}", String::from(js_sys::encode_uri_component(&name)));
-                let on = {
-                    let n = name.clone();
-                    move || lat.device.get().as_deref() == Some(n.as_str())
-                };
-                view! {
-                    <a href=href data-testid="lat-receiver" data-name=name.clone()
-                        class=move || if on() { "tab on" } else { "tab" }
-                        on:click=move |_| {
-                            lat.report.set(None);
-                            lat.device.set(Some(n.clone()));
-                        }>{name.clone()}</a>
-                }
-            }).collect_view()}
-        </div>
-        {move || match (lat.device.get(), lat.report.get()) {
-            (None, _) => view! { <p class="status">"Pick a receiver."</p> }.into_any(),
-            (Some(_), None) => view! { <p class="status" data-testid="lat-wait">"Listening…"</p> }.into_any(),
-            (Some(_), Some(Err(e))) => view! { <p class="status error">{format!("Not readable: {e}")}</p> }.into_any(),
-            (Some(_), Some(Ok(r))) => latency_report_view(r),
-        }}
-    }
 }
 
 /// How often the meters view asks for the chosen device's levels.
@@ -313,7 +373,7 @@ fn MeterView(d: Devices) -> impl IntoView {
         .map(|dev| dev.name.clone())
         .collect();
     view! {
-        <div class="receivers">
+        <div class="picker">
             {names.into_iter().map(|name| {
                 let n = name.clone();
                 let href = format!("#meters/{}", String::from(js_sys::encode_uri_component(&name)));
@@ -373,95 +433,6 @@ fn meter_report_view(r: MeterReport) -> AnyView {
         <div class="meter-cols">
             {meter_column("Transmit", "mtr-tx", r.tx)}
             {meter_column("Receive", "mtr-rx", r.rx)}
-        </div>
-    }
-    .into_any()
-}
-
-fn latency_report_view(r: LatencyReport) -> AnyView {
-    let head = format!(
-        "{} · listening {} s · {} heartbeats",
-        r.device, r.watching_s, r.beats
-    );
-    let error = r
-        .error
-        .clone()
-        .map(|e| view! { <p class="error" data-testid="lat-error">{e}</p> });
-    let empty = (r.flows.is_empty() && r.error.is_none())
-        .then(|| view! { <p class="status" data-testid="lat-noflows">"No RX flows: this device receives nothing now."</p> });
-    view! {
-        <p class="status" data-testid="lat-head">{head}</p>
-        {error}
-        {empty}
-        <div class="flows">
-            {r.flows.into_iter().map(|f| {
-                let fig = lat::figures(&f.peaks_us, f.latency_us);
-                let bins = lat::bins(&f.peaks_us, f.latency_us);
-                let top = bins.iter().map(|b| b.count).max().unwrap_or(0).max(1);
-                let from = if f.sources.is_empty() { "?".to_owned() } else { f.sources.join(", ") };
-                let chans = if f.channels.len() > 4 {
-                    format!("{} … {} ({} channels)", f.channels[0], f.channels[f.channels.len() - 1], f.channels.len())
-                } else {
-                    f.channels.join(", ")
-                };
-                let late_class = if f.late > 0 { "fig bad" } else { "fig" };
-                let max_class = if fig.max_us > f.latency_us { "fig bad" } else { "fig" };
-                // The last two minutes of peaks, against the latency line.
-                let recent: Vec<u32> = f.peaks_us.iter().rev().take(120).rev().copied().collect();
-                let scale = recent.iter().copied().max().unwrap_or(0).max(f.latency_us * 5 / 4).max(1);
-                let (w, h) = (360.0_f64, 60.0_f64);
-                let y = |us: u32| h - f64::from(us) / f64::from(scale) * h;
-                let points = recent
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &p)| format!("{:.1},{:.1}", i as f64 * w / (recent.len().max(2) - 1) as f64, y(p)))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let ly = y(f.latency_us);
-                view! {
-                    <section class="flow" data-testid="lat-flow" data-slot=f.slot>
-                        <h3>{format!("Flow {} · from {from}", f.slot)}</h3>
-                        <p class="chans">{chans}</p>
-                        <div class="figs">
-                            <span class="fig">"Latency "<b data-testid="lat-set">{lat::ms(f.latency_us)}</b></span>
-                            <span class="fig">"Now "<b>{lat::ms(fig.last_us)}</b></span>
-                            <span class="fig">"Mean "<b>{lat::ms(fig.mean_us)}</b></span>
-                            <span class=max_class>"Peak "<b data-testid="lat-max">{lat::ms(fig.max_us)}</b></span>
-                            <span class=late_class>"Late packets "<b data-testid="lat-late">{f.late}</b>
-                                {format!(" (device total {})", f.late_total)}</span>
-                        </div>
-                        <p class="caption">"Peak latency per second (ms), seconds per bin; red: past the latency"</p>
-                        <div class="hist" data-testid="lat-hist">
-                            {bins.into_iter().map(|b| {
-                                let pct = b.count * 100 / top;
-                                let label = match b.to_us {
-                                    Some(to) => format!("≤{}", lat::ms(to)),
-                                    None => format!(">{}", lat::ms(b.from_us)),
-                                };
-                                // Under the bar: the upper edge in ms, no unit (the caption has it).
-                                let edge = match b.to_us {
-                                    Some(to) => lat::ms_short(to),
-                                    None => format!(">{}", lat::ms_short(b.from_us)),
-                                };
-                                let tip = format!("{label}: {} s", b.count);
-                                view! {
-                                    <div class=if b.late { "bin late" } else { "bin" } title=tip>
-                                        <div class="barbox">
-                                            <div class="hbar" style=format!("height: {pct}%")></div>
-                                            <div class="count">{(b.count > 0).then(|| b.count.to_string())}</div>
-                                        </div>
-                                        <div class="edge">{edge}</div>
-                                    </div>
-                                }
-                            }).collect_view()}
-                        </div>
-                        <svg class="spark" viewBox="0 0 360 60" preserveAspectRatio="none" data-testid="lat-spark">
-                            <line x1="0" x2="360" y1=format!("{ly:.1}") y2=format!("{ly:.1}") class="limit"/>
-                            <polyline points=points class="peaks"/>
-                        </svg>
-                    </section>
-                }
-            }).collect_view()}
         </div>
     }
     .into_any()
