@@ -1,5 +1,5 @@
 //! The Dante side: device discovery and read-only channel reads through
-//! dstack (`dante_stack`). Nothing here writes to any device: no write call
+//! dstack. Nothing here writes to any device: no write call
 //! of `arc::control` is used.
 //!
 //! One thread owns discovery and the reads. A device is read when it is
@@ -12,14 +12,14 @@ use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use dante_stack::arc::client::{Exchange, REPLY_TIMEOUT, ReadError, Udp, read_directory};
-use dante_stack::arc::control::{self, Call};
-use dante_stack::ctl::Requests;
-use dante_stack::discover::{Change, Device, Discovery};
-use dante_stack::info::client::{
+use dcontroller_api as api;
+use dstack::arc::client::{Exchange, REPLY_TIMEOUT, ReadError, Udp, read_directory};
+use dstack::arc::control::{self, Call};
+use dstack::ctl::Requests;
+use dstack::discover::{Change, Device, Discovery};
+use dstack::info::client::{
     self as info_client, Board, ClockStatus, NetInterface, Product, SampleRate,
 };
-use dcontroller_api as api;
 use tracing::{info, warn};
 
 /// How often a listed device is read again.
@@ -274,7 +274,7 @@ fn model(d: &Device) -> Option<String> {
 /// when dstack does not know it) and its state for the colours; `None` when
 /// the channel is not subscribed.
 pub fn status_text(rx: &control::RxChannel) -> Option<(String, Option<String>)> {
-    use dante_stack::subscribe::SubState;
+    use dstack::subscribe::SubState;
     rx.tx_channel.as_ref()?;
     Some(match rx.sub_status() {
         Some(s) => {
