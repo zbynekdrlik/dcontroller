@@ -258,6 +258,95 @@ impl Store {
         Ok(())
     }
 
+    /// Every receiver with samples in the last hour before `now`: its peak
+    /// against its flow's latency, its late packets over the hour and the
+    /// day, and a sparkline of the hour.
+    pub fn overview(&self, now: i64) -> Result<api::Overview, String> {
+        let hour = now - 3600;
+        let step = 3600 / api::SPARK_POINTS;
+        let db = self.conn();
+        let mut out = api::Overview {
+            now,
+            receivers: Vec::new(),
+        };
+        let mut q = db
+            .prepare(
+                "SELECT d.name, d.id, COUNT(DISTINCT s.slot), MAX(s.t) FROM second s JOIN device d ON d.id = s.device
+                 WHERE s.t > ?1 AND s.t <= ?2 GROUP BY d.id ORDER BY d.name COLLATE NOCASE",
+            )
+            .map_err(|e| e.to_string())?;
+        let devices: Vec<(String, i64, u16, i64)> = q
+            .query_map(params![hour, now], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        let late = |id: i64, from: i64| -> Result<u64, String> {
+            db.query_row(
+                "SELECT COALESCE(SUM(late), 0) FROM second WHERE device = ?1 AND t > ?2 AND t <= ?3",
+                params![id, from, now],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|v| u64::try_from(v).unwrap_or(0))
+            .map_err(|e| e.to_string())
+        };
+        for (name, id, flows, last) in devices {
+            let mut r = api::ReceiverSummary {
+                device: name,
+                flows,
+                late_1h: late(id, hour)?,
+                late_24h: late(id, now - 24 * 3600)?,
+                spark: vec![None; usize::try_from(api::SPARK_POINTS).unwrap_or(0)],
+                age_s: Some(now - last),
+                ..api::ReceiverSummary::default()
+            };
+            let mut per = db
+                .prepare(
+                    "SELECT slot, (t - ?2 - 1) / ?4 AS b, MAX(peak) FROM second
+                     WHERE device = ?1 AND t > ?2 AND t <= ?3 GROUP BY slot, b",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = per
+                .query_map(params![id, hour, now, step], |rw| {
+                    Ok((
+                        rw.get::<_, u16>(0)?,
+                        rw.get::<_, i64>(1)?,
+                        rw.get::<_, u32>(2)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?;
+            let mut latencies: Vec<(u16, u32)> = Vec::new();
+            for row in rows {
+                let (slot, b, peak) = row.map_err(|e| e.to_string())?;
+                let lat = match latencies.iter().find(|(s, _)| *s == slot) {
+                    Some((_, l)) => *l,
+                    None => {
+                        let l = Self::flow_at(&db, id, slot, now)
+                            .map_err(|e| e.to_string())?
+                            .map_or(0, |f| f.latency_us);
+                        latencies.push((slot, l));
+                        l
+                    }
+                };
+                if peak >= r.peak_us {
+                    r.peak_us = peak;
+                    r.latency_us = lat;
+                }
+                let share = if lat > 0 {
+                    u32::try_from(u64::from(peak) * 1000 / u64::from(lat)).unwrap_or(u32::MAX)
+                } else {
+                    0
+                };
+                if let Some(cell) = usize::try_from(b).ok().and_then(|i| r.spark.get_mut(i)) {
+                    *cell = Some(cell.map_or(share, |c| c.max(share)));
+                }
+            }
+            out.receivers.push(r);
+        }
+        Ok(out)
+    }
+
     /// The history of `device` from `from` to `to` (unix seconds).
     pub fn history(&self, device: &str, from: i64, to: i64) -> Result<api::History, String> {
         let (from, to) = (from.min(to), from.max(to));
@@ -526,6 +615,42 @@ mod tests {
             st.history("desk", t0, t0 + 200).unwrap().flows[0].latency_us,
             250
         );
+    }
+
+    #[test]
+    fn the_overview_sums_each_receiver_over_its_flows() {
+        let st = Store::memory().unwrap();
+        let now = 1_800_000_000;
+        st.set_flow("stage", 1, &flow(1000), now - 7200).unwrap();
+        st.set_flow("stage", 2, &flow(250), now - 7200).unwrap();
+        st.add(
+            "stage",
+            &[
+                s(1, now - 3599, 400, 0),
+                s(2, now - 10, 200, 2),
+                s(1, now - 5, 300, 0),
+                s(1, now - 5000, 100, 5), // over an hour ago: the day's count only
+            ],
+        )
+        .unwrap();
+        st.add("old", &[s(1, now - 5000, 100, 0)]).unwrap();
+        let o = st.overview(now).unwrap();
+        assert_eq!(o.now, now);
+        assert_eq!(
+            o.receivers.len(),
+            1,
+            "a receiver silent for an hour is left out"
+        );
+        let r = &o.receivers[0];
+        assert_eq!(r.device, "stage");
+        assert_eq!(r.flows, 2);
+        assert_eq!((r.peak_us, r.latency_us), (400, 1000));
+        assert_eq!((r.late_1h, r.late_24h), (2, 7));
+        assert_eq!(r.age_s, Some(5));
+        assert_eq!(r.spark.len(), 60);
+        assert_eq!(r.spark[0], Some(400)); // 400 of 1000 µs
+        assert_eq!(r.spark[59], Some(800)); // 200 of 250 µs beats 300 of 1000
+        assert_eq!(r.spark[30], None);
     }
 
     #[test]

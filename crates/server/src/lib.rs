@@ -147,6 +147,25 @@ async fn subscription(
         })
 }
 
+async fn overview(
+    State(s): State<Shared>,
+) -> Result<axum::Json<dcontroller_api::Overview>, StatusCode> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    tokio::task::spawn_blocking(move || s.history.overview(now))
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "overview: task failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .map(axum::Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "overview: read failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
 /// `?from=&to=` of `/api/history`, unix seconds; `to` defaults to now and
 /// `from` to an hour before `to`.
 #[derive(Debug, Deserialize)]
@@ -252,6 +271,7 @@ pub fn app(web_dir: &Path, shared: Shared) -> Router {
         .route("/api/setting", axum::routing::post(setting))
         .route("/api/changes", get(changes))
         .route("/api/history/{device}", get(history_report))
+        .route("/api/overview", get(overview))
         .route("/api/meters/{device}", get(meter_report))
         .route("/api", any(api_not_found))
         .route("/api/", any(api_not_found))
