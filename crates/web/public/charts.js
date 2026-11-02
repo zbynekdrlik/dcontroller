@@ -15,6 +15,20 @@
     const axis = { stroke: css("--muted") || "#8b97ad", grid, ticks: grid, font: "11px system-ui, sans-serif" };
     const series = [{}];
     const data = [d.t];
+    // Late packets first, so the bars sit behind the flows' lines; faint,
+    // and in the lower third of the chart (their own scale).
+    if (d.late) {
+      series.push({
+        label: "late packets",
+        stroke: "transparent",
+        fill: (css("--bad") || "#f87171") + "40",
+        scale: "late",
+        paths: uPlot.paths.bars({ size: [0.9, 12] }),
+        points: { show: false },
+        value: (_, v) => (v == null ? "–" : String(v)),
+      });
+      data.push(d.late.map((v) => (v ? v : null)));
+    }
     for (const f of d.flows) {
       series.push({
         label: f.label,
@@ -37,25 +51,13 @@
       });
       data.push(d.t.map(() => th.value));
     }
-    if (d.late) {
-      series.push({
-        label: "late packets",
-        stroke: css("--bad") || "#f87171",
-        fill: (css("--bad") || "#f87171") + "55",
-        scale: "late",
-        paths: uPlot.paths.bars({ size: [0.8, 12] }),
-        points: { show: false },
-        value: (_, v) => (v == null ? "–" : String(v)),
-      });
-      data.push(d.late.map((v) => (v ? v : null)));
-    }
     const opts = {
       width: el.clientWidth || 600,
       height: d.height || 280,
       cursor: { drag: { x: true, y: false, setScale: false }, points: { size: 6 } },
       select: { show: true },
       legend: { live: true },
-      scales: { x: { time: true }, y: { auto: true, range: (u, lo, hi) => [0, Math.max(hi * 1.1, d.floor || 0.1)] }, late: { auto: true } },
+      scales: { x: { time: true }, y: { auto: true, range: (u, lo, hi) => [0, Math.max(hi * 1.1, d.floor || 0.1)] }, late: { auto: true, range: (u, lo, hi) => [0, Math.max(hi, 1) * 3] } },
       axes: [
         axis,
         { ...axis, label: d.unit === "%" ? "% of latency" : "ms", labelSize: 14, size: 52,
@@ -86,8 +88,9 @@
       // The series set changed (flows came or went): build anew.
       const shape = d.unit + "#" + d.flows.map((f) => f.label).join("|") + "#" + d.thresholds.length + "#" + !!d.late;
       if (el._dc && el._dcShape === shape) {
-        const data = [d.t, ...d.flows.map((f) => f.values), ...d.thresholds.map((th) => d.t.map(() => th.value))];
+        const data = [d.t];
         if (d.late) data.push(d.late.map((v) => (v ? v : null)));
+        data.push(...d.flows.map((f) => f.values), ...d.thresholds.map((th) => d.t.map(() => th.value)));
         el._dc.setData(data);
         return;
       }
