@@ -31,6 +31,7 @@ pub struct Hist {
     pub data: RwSignal<Option<Result<History, String>>>,
     pub overview: RwSignal<Option<Result<Overview, String>>>,
     pub scale: RwSignal<hist::Scale>,
+    pub requests: StoredValue<hist::Requests>,
 }
 
 impl Hist {
@@ -68,9 +69,14 @@ pub fn load_history(h: Hist) {
         "/api/history/{}?from={from}&to={to}",
         String::from(js_sys::encode_uri_component(&dev))
     );
+    let mut reqs = h.requests.get_value();
+    let n = reqs.next();
+    h.requests.set_value(reqs);
     spawn_local(async move {
         let r = get_json::<History>(&url).await;
-        if h.device.get_untracked().as_deref() == Some(dev.as_str()) {
+        // Only the newest request's answer shows (a range, zoom or device
+        // chosen since makes this one stale).
+        if h.requests.get_value().is_latest(n) {
             h.data.set(Some(r));
         }
     });

@@ -16,6 +16,26 @@ pub const RANGES: [(&str, i64); 7] = [
     ("1 y", 365 * 24 * 3600),
 ];
 
+/// Numbers the page's history reads, so an answer that comes after a
+/// newer request (a slow 1 y read after a 5 min click) is dropped.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Requests {
+    last: u64,
+}
+
+impl Requests {
+    /// A new request's number.
+    pub fn next(&mut self) -> u64 {
+        self.last += 1;
+        self.last
+    }
+
+    /// Whether `n` is still the newest request.
+    pub fn is_latest(&self, n: u64) -> bool {
+        n == self.last
+    }
+}
+
 /// The range a page opens with.
 pub const DEFAULT_RANGE: i64 = 3600;
 

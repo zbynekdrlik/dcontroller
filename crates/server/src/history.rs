@@ -32,7 +32,18 @@ const MIGRATIONS: &[&str] = &[
      CREATE TABLE flow (device INTEGER NOT NULL, slot INTEGER NOT NULL, since INTEGER NOT NULL,
          latency_us INTEGER NOT NULL, rate INTEGER NOT NULL, channels TEXT NOT NULL,
          sources TEXT NOT NULL, PRIMARY KEY (device, slot, since)) WITHOUT ROWID;",
+    // 2: time indexes for the rollup, the pruning and the overview.
+    "CREATE INDEX second_t ON second (t);
+     CREATE INDEX minute_t ON minute (t);
+     CREATE INDEX hour_t ON hour (t);",
 ];
+
+/// Now, unix seconds.
+pub fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
 
 /// One second of one flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,13 +65,14 @@ pub struct FlowInfo {
 }
 
 /// The tier a range reads from and the bucket size: seconds up to 2 h,
-/// minutes up to 7 days, hours beyond; at most [`api::HISTORY_POINTS`]
-/// buckets, each a whole number of the tier's unit.
-pub fn plan(span_s: i64) -> (Tier, i64) {
-    let span = span_s.max(1);
-    let tier = if span <= 2 * 3600 {
+/// minutes up to 7 days, hours beyond, and never a tier that has already
+/// dropped the range's start (`age_s`: how long ago it was); at most
+/// [`api::HISTORY_POINTS`] buckets, each a whole number of the tier's unit.
+pub fn plan(span_s: i64, age_s: i64) -> (Tier, i64) {
+    let span = span_s.clamp(1, KEEP_HOURS * 2);
+    let tier = if span <= 2 * 3600 && age_s <= KEEP_SECONDS {
         Tier::Second
-    } else if span <= 7 * 24 * 3600 {
+    } else if span <= 7 * 24 * 3600 && age_s <= KEEP_MINUTES {
         Tier::Minute
     } else {
         Tier::Hour
@@ -161,15 +173,23 @@ impl Store {
         self.db.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// The id of the device named `name`, case aside (as Dante compares
+    /// names), made when new.
     fn device_id(db: &Connection, name: &str) -> rusqlite::Result<i64> {
-        db.execute("INSERT OR IGNORE INTO device (name) VALUES (?1)", [name])?;
-        db.query_row("SELECT id FROM device WHERE name = ?1", [name], |r| {
-            r.get(0)
-        })
+        db.execute(
+            "INSERT INTO device (name) SELECT ?1
+             WHERE NOT EXISTS (SELECT 1 FROM device WHERE name = ?1 COLLATE NOCASE)",
+            [name],
+        )?;
+        db.query_row(
+            "SELECT id FROM device WHERE name = ?1 COLLATE NOCASE",
+            [name],
+            |r| r.get(0),
+        )
     }
 
     /// Stores `samples` of `device` in one transaction (a second stored
-    /// twice keeps the later).
+    /// twice keeps the larger peak and adds the late packets).
     pub fn add(&self, device: &str, samples: &[Sample]) -> Result<(), String> {
         if samples.is_empty() {
             return Ok(());
@@ -180,7 +200,9 @@ impl Store {
         {
             let mut ins = tx
                 .prepare_cached(
-                    "INSERT OR REPLACE INTO second (device, slot, t, peak, late) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    "INSERT INTO second (device, slot, t, peak, late) VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT (device, t, slot) DO UPDATE SET
+                     peak = MAX(peak, excluded.peak), late = late + excluded.late",
                 )
                 .map_err(|e| e.to_string())?;
             for s in samples {
@@ -253,14 +275,16 @@ impl Store {
             "INSERT OR REPLACE INTO minute (device, slot, t, peak, sum, n, late)
              SELECT device, slot, t - t % 60, MAX(peak), SUM(peak), COUNT(*), SUM(late) FROM second
              WHERE t >= ?1 AND t < ?2 GROUP BY device, slot, t - t % 60",
-            params![minute - window - window.rem_euclid(60), minute],
+            // Whole minutes only: a partial one would replace a complete row.
+            params![(minute - window).div_euclid(60) * 60, minute],
         )
         .map_err(|e| format!("roll seconds: {e}"))?;
         db.execute(
             "INSERT OR REPLACE INTO hour (device, slot, t, peak, sum, n, late)
              SELECT device, slot, t - t % 3600, MAX(peak), SUM(sum), SUM(n), SUM(late) FROM minute
              WHERE t >= ?1 AND t < ?2 GROUP BY device, slot, t - t % 3600",
-            params![hour - 3600 - window, hour],
+            // Whole hours only, likewise.
+            params![(hour - 3600 - window).div_euclid(3600) * 3600, hour],
         )
         .map_err(|e| format!("roll minutes: {e}"))?;
         for (table, keep) in [
@@ -272,6 +296,22 @@ impl Store {
                 .map_err(|e| format!("prune {table}: {e}"))?;
         }
         Ok(())
+    }
+
+    /// Rolls up everything since the last rolled-up minute (seconds left
+    /// from before a restart or a stall), then as [`Store::rollup`].
+    pub fn catch_up(&self, now: i64) -> Result<(), String> {
+        let since: Option<i64> = {
+            let db = self.conn();
+            db.query_row(
+                "SELECT COALESCE((SELECT MAX(t) + 60 FROM minute), (SELECT MIN(t) FROM second))",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?
+        };
+        let window = since.map_or(600, |t| (now - t).clamp(600, KEEP_SECONDS));
+        self.rollup(now, window)
     }
 
     /// Every receiver with samples in the last hour before `now`: its peak
@@ -298,31 +338,33 @@ impl Store {
             .map_err(|e| e.to_string())?
             .collect::<Result<_, _>>()
             .map_err(|e| e.to_string())?;
-        let late = |id: i64, from: i64| -> Result<u64, String> {
-            db.query_row(
-                "SELECT COALESCE(SUM(late), 0) FROM second WHERE device = ?1 AND t > ?2 AND t <= ?3",
-                params![id, from, now],
-                |r| r.get::<_, i64>(0),
+        let mut late_q = db
+            .prepare_cached(
+                "SELECT COALESCE(SUM(CASE WHEN t > ?2 THEN late ELSE 0 END), 0), COALESCE(SUM(late), 0)
+                 FROM second WHERE device = ?1 AND t > ?3 AND t <= ?4",
             )
-            .map(|v| u64::try_from(v).unwrap_or(0))
-            .map_err(|e| e.to_string())
-        };
+            .map_err(|e| e.to_string())?;
+        let mut per = db
+            .prepare_cached(
+                "SELECT slot, (t - ?2 - 1) / ?4 AS b, MAX(peak) FROM second
+                 WHERE device = ?1 AND t > ?2 AND t <= ?3 GROUP BY slot, b",
+            )
+            .map_err(|e| e.to_string())?;
         for (name, id, flows, last) in devices {
+            let (late_1h, late_24h): (i64, i64) = late_q
+                .query_row(params![id, hour, now - 24 * 3600, now], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .map_err(|e| e.to_string())?;
             let mut r = api::ReceiverSummary {
                 device: name,
                 flows,
-                late_1h: late(id, hour)?,
-                late_24h: late(id, now - 24 * 3600)?,
+                late_1h: u64::try_from(late_1h).unwrap_or(0),
+                late_24h: u64::try_from(late_24h).unwrap_or(0),
                 spark: vec![None; usize::try_from(api::SPARK_POINTS).unwrap_or(0)],
                 age_s: Some(now - last),
                 ..api::ReceiverSummary::default()
             };
-            let mut per = db
-                .prepare(
-                    "SELECT slot, (t - ?2 - 1) / ?4 AS b, MAX(peak) FROM second
-                     WHERE device = ?1 AND t > ?2 AND t <= ?3 GROUP BY slot, b",
-                )
-                .map_err(|e| e.to_string())?;
             let rows = per
                 .query_map(params![id, hour, now, step], |rw| {
                     Ok((
@@ -333,6 +375,9 @@ impl Store {
                 })
                 .map_err(|e| e.to_string())?;
             let mut latencies: Vec<(u16, u32)> = Vec::new();
+            // The flow closest to its latency (largest share); with no
+            // latency known, the largest peak.
+            let mut best: Option<(u32, u32)> = None;
             for row in rows {
                 let (slot, b, peak) = row.map_err(|e| e.to_string())?;
                 let lat = match latencies.iter().find(|(s, _)| *s == slot) {
@@ -345,15 +390,16 @@ impl Store {
                         l
                     }
                 };
-                if peak >= r.peak_us {
-                    r.peak_us = peak;
-                    r.latency_us = lat;
-                }
                 let share = if lat > 0 {
                     u32::try_from(u64::from(peak) * 1000 / u64::from(lat)).unwrap_or(u32::MAX)
                 } else {
                     0
                 };
+                if best.is_none_or(|(s, p)| (share, peak) > (s, p)) {
+                    best = Some((share, peak));
+                    r.peak_us = peak;
+                    r.latency_us = lat;
+                }
                 if let Some(cell) = usize::try_from(b).ok().and_then(|i| r.spark.get_mut(i)) {
                     *cell = Some(cell.map_or(share, |c| c.max(share)));
                 }
@@ -363,10 +409,22 @@ impl Store {
         Ok(out)
     }
 
-    /// The history of `device` from `from` to `to` (unix seconds).
-    pub fn history(&self, device: &str, from: i64, to: i64) -> Result<api::History, String> {
-        let (from, to) = (from.min(to), from.max(to));
-        let (tier, step) = plan(to - from);
+    /// The history of `device` from `from` to `to` (unix seconds), asked
+    /// at `now`. The range is clamped to what is kept (a year back, an hour
+    /// ahead), so any request stays small.
+    pub fn history(
+        &self,
+        device: &str,
+        from: i64,
+        to: i64,
+        now: i64,
+    ) -> Result<api::History, String> {
+        let (lo, hi) = (
+            now.saturating_sub(KEEP_HOURS + 3600),
+            now.saturating_add(3600),
+        );
+        let (from, to) = (from.min(to).clamp(lo, hi), from.max(to).clamp(lo, hi));
+        let (tier, step) = plan(to - from, now - from);
         let mut out = api::History {
             device: device.to_owned(),
             from,
@@ -382,9 +440,11 @@ impl Store {
             .collect();
         let db = self.conn();
         let Some(id) = db
-            .query_row("SELECT id FROM device WHERE name = ?1", [device], |r| {
-                r.get::<_, i64>(0)
-            })
+            .query_row(
+                "SELECT id FROM device WHERE name = ?1 COLLATE NOCASE",
+                [device],
+                |r| r.get::<_, i64>(0),
+            )
             .optional()
             .map_err(|e| e.to_string())?
         else {
@@ -503,15 +563,15 @@ mod tests {
 
     #[test]
     fn plan_picks_the_tier_by_span_and_keeps_the_buckets_few() {
-        assert_eq!(plan(300), (Tier::Second, 1));
-        assert_eq!(plan(3600), (Tier::Second, 3));
-        assert_eq!(plan(2 * 3600), (Tier::Second, 5));
-        assert_eq!(plan(6 * 3600), (Tier::Minute, 60));
-        assert_eq!(plan(7 * 24 * 3600), (Tier::Minute, 420));
-        assert_eq!(plan(30 * 24 * 3600), (Tier::Hour, 3600));
-        assert_eq!(plan(365 * 24 * 3600), (Tier::Hour, 6 * 3600));
+        assert_eq!(plan(300, 0), (Tier::Second, 1));
+        assert_eq!(plan(3600, 0), (Tier::Second, 3));
+        assert_eq!(plan(2 * 3600, 0), (Tier::Second, 5));
+        assert_eq!(plan(6 * 3600, 0), (Tier::Minute, 60));
+        assert_eq!(plan(7 * 24 * 3600, 0), (Tier::Minute, 420));
+        assert_eq!(plan(30 * 24 * 3600, 0), (Tier::Hour, 3600));
+        assert_eq!(plan(365 * 24 * 3600, 0), (Tier::Hour, 6 * 3600));
         for span in [1, 59, 7200, 7201, 600_000, 31_536_000] {
-            assert!(span / plan(span).1 <= api::HISTORY_POINTS, "span {span}");
+            assert!(span / plan(span, 0).1 <= api::HISTORY_POINTS, "span {span}");
         }
     }
 
