@@ -74,7 +74,11 @@ pub fn load_history(h: Hist, poll: bool) {
         String::from(js_sys::encode_uri_component(&dev))
     );
     let mut reads = h.reads.get_value();
-    let n = reads.start_at(js_sys::Date::now());
+    let n = if poll {
+        reads.poll_at(js_sys::Date::now())
+    } else {
+        reads.start_at(js_sys::Date::now())
+    };
     h.reads.set_value(reads);
     spawn_local(async move {
         let r = get_json::<History>(&url).await;

@@ -22,6 +22,9 @@ pub const RANGES: [(&str, i64); 7] = [
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct HistReads {
     last: u64,
+    /// The newest read a choice started (a range, a zoom, a device): an
+    /// answer older than it is stale; live polls of the same range are not.
+    chosen: u64,
     /// When the newest read started (ms), while it runs.
     running: Option<f64>,
 }
@@ -30,8 +33,15 @@ pub struct HistReads {
 pub const READ_HOLD_MS: f64 = 30_000.0;
 
 impl HistReads {
-    /// A new read's number, started at `now_ms`.
+    /// A new read a choice started, at `now_ms`: its number.
     pub fn start_at(&mut self, now_ms: f64) -> u64 {
+        let n = self.poll_at(now_ms);
+        self.chosen = n;
+        n
+    }
+
+    /// A new live poll of the same range, at `now_ms`: its number.
+    pub fn poll_at(&mut self, now_ms: f64) -> u64 {
         self.last += 1;
         self.running = Some(now_ms);
         self.last
@@ -49,13 +59,12 @@ impl HistReads {
         self.running.is_some()
     }
 
-    /// Read `n` answered: whether it may show (it is the newest).
+    /// Read `n` answered: whether it may show (no choice was made since).
     pub fn done(&mut self, n: u64) -> bool {
-        let latest = n == self.last;
-        if latest {
+        if n == self.last {
             self.running = None;
         }
-        latest
+        n >= self.chosen
     }
 
     /// Whether the newest read still runs at `now_ms` and is not taken as
