@@ -184,7 +184,7 @@ dependencies = [
 
 [[package]]
 name = "buildver"
-version = "0.1.26"
+version = "0.1.27"
 
 [[package]]
 name = "bumpalo"
@@ -347,7 +347,7 @@ dependencies = [
 
 [[package]]
 name = "dcontroller"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anyhow",
  "axum",
@@ -370,7 +370,7 @@ dependencies = [
 
 [[package]]
 name = "dcontroller-api"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "serde",
  "serde_json",
@@ -378,7 +378,7 @@ dependencies = [
 
 [[package]]
 name = "dcontroller-web"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "buildver",
  "console_error_panic_hook",
