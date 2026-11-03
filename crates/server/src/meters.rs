@@ -296,6 +296,34 @@ mod tests {
     }
 
     #[test]
+    fn a_version_3_frame_from_a_128_channel_card_reads_whole() {
+        // The FOH Yamaha AIC128-D's frame as captured on the site (3.11.2026):
+        // version 3, u16 counts, levels from byte 30, 286 bytes in all.
+        let mut frame = vec![0xff, 0xff, 0x01, 0x1e, 0x27, 0x1b, 0x00, 0x00];
+        frame.extend_from_slice(&[0x00, 0x1d, 0xc1, 0x08, 0x02, 0x14, 0x00, 0x00]);
+        frame.extend_from_slice(b"Audinate");
+        frame.extend_from_slice(&[0x03, 0x00, 0x00, 0x80, 0x00, 0x80]);
+        let mut raw = vec![0xfe; 256];
+        raw[8] = 0xb9;
+        raw[9] = 0xb9;
+        frame.extend_from_slice(&raw);
+        assert_eq!(frame.len(), 286);
+        let f = meter::parse_frame(&frame).expect("a version 3 frame reads");
+        assert_eq!(
+            f.device_id,
+            [0x00, 0x1d, 0xc1, 0x08, 0x02, 0x14, 0x00, 0x00]
+        );
+        assert!(ours(
+            &f,
+            Some([0x00, 0x1d, 0xc1, 0x08, 0x02, 0x14, 0x00, 0x00])
+        ));
+        let tx = levels(&f.tx, &[]);
+        assert_eq!((tx.len(), f.rx.len()), (128, 128));
+        assert!(tx[0].muted);
+        assert_eq!(tx[8].dbfs, Some(-92.0));
+    }
+
+    #[test]
     fn frames_are_taken_by_device_id_when_discovery_has_one() {
         let f = Frame {
             device_id: [7; 8],
