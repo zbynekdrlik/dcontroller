@@ -90,6 +90,8 @@ jobs:
 
   package:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # the release tag on a push to main
     steps:
       - uses: actions/checkout@v4
         with:
@@ -102,6 +104,20 @@ jobs:
           curl -fsSL -o trunk.tgz "$base/trunk-x86_64-unknown-linux-gnu.tar.gz"
           echo "$TRUNK_SHA256  trunk.tgz" | sha256sum -c -
           tar xzf trunk.tgz -C /usr/local/bin trunk
+      - name: Tag the release (push to main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          pkg=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          tag="v$pkg"
+          if at=$(git rev-parse -q --verify "refs/tags/$tag^{commit}"); then
+            # A re-run of the same commit is fine; a tag elsewhere means no version bump.
+            [ "$at" = "$GITHUB_SHA" ] || { echo "$tag already tags $at, not $GITHUB_SHA: bump the version"; exit 1; }
+          else
+            git tag "$tag" "$GITHUB_SHA"
+            git push origin "refs/tags/$tag"
+          fi
+          echo "release $tag at $GITHUB_SHA"
       - name: Build release bundle
         id: bundle
         run: |
