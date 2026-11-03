@@ -863,6 +863,160 @@ mod tests {
         }
     }
 
+    fn rx(channel: u16, label: &str, src: Option<(&str, &str)>) -> api::RxChannel {
+        api::RxChannel {
+            channel,
+            label: label.into(),
+            source: src.map(|(c, d)| api::Source {
+                channel: c.into(),
+                device: d.into(),
+            }),
+            ..api::RxChannel::default()
+        }
+    }
+
+    fn chans(tx: &[&str], rx: Vec<api::RxChannel>) -> api::Channels {
+        api::Channels {
+            tx: tx
+                .iter()
+                .enumerate()
+                .map(|(i, l)| api::TxChannel {
+                    channel: i as u16 + 1,
+                    label: (*l).into(),
+                })
+                .collect(),
+            rx,
+        }
+    }
+
+    fn set(rate: u32, lat_us: u32) -> api::Settings {
+        api::Settings {
+            sample_rate: Some(rate),
+            latency_configured_us: Some(lat_us),
+            ..api::Settings::default()
+        }
+    }
+
+    #[test]
+    fn changes_between_two_reads_are_named_as_made_outside_dcontroller() {
+        let before = chans(
+            &["Mix L", "Mix R"],
+            vec![rx(1, "Vox", Some(("Mix L", "desk"))), rx(2, "Gtr", None)],
+        );
+        let after = chans(
+            &["Mix L", "Main R"],
+            vec![
+                rx(1, "Vox 1", Some(("Mix L", "desk"))),
+                rx(2, "Gtr", Some(("Mix R", "desk"))),
+            ],
+        );
+        let d = detect(
+            "stage",
+            (Some(&before), Some(&set(48000, 1000))),
+            (&after, Some(&set(96000, 500))),
+            7,
+        );
+        let kinds: Vec<(&str, &str)> = d
+            .iter()
+            .map(|e| (e.kind.as_str(), e.what.as_str()))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ("rename", "rx"),
+                ("subscription", ""),
+                ("rename", "tx"),
+                ("setting", "latency"),
+                ("setting", "sample_rate"),
+            ]
+        );
+        assert!(
+            d.iter()
+                .all(|e| e.user == OUTSIDE && e.ok && e.at == 7 && e.rx_device == "stage")
+        );
+        assert_eq!(
+            (
+                d[0].rx_channel,
+                d[0].name_before.as_deref(),
+                d[0].name_after.as_deref()
+            ),
+            (1, Some("Vox"), Some("Vox 1"))
+        );
+        assert_eq!(d[1].rx_channel, 2);
+        assert_eq!(d[1].rx_label, "Gtr");
+        assert_eq!(d[1].before, None);
+        assert_eq!(
+            d[1].after.as_ref().map(|s| s.channel.as_str()),
+            Some("Mix R")
+        );
+        assert_eq!(
+            (d[2].rx_channel, d[2].name_after.as_deref()),
+            (2, Some("Main R"))
+        );
+        assert_eq!(
+            (d[3].name_before.as_deref(), d[3].name_after.as_deref()),
+            (Some("1.00 ms"), Some("0.50 ms"))
+        );
+        assert_eq!(
+            (d[4].name_before.as_deref(), d[4].name_after.as_deref()),
+            (Some("48000 Hz"), Some("96000 Hz"))
+        );
+        // Nothing changed, the first read, or settings not answered: nothing.
+        assert!(
+            detect(
+                "stage",
+                (Some(&after), Some(&set(96000, 500))),
+                (&after, Some(&set(96000, 500))),
+                8
+            )
+            .is_empty()
+        );
+        assert!(detect("stage", (None, None), (&after, Some(&set(96000, 500))), 8).is_empty());
+        assert!(
+            detect(
+                "stage",
+                (Some(&after), Some(&set(96000, 500))),
+                (&after, None),
+                8
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_read_that_started_before_our_own_change_is_dropped() {
+        let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
+        s.apply(Change::Added(dev("Desk", 1)));
+        let t0 = Instant::now();
+        let r = |label: &str| Read {
+            channels: chans(&[label], vec![]),
+            ..read("x")
+        };
+        assert!(
+            s.record_read(&dev("Desk", 1), Ok(r("Vox")), t0, t0, 1)
+                .is_empty()
+        ); // the first read
+        // Someone else renamed it: the next read says so.
+        let found = s.record_read(&dev("Desk", 1), Ok(r("Lead")), t0, t0, 2);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name_after.as_deref(), Some("Lead"));
+        // Our own change, then a read that began before it: dropped, nothing logged.
+        let started = Instant::now();
+        s.own_change(&dev("Desk", 1));
+        assert!(
+            s.record_read(&dev("Desk", 1), Ok(r("Vox")), started, Instant::now(), 3)
+                .is_empty()
+        );
+        assert_eq!(s.view().devices[0].channels, Some(chans(&["Lead"], vec![])));
+        // A read begun after it counts again.
+        let after = Instant::now();
+        assert_eq!(
+            s.record_read(&dev("Desk", 1), Ok(r("Vox")), after, after, 4)
+                .len(),
+            1
+        );
+    }
+
     #[test]
     fn info_view_takes_product_board_and_encoding() {
         let product = Product {
