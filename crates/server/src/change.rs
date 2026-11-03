@@ -94,6 +94,19 @@ impl Changes {
         Ok(out)
     }
 
+    /// Logs changes seen on the network (made outside dcontroller).
+    pub fn log_detected(&self, entries: &[api::ChangeEntry]) {
+        for e in entries {
+            info!(device = %e.rx_device, kind = %e.kind, what = %e.what, channel = e.rx_channel,
+                before = ?e.name_before.as_ref().or(e.before.as_ref().map(|s| &s.channel)),
+                after = ?e.name_after.as_ref().or(e.after.as_ref().map(|s| &s.channel)),
+                "change: seen on the network");
+            if let Err(err) = self.append(e) {
+                warn!(error = %err, "changes log: entry not written (it is in the journal above)");
+            }
+        }
+    }
+
     fn append(&self, e: &api::ChangeEntry) -> Result<(), String> {
         let line = serde_json::to_string(e).map_err(|e| e.to_string())?;
         let mut f = OpenOptions::new()
@@ -140,6 +153,11 @@ impl Changes {
                 channel: None,
             };
         };
+        // Our own change: a read begun before it must not log it back as foreign.
+        dante
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .own_change(&device);
         let seq = AtomicU16::new(1);
         let requests = Requests::default();
         let stop = AtomicBool::new(false);
@@ -304,6 +322,11 @@ impl Changes {
                 req.device
             ));
         };
+        // Our own change: a read begun before it must not log it back as foreign.
+        dante
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .own_change(&device);
         let seq = AtomicU16::new(1);
         let requests = Requests::default();
         let stop = AtomicBool::new(false);
@@ -555,6 +578,11 @@ impl Changes {
                 req.device
             ));
         };
+        // Our own change: a read begun before it must not log it back as foreign.
+        dante
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .own_change(&device);
         if let Err(m) = validate_setting(req.setting, settings.as_ref(), info.as_ref()) {
             return refuse(m);
         }
