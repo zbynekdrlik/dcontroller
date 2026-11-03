@@ -90,6 +90,8 @@ jobs:
 
   package:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # the release tag on a push to main
     steps:
       - uses: actions/checkout@v4
         with:
@@ -102,6 +104,20 @@ jobs:
           curl -fsSL -o trunk.tgz "$base/trunk-x86_64-unknown-linux-gnu.tar.gz"
           echo "$TRUNK_SHA256  trunk.tgz" | sha256sum -c -
           tar xzf trunk.tgz -C /usr/local/bin trunk
+      - name: Tag the release (push to main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          pkg=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          tag="v$pkg"
+          if at=$(git rev-parse -q --verify "refs/tags/$tag^{commit}"); then
+            # A re-run of the same commit is fine; a tag elsewhere means no version bump.
+            [ "$at" = "$GITHUB_SHA" ] || { echo "$tag already tags $at, not $GITHUB_SHA: bump the version"; exit 1; }
+          else
+            git tag "$tag" "$GITHUB_SHA"
+            git push origin "refs/tags/$tag"
+          fi
+          echo "release $tag at $GITHUB_SHA"
       - name: Build release bundle
         id: bundle
         run: |
@@ -121,6 +137,10 @@ jobs:
           echo "served: $ver"
           test "$(sudo stat -c %U:%a /var/lib/dcontroller)" = dcontroller:750   # changes log dir
           [[ "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-dev\.[0-9]+)?\ \([0-9a-f]{7}\)$ ]]
+          # A build of main is a release: its version has no -dev suffix.
+          if [ "${{ github.event_name }}" = push ] && [ "${{ github.ref }}" = refs/heads/main ]; then
+            [[ "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+\ \([0-9a-f]{7}\)$ ]] || { echo "main build is not a release: $ver"; exit 1; }
+          fi
           curl -fsS -o "$dir/index.html" "$url/"
           grep -q 'manifest.webmanifest' "$dir/index.html"
           pid=$(systemctl show -p MainPID --value dcontroller)
