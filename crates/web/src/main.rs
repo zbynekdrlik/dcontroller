@@ -834,7 +834,7 @@ fn ChangeLog() -> impl IntoView {
         match list.get() {
         None => view! { <p class="status">"Loading…"</p> }.into_any(),
         Some(Err(e)) => view! { <p class="status error">{format!("Changes not readable: {e}")}</p> }.into_any(),
-        Some(Ok(v)) if v.is_empty() => view! { <p class="status" data-testid="changes-empty">"No changes yet."</p> }.into_any(),
+        Some(Ok(v)) if v.is_empty() => view! { <p class="status" data-testid="changes-empty">"No changes yet. Changes made here, and changes seen on the network (made in Dante Controller, on a mixer or a device itself), show up in this list."</p> }.into_any(),
         Some(Ok(v)) => view! {
             <table class="changes">
                 <thead><tr><th>"When"</th><th>"Who"</th><th>"Channel"</th><th>"Before"</th><th>"Asked"</th><th>"After"</th><th>"Result"</th></tr></thead>
@@ -843,9 +843,13 @@ fn ChangeLog() -> impl IntoView {
                         let when = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(e.at as f64 * 1000.0))
                             .to_locale_string("sk-SK", &wasm_bindgen::JsValue::UNDEFINED);
                         view! {
-                            <tr data-testid="change-row" class=if e.ok { "" } else { "err" }>
+                            <tr data-testid="change-row" class=if !e.ok { "err" } else if e.user == "outside dcontroller" { "ext" } else { "" }>
                                 <td>{String::from(when)}</td>
-                                <td>{e.user.clone()}</td>
+                                <td>{if e.user == "outside dcontroller" {
+                                    view! { <span class="chip info">"outside dcontroller"</span> }.into_any()
+                                } else {
+                                    e.user.clone().into_any()
+                                }}</td>
                                 <td>{change_target(&e)}</td>
                                 <td>{if e.kind == "rename" || e.kind == "setting" { name_text(&e.name_before) } else { source_text(&e.before) }}</td>
                                 <td>{if e.kind == "rename" || e.kind == "setting" { name_text(&e.name_asked) } else { source_text(&e.requested) }}</td>

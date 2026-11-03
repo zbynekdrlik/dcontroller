@@ -1,7 +1,7 @@
 import { test, expect, type ConsoleMessage } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
-import { root, routed } from "../env";
+import { root, routed, run } from "../env";
 
 // A change made outside dcontroller — here dstack's own device renamed by
 // its `card write` tool, as Dante Controller or a mixer would — shows in
@@ -10,7 +10,7 @@ const DEVICE = "dc-e2e-device";
 const card = (channel: number, label: string) =>
   execFileSync(
     resolve(root, "target/debug/dstack-dev"),
-    ["card", "write", routed.ip, DEVICE, "dc-e2e-no-flag"],
+    ["card", "write", routed.ip, DEVICE, resolve(run, "card-stop-flag-never-made")],
     { input: JSON.stringify([{ type: "rx", channel, label }]) },
   ).toString();
 
@@ -45,6 +45,17 @@ test("a channel renamed outside dcontroller shows in Changes", async ({ page }) 
     await expect(row).toContainText("Spare 3");
   } finally {
     card(3, "Spare 3");
+    // The other tests see the device as it was: wait until a read has it back.
+    await expect
+      .poll(
+        async () => {
+          const d = await page.evaluate(() => fetch("/api/devices").then((r) => r.json()));
+          const dev = d.devices.find((x: { name: string }) => x.name === "dc-e2e-device");
+          return dev?.channels?.rx?.find((r: { channel: number }) => r.channel === 3)?.label;
+        },
+        { timeout: 45_000, intervals: [2_000] },
+      )
+      .toBe("Spare 3");
   }
   expect(msgs).toEqual([]);
 });

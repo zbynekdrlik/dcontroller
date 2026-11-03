@@ -45,8 +45,13 @@ async fn serve(path: PathBuf) -> anyhow::Result<()> {
         .with_context(|| format!("bind {}", cfg.bind))?;
     info!(addr = %listener.local_addr()?, "listening");
     let stop = Arc::new(AtomicBool::new(false));
-    let dante = dcontroller::dante::start(cfg.dante_interface.clone(), Arc::clone(&stop));
     info!(changes_log = %cfg.changes_log.display(), "changes log");
+    let changes = Arc::new(dcontroller::change::Changes::new(cfg.changes_log.clone()));
+    let sink: dcontroller::dante::ChangeSink = {
+        let changes = Arc::clone(&changes);
+        Arc::new(move |found: &[dcontroller_api::ChangeEntry]| changes.log_detected(found))
+    };
+    let dante = dcontroller::dante::start(cfg.dante_interface.clone(), Arc::clone(&stop), sink);
     let history = Arc::new(
         dcontroller::history::Store::open(&cfg.history_db)
             .map_err(|e| anyhow::anyhow!("history {}: {e}", cfg.history_db.display()))?,
@@ -55,7 +60,7 @@ async fn serve(path: PathBuf) -> anyhow::Result<()> {
     dcontroller::latency::start(Arc::clone(&dante), Arc::clone(&history), Arc::clone(&stop));
     let shared = dcontroller::Shared {
         dante,
-        changes: Arc::new(dcontroller::change::Changes::new(cfg.changes_log.clone())),
+        changes,
         history,
         meters: Arc::default(),
     };

@@ -55,6 +55,109 @@ struct Entry {
     error: Option<String>,
     /// When the next read is due; `None` = now.
     due: Option<Instant>,
+    /// When dcontroller itself last changed the device: a read begun
+    /// before that is dropped (it would log our change back as foreign).
+    own_at: Option<Instant>,
+}
+
+/// Who a change seen on the network is logged as.
+pub const OUTSIDE: &str = "outside dcontroller";
+
+/// Where changes seen on the network go (the changes log).
+pub type ChangeSink = Arc<dyn Fn(&[api::ChangeEntry]) + Send + Sync>;
+
+/// What changed on device `device` between two reads, as changes made
+/// outside dcontroller at `unix`: RX subscription sources and labels, TX
+/// labels (by channel number), the configured latency and the sample rate.
+/// Nothing for the first read, or a setting a read did not answer.
+pub fn detect(
+    device: &str,
+    before: (Option<&api::Channels>, Option<&api::Settings>),
+    after: (&api::Channels, Option<&api::Settings>),
+    unix: u64,
+) -> Vec<api::ChangeEntry> {
+    let mut out = Vec::new();
+    let base = || api::ChangeEntry {
+        at: unix,
+        user: OUTSIDE.into(),
+        rx_device: device.to_owned(),
+        ok: true,
+        message: "seen on the network: changed outside dcontroller".into(),
+        ..api::ChangeEntry::default()
+    };
+    if let Some(old) = before.0 {
+        for new in &after.0.rx {
+            let Some(was) = old.rx.iter().find(|r| r.channel == new.channel) else {
+                continue;
+            };
+            if was.label != new.label {
+                out.push(api::ChangeEntry {
+                    kind: "rename".into(),
+                    what: "rx".into(),
+                    rx_channel: new.channel,
+                    rx_label: new.label.clone(),
+                    name_before: Some(was.label.clone()),
+                    name_after: Some(new.label.clone()),
+                    ..base()
+                });
+            }
+            if was.source != new.source {
+                out.push(api::ChangeEntry {
+                    kind: "subscription".into(),
+                    rx_channel: new.channel,
+                    rx_label: new.label.clone(),
+                    before: was.source.clone(),
+                    after: new.source.clone(),
+                    ..base()
+                });
+            }
+        }
+        for new in &after.0.tx {
+            if let Some(was) = old.tx.iter().find(|t| t.channel == new.channel)
+                && was.label != new.label
+            {
+                out.push(api::ChangeEntry {
+                    kind: "rename".into(),
+                    what: "tx".into(),
+                    rx_channel: new.channel,
+                    rx_label: new.label.clone(),
+                    name_before: Some(was.label.clone()),
+                    name_after: Some(new.label.clone()),
+                    ..base()
+                });
+            }
+        }
+    }
+    if let (Some(old), Some(new)) = (before.1, after.1) {
+        let setting = |what: &str, was: Option<String>, now: Option<String>| api::ChangeEntry {
+            kind: "setting".into(),
+            what: what.into(),
+            name_before: was,
+            name_after: now,
+            ..base()
+        };
+        let lat = |s: &api::Settings| {
+            s.latency_configured_us
+                .map(|us| crate::change::setting_text(api::Setting::LatencyUs(us)))
+        };
+        if old.latency_configured_us.is_some()
+            && new.latency_configured_us.is_some()
+            && old.latency_configured_us != new.latency_configured_us
+        {
+            out.push(setting("latency", lat(old), lat(new)));
+        }
+        let rate = |s: &api::Settings| {
+            s.sample_rate
+                .map(|hz| crate::change::setting_text(api::Setting::SampleRateHz(hz)))
+        };
+        if old.sample_rate.is_some()
+            && new.sample_rate.is_some()
+            && old.sample_rate != new.sample_rate
+        {
+            out.push(setting("sample_rate", rate(old), rate(new)));
+        }
+    }
+    out
 }
 
 /// The state the HTTP side reads.
@@ -104,6 +207,7 @@ impl State {
                                 info: None,
                                 clock: None,
                                 network: None,
+                                own_at: None,
                                 read_at: None,
                                 error: None,
                                 due: None,
@@ -137,16 +241,51 @@ impl State {
         now: Instant,
         unix: u64,
     ) {
+        let _ = self.record_read(device, result, now, now, unix);
+    }
+
+    /// Marks that dcontroller itself is changing `device` now: a read begun
+    /// before this is dropped, so our change is never logged back as one
+    /// made outside.
+    pub fn own_change(&mut self, device: &Device) {
+        if let Some(e) = self.devices.get_mut(&device.name.to_ascii_lowercase()) {
+            e.own_at = Some(Instant::now());
+        }
+    }
+
+    /// As [`State::record`] for a read begun at `started`, returning what it
+    /// shows changed since the last read (made outside dcontroller). A read
+    /// begun before our own last change is dropped whole.
+    pub fn record_read(
+        &mut self,
+        device: &Device,
+        result: Result<Read, String>,
+        started: Instant,
+        now: Instant,
+        unix: u64,
+    ) -> Vec<api::ChangeEntry> {
         let Some(e) = self.devices.get_mut(&device.name.to_ascii_lowercase()) else {
-            return;
+            return Vec::new();
         };
         if e.device != *device {
             // Its records changed during the read: the change already made it due.
-            return;
+            return Vec::new();
+        }
+        if e.own_at.is_some_and(|own| own >= started) {
+            // It may hold the state before our own change: read it again.
+            e.due = None;
+            return Vec::new();
         }
         e.due = Some(now + REFRESH);
+        let mut found = Vec::new();
         match result {
             Ok(r) => {
+                found = detect(
+                    &device.name,
+                    (e.channels.as_ref(), e.settings.as_ref()),
+                    (&r.channels, r.settings.as_ref()),
+                    unix,
+                );
                 e.channels = Some(r.channels);
                 // A device that does not answer the settings read keeps what it last said.
                 if r.settings.is_some() {
@@ -166,6 +305,7 @@ impl State {
             }
             Err(err) => e.error = Some(err),
         }
+        found
     }
 
     /// Our address and the ARC of the listed device `name` (case aside),
@@ -526,7 +666,7 @@ pub fn interface_ipv4(iface: &str) -> Result<Ipv4Addr, String> {
 /// returns the shared state. The thread waits for the interface's IPv4
 /// (a USB NIC may come up after the service), restarts discovery when that
 /// address changes or discovery ends, and says why in the state meanwhile.
-pub fn start(iface: Option<String>, stop: Arc<AtomicBool>) -> Shared {
+pub fn start(iface: Option<String>, stop: Arc<AtomicBool>, sink: ChangeSink) -> Shared {
     let Some(iface) = iface else {
         info!("dante: no dante_interface configured, discovery off");
         return Arc::new(RwLock::new(State::off(None, None)));
@@ -538,7 +678,7 @@ pub fn start(iface: Option<String>, stop: Arc<AtomicBool>) -> Shared {
     let state = Arc::clone(&shared);
     std::thread::Builder::new()
         .name("dante".into())
-        .spawn(move || supervise(&iface, &state, &stop))
+        .spawn(move || supervise(&iface, &state, &stop, &sink))
         .expect("spawn the dante thread");
     shared
 }
@@ -548,7 +688,7 @@ const RETRY: Duration = Duration::from_secs(5);
 /// How often a running discovery checks that the interface keeps its address.
 const ADDRESS_CHECK: Duration = Duration::from_secs(10);
 
-fn supervise(iface: &str, state: &Shared, stop: &Arc<AtomicBool>) {
+fn supervise(iface: &str, state: &Shared, stop: &Arc<AtomicBool>, sink: &ChangeSink) {
     let mut last_error = String::new();
     let mut off = |e: String| {
         if e != last_error {
@@ -576,7 +716,7 @@ fn supervise(iface: &str, state: &Shared, stop: &Arc<AtomicBool>) {
         };
         info!(interface = %iface, %ip, "dante: discovery started");
         *write(state) = State::on(iface.to_owned(), ip);
-        let ended = run(iface, ip, discovery, changes, state, stop);
+        let ended = run(iface, ip, discovery, changes, state, stop, sink);
         if let Some(why) = ended {
             off(why);
             sleep_unless_stopped(RETRY, stop);
@@ -601,6 +741,7 @@ fn run(
     changes: std::sync::mpsc::Receiver<Change>,
     state: &Shared,
     stop: &AtomicBool,
+    sink: &ChangeSink,
 ) -> Option<String> {
     let seq = AtomicU16::new(1);
     let requests = Requests::default();
@@ -672,7 +813,11 @@ fn run(
             let unix = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs());
-            write(state).record(&device, result, Instant::now(), unix);
+            let found = write(state).record_read(&device, result, started, Instant::now(), unix);
+            if !found.is_empty() {
+                info!(device = %device.name, changes = found.len(), "dante: changes made outside dcontroller");
+                sink(&found);
+            }
         }
     }
     if let Err(e) = discovery.stop() {
@@ -1260,7 +1405,11 @@ mod tests {
     #[test]
     fn a_missing_interface_is_waited_for_and_the_thread_stops() {
         let stop = Arc::new(AtomicBool::new(false));
-        let shared = start(Some("no-such-iface0".into()), Arc::clone(&stop));
+        let shared = start(
+            Some("no-such-iface0".into()),
+            Arc::clone(&stop),
+            Arc::new(|_: &[api::ChangeEntry]| {}),
+        );
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let v = snapshot(&shared);
