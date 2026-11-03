@@ -121,6 +121,10 @@ jobs:
           echo "served: $ver"
           test "$(sudo stat -c %U:%a /var/lib/dcontroller)" = dcontroller:750   # changes log dir
           [[ "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-dev\.[0-9]+)?\ \([0-9a-f]{7}\)$ ]]
+          # A build of main is a release: its version has no -dev suffix.
+          if [ "${{ github.event_name }}" = push ] && [ "${{ github.ref }}" = refs/heads/main ]; then
+            [[ "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+\ \([0-9a-f]{7}\)$ ]] || { echo "main build is not a release: $ver"; exit 1; }
+          fi
           curl -fsS -o "$dir/index.html" "$url/"
           grep -q 'manifest.webmanifest' "$dir/index.html"
           pid=$(systemctl show -p MainPID --value dcontroller)
