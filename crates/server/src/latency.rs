@@ -542,15 +542,19 @@ mod tests {
                 late: 2
             }
         );
-        // A count that went down started again: all of it is new.
+        // A count that went down: the device started again. What it counted
+        // while starting is the restart, not the network: none is credited,
+        // the count since then is the new baseline.
         let s = beat_samples(&beat(vec![0, 0, 0], vec![1, 0, 2]), &active, &mut last, 102);
-        assert_eq!(s[0].late, 1);
+        assert_eq!(s[0].late, 0);
+        let s = beat_samples(&beat(vec![0, 0, 0], vec![4, 0, 2]), &active, &mut last, 103);
+        assert_eq!(s[0].late, 3);
         // No lateness record: nothing to store.
         let none = Beat {
             device_id: [0; 8],
             lateness: None,
             late: Some(vec![1]),
         };
-        assert!(beat_samples(&none, &active, &mut last, 103).is_empty());
+        assert!(beat_samples(&none, &active, &mut last, 104).is_empty());
     }
 }
