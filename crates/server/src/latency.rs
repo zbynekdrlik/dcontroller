@@ -557,4 +557,37 @@ mod tests {
         };
         assert!(beat_samples(&none, &active, &mut last, 104).is_empty());
     }
+
+    fn at(t: i64, late: u64) -> Sample {
+        Sample {
+            slot: 1,
+            t,
+            peak_us: 100,
+            late,
+        }
+    }
+
+    #[test]
+    fn the_heartbeats_around_a_device_stop_credit_no_late_packets() {
+        // dstack: iemmixer's deploy stopped its engine at 22:18:31 and it was
+        // up at 22:18:33; its last heartbeat before the stop carried 1375
+        // late packets. A heartbeat is held until the next one: one followed
+        // by a gap (the device stopping) and the one after it (starting
+        // again) store their peaks, but no late packets.
+        let mut held = None;
+        let mut out = Vec::new();
+        settle(&mut held, vec![at(100, 2)], &mut out);
+        assert!(out.is_empty());
+        settle(&mut held, vec![at(101, 3)], &mut out);
+        assert_eq!(out, vec![at(100, 2)]);
+        settle(&mut held, vec![at(102, 1375)], &mut out);
+        // Two seconds without a heartbeat: the device stopped.
+        settle(&mut held, vec![at(104, 9)], &mut out);
+        settle(&mut held, vec![at(105, 1)], &mut out);
+        assert_eq!(out, vec![at(100, 2), at(101, 3), at(102, 0), at(104, 0)]);
+        // What is held goes out when the receiver is flushed for good.
+        release(&mut held, &mut out);
+        assert_eq!(out.last(), Some(&at(105, 1)));
+        assert!(held.is_none());
+    }
 }
