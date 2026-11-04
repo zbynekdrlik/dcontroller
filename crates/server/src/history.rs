@@ -682,6 +682,65 @@ mod tests {
     }
 
     #[test]
+    fn a_slot_whose_flow_changed_in_the_range_reads_as_one_series_per_flow() {
+        let st = Store::memory().unwrap();
+        let t0 = 1_800_000_000;
+        let src = |s: &str, latency_us| FlowInfo {
+            sources: vec![s.into()],
+            ..flow(latency_us)
+        };
+        st.set_flow("desk", 1, &src("tascam", 1000), t0 - 10)
+            .unwrap();
+        st.set_flow("desk", 1, &src("master", 2000), t0 + 100)
+            .unwrap();
+        st.add(
+            "desk",
+            &[
+                s(1, t0 + 1, 1500, 4),
+                s(1, t0 + 99, 300, 0),
+                s(1, t0 + 100, 2500, 7),
+            ],
+        )
+        .unwrap();
+        let h = st.history("desk", t0, t0 + 299, t0 + 299).unwrap();
+        assert_eq!(h.flows.len(), 2);
+        let (old, new) = (&h.flows[0], &h.flows[1]);
+        // Each sample is under the flow the slot carried at its time.
+        assert_eq!(
+            (old.slot, old.sources.clone()),
+            (1, vec!["tascam".to_owned()])
+        );
+        assert_eq!(old.latency_us, 1000);
+        assert_eq!(
+            (old.max_us[1], old.max_us[99], old.max_us[100]),
+            (Some(1500), Some(300), None)
+        );
+        assert_eq!((old.peak_us, old.late_total, old.over), (1500, 4, 1));
+        assert_eq!(old.histogram.iter().sum::<u64>(), 2);
+        assert_eq!(
+            (new.slot, new.sources.clone()),
+            (1, vec!["master".to_owned()])
+        );
+        assert_eq!(new.latency_us, 2000);
+        assert_eq!((new.max_us[1], new.max_us[100]), (None, Some(2500)));
+        assert_eq!((new.peak_us, new.late_total, new.over), (2500, 7, 1));
+        assert_eq!(new.histogram.iter().sum::<u64>(), 1);
+    }
+
+    #[test]
+    fn samples_before_a_slots_first_description_take_that_description() {
+        let st = Store::memory().unwrap();
+        let t0 = 1_800_000_000;
+        st.add("desk", &[s(1, t0 + 1, 100, 0), s(1, t0 + 200, 100, 0)])
+            .unwrap();
+        st.set_flow("desk", 1, &flow(1000), t0 + 100).unwrap();
+        let h = st.history("desk", t0, t0 + 299, t0 + 299).unwrap();
+        assert_eq!(h.flows.len(), 1);
+        assert_eq!(h.flows[0].latency_us, 1000);
+        assert_eq!(h.flows[0].histogram.iter().sum::<u64>(), 2);
+    }
+
+    #[test]
     fn buckets_take_the_max_and_the_mean_of_their_seconds() {
         let st = Store::memory().unwrap();
         let t0 = 1_800_000_000; // a whole hour
