@@ -857,10 +857,10 @@ mod tests {
             st.history("desk", t0, t0 + 50, t0 + 50).unwrap().flows[0].latency_us,
             1000
         );
-        assert_eq!(
-            st.history("desk", t0, t0 + 200, t0 + 200).unwrap().flows[0].latency_us,
-            250
-        );
+        // Over both: each description holds its own samples.
+        let both = st.history("desk", t0, t0 + 200, t0 + 200).unwrap();
+        let lat: Vec<u32> = both.flows.iter().map(|f| f.latency_us).collect();
+        assert_eq!(lat, vec![1000, 250]);
     }
 
     #[test]
