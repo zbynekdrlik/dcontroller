@@ -88,7 +88,7 @@ pub fn owner(devices: &[Device], from: Ipv4Addr, id: [u8; 8]) -> Option<&Device>
 /// (lateness samples at the beat's rate, in µs, as dstack's `Gather`), and
 /// the late packets since the last sample stored for that slot (`last`
 /// holds each slot's cumulative count; the first heartbeat sets it; a count
-/// that went down started again). A heartbeat that stores no sample for a
+/// that went down is a restart, credited nothing, and the new baseline). A heartbeat that stores no sample for a
 /// slot (no lateness record, no flow known yet) leaves its count pending.
 pub fn beat_samples(
     beat: &Beat,
@@ -115,7 +115,9 @@ pub fn beat_samples(
             let late = match (totals.get(&slot), last.get(&slot)) {
                 (Some(&total), Some(&prev)) => {
                     last.insert(slot, total);
-                    if total >= prev { total - prev } else { total }
+                    // A count that went down: the device started again; what
+                    // it counted while starting is not the network's.
+                    total.saturating_sub(prev)
                 }
                 _ => 0,
             };
@@ -128,6 +130,34 @@ pub fn beat_samples(
             }
         })
         .collect()
+}
+
+/// The longest wait between two heartbeats of a running device, seconds:
+/// a longer one means it stopped (a restart, a deploy).
+pub const STOP_GAP_S: i64 = 2;
+
+/// Passes one heartbeat's samples (`next`, all of one second) on to `out`
+/// a heartbeat late: the one before a gap of [`STOP_GAP_S`] or more (the
+/// device stopping) and the one after it (starting again) keep their peaks
+/// but credit no late packets, which are the restart's, not the network's.
+pub fn settle(held: &mut Option<Vec<Sample>>, mut next: Vec<Sample>, out: &mut Vec<Sample>) {
+    let Some(t) = next.first().map(|s| s.t) else {
+        return;
+    };
+    if let Some(mut prev) = held.take() {
+        if prev.first().is_some_and(|p| t - p.t >= STOP_GAP_S) {
+            for s in prev.iter_mut().chain(next.iter_mut()) {
+                s.late = 0;
+            }
+        }
+        out.extend(prev);
+    }
+    *held = Some(next);
+}
+
+/// Passes on what [`settle`] holds (the receiver is gone, or the recorder stops).
+pub fn release(held: &mut Option<Vec<Sample>>, out: &mut Vec<Sample>) {
+    out.extend(held.take().unwrap_or_default());
 }
 
 /// Moves the late counts on for a device whose flows are not read yet:
@@ -172,6 +202,8 @@ struct Receiving {
     /// The device's name as discovery lists it (the store matches case aside).
     name: String,
     last_late: BTreeMap<u16, u32>,
+    /// The last heartbeat's samples, until the next one (see [`settle`]).
+    held: Option<Vec<Sample>>,
     buffer: Vec<Sample>,
     stored: u64,
 }
@@ -202,6 +234,7 @@ fn run(dante: &Shared, store: &Store, stop: &AtomicBool, flows: &Flows) {
             state.retain(|key, r| {
                 let keep = names.contains(key);
                 if !keep {
+                    release(&mut r.held, &mut r.buffer);
                     flush(store, r);
                     info!(device = %r.name, samples = r.stored, "recorder: receiver gone");
                 }
@@ -242,8 +275,8 @@ fn run(dante: &Shared, store: &Store, stop: &AtomicBool, flows: &Flows) {
                     };
                     // Stamped as it is taken: the beat loop waits on nothing
                     // but the store, and a second written twice is merged.
-                    r.buffer
-                        .extend(beat_samples(&beat, &active, &mut r.last_late, unix_now()));
+                    let samples = beat_samples(&beat, &active, &mut r.last_late, unix_now());
+                    settle(&mut r.held, samples, &mut r.buffer);
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -272,6 +305,7 @@ fn run(dante: &Shared, store: &Store, stop: &AtomicBool, flows: &Flows) {
         }
     }
     for r in state.values_mut() {
+        release(&mut r.held, &mut r.buffer);
         flush(store, r);
     }
     info!("recorder: stopped");
@@ -558,7 +592,7 @@ mod tests {
         assert!(beat_samples(&none, &active, &mut last, 104).is_empty());
     }
 
-    fn at(t: i64, late: u64) -> Sample {
+    fn at(t: i64, late: u32) -> Sample {
         Sample {
             slot: 1,
             t,
