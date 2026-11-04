@@ -40,6 +40,6 @@ test("the overview is the start page with health tiles and the receivers' last h
   await row.locator("a").click();
   await expect(page).toHaveURL(new RegExp(`#latency/${DEVICE}$`));
   await expect(page.getByTestId("tab-latency")).toHaveClass(/\bon\b/);
-  await expect(page.getByTestId("lat-flow").first()).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId("lat-source").first()).toBeVisible({ timeout: 20_000 });
   expect(msgs).toEqual([]);
 });

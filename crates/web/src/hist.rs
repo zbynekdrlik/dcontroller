@@ -92,13 +92,111 @@ pub fn color(i: usize) -> &'static str {
     PALETTE[i % PALETTE.len()]
 }
 
-/// A flow's label: its slot and where it comes from.
-pub fn label(f: &FlowHistory) -> String {
+/// What a flow comes from: its source devices, or `?` when not known.
+fn source_of(f: &FlowHistory) -> String {
     if f.sources.is_empty() {
-        format!("Flow {}", f.slot)
+        "?".to_owned()
     } else {
-        format!("Flow {} · {}", f.slot, f.sources.join(", "))
+        f.sources.join(", ")
     }
+}
+
+/// A receiver's flows from one source device, read as one: device to
+/// device. The late packets are the damage (packets that came after their
+/// flow's latency and were not played); the peak against each flow's own
+/// latency is only the margin.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SourceHistory {
+    pub source: String,
+    pub slots: Vec<u16>,
+    pub channels: Vec<String>,
+    /// The flows' latencies, distinct, smallest first.
+    pub latencies: Vec<u32>,
+    /// Per bucket: the worst peak as a share of its own flow's latency, %
+    /// (`None`: nothing recorded, or no latency known).
+    pub share: Vec<Option<f64>>,
+    /// Per bucket: the largest peak, µs.
+    pub max_us: Vec<Option<u32>>,
+    /// Per bucket: the late packets of all its flows.
+    pub late: Vec<u64>,
+    pub late_total: u64,
+    /// Over the range: the peak closest to (or furthest past) its flow's
+    /// latency, and that latency.
+    pub peak_us: u32,
+    pub peak_latency_us: u32,
+    /// Stored values past their latency, over all its flows.
+    pub over: u64,
+    /// The flows' distributions added up (the bins are shares of each
+    /// flow's own latency, so they add).
+    pub histogram: Vec<u64>,
+}
+
+/// `h`'s flows grouped by source device, by name.
+pub fn by_source(h: &History) -> Vec<SourceHistory> {
+    let n = h.t.len();
+    let mut out: Vec<SourceHistory> = Vec::new();
+    for f in &h.flows {
+        let name = source_of(f);
+        let (i, first) = match out.iter().position(|s| s.source == name) {
+            Some(i) => (i, false),
+            None => {
+                out.push(SourceHistory {
+                    source: name,
+                    share: vec![None; n],
+                    max_us: vec![None; n],
+                    late: vec![0; n],
+                    ..SourceHistory::default()
+                });
+                (out.len() - 1, true)
+            }
+        };
+        let s = &mut out[i];
+        if !s.slots.contains(&f.slot) {
+            s.slots.push(f.slot);
+        }
+        for c in &f.channels {
+            if !s.channels.contains(c) {
+                s.channels.push(c.clone());
+            }
+        }
+        if f.latency_us > 0 && !s.latencies.contains(&f.latency_us) {
+            s.latencies.push(f.latency_us);
+            s.latencies.sort_unstable();
+        }
+        for k in 0..n {
+            if let Some(us) = f.max_us.get(k).copied().flatten() {
+                s.max_us[k] = Some(s.max_us[k].map_or(us, |m| m.max(us)));
+                if f.latency_us > 0 {
+                    let p = f64::from(us) * 100.0 / f64::from(f.latency_us);
+                    s.share[k] = Some(s.share[k].map_or(p, |m| m.max(p)));
+                }
+            }
+            s.late[k] += f.late.get(k).copied().unwrap_or(0);
+        }
+        s.late_total += f.late_total;
+        s.over += f.over;
+        let worse = |a: (u32, u32), b: (u32, u32)| {
+            // a/la > b/lb, a flow of unknown latency by its peak alone.
+            match (a.1, b.1) {
+                (0, 0) => a.0 > b.0,
+                (0, _) => false,
+                (_, 0) => true,
+                _ => u64::from(a.0) * u64::from(b.1) > u64::from(b.0) * u64::from(a.1),
+            }
+        };
+        if first || worse((f.peak_us, f.latency_us), (s.peak_us, s.peak_latency_us)) {
+            s.peak_us = f.peak_us;
+            s.peak_latency_us = f.latency_us;
+        }
+        if s.histogram.len() < f.histogram.len() {
+            s.histogram.resize(f.histogram.len(), 0);
+        }
+        for (a, b) in s.histogram.iter_mut().zip(&f.histogram) {
+            *a += b;
+        }
+    }
+    out.sort_by_key(|s| s.source.to_lowercase());
+    out
 }
 
 /// µs as ms with two decimals.
@@ -127,10 +225,13 @@ pub enum Scale {
 }
 
 #[derive(Serialize)]
-struct ChartFlow {
+struct ChartSource {
     label: String,
     color: &'static str,
+    /// The margin: the worst peak per bucket in the chart's unit.
     values: Vec<Option<f64>>,
+    /// The damage: late packets per bucket.
+    late: Vec<u64>,
 }
 
 #[derive(Serialize)]
@@ -144,45 +245,40 @@ struct Threshold {
 struct Chart<'a> {
     t: &'a [i64],
     unit: &'static str,
-    flows: Vec<ChartFlow>,
+    sources: Vec<ChartSource>,
     thresholds: Vec<Threshold>,
-    /// Late packets per bucket over all flows; `None` when there are none.
-    late: Option<Vec<u64>>,
-    /// The y axis reaches at least the (smallest) latency, so the margin shows.
+    /// Whether any source has late packets in the range (the late chart
+    /// shows only then).
+    late: bool,
+    /// The margin's y axis reaches at least the (smallest) latency.
     floor: f64,
     height: u32,
 }
 
-/// The chart's data for `dcChart.latency`: a line per flow (its largest
-/// peak per bucket), the latency line(s), and late packets as bars when
-/// there are any. `Share` leaves out a flow whose latency is not known.
+/// The chart's data for `dcChart.latency`: per source device its late
+/// packets (the damage) and its worst peak per bucket (the margin), and the
+/// latency line(s). `Share` leaves out the margin of a source whose
+/// latency is not known.
 pub fn chart_json(h: &History, height: u32, scale: Scale) -> String {
-    let flows = h
-        .flows
+    let groups = by_source(h);
+    let sources: Vec<ChartSource> = groups
         .iter()
         .enumerate()
-        .filter(|(_, f)| scale == Scale::Ms || f.latency_us > 0)
-        .map(|(i, f)| ChartFlow {
-            label: label(f),
+        .map(|(i, s)| ChartSource {
+            label: s.source.clone(),
             color: color(i),
-            values: f
-                .max_us
-                .iter()
-                .map(|v| {
-                    v.map(|us| match scale {
-                        Scale::Ms => f64::from(us) / 1000.0,
-                        Scale::Share => f64::from(us) * 100.0 / f64::from(f.latency_us),
-                    })
-                })
-                .collect(),
+            values: match scale {
+                Scale::Ms => s
+                    .max_us
+                    .iter()
+                    .map(|v| v.map(|us| f64::from(us) / 1000.0))
+                    .collect(),
+                Scale::Share => s.share.clone(),
+            },
+            late: s.late.clone(),
         })
         .collect();
-    let mut lats: Vec<u32> = h
-        .flows
-        .iter()
-        .map(|f| f.latency_us)
-        .filter(|&l| l > 0)
-        .collect();
+    let mut lats: Vec<u32> = groups.iter().flat_map(|s| s.latencies.clone()).collect();
     lats.sort_unstable();
     lats.dedup();
     let thresholds: Vec<Threshold> = match scale {
@@ -201,14 +297,6 @@ pub fn chart_json(h: &History, height: u32, scale: Scale) -> String {
             value: 100.0,
         }],
     };
-    let late: Vec<u64> = (0..h.t.len())
-        .map(|i| {
-            h.flows
-                .iter()
-                .map(|f| f.late.get(i).copied().unwrap_or(0))
-                .sum()
-        })
-        .collect();
     let chart = Chart {
         t: &h.t,
         unit: match scale {
@@ -216,9 +304,9 @@ pub fn chart_json(h: &History, height: u32, scale: Scale) -> String {
             Scale::Share => "%",
         },
         floor: thresholds.first().map_or(0.0, |t| t.value * 1.05),
-        flows,
+        late: groups.iter().any(|s| s.late.iter().any(|&l| l > 0)),
+        sources,
         thresholds,
-        late: late.iter().any(|&l| l > 0).then_some(late),
         height,
     };
     serde_json::to_string(&chart).unwrap_or_else(|_| "{}".into())
@@ -252,23 +340,15 @@ pub fn spark_path(values: &[Option<u32>], w: f64, h: f64, top: u32) -> String {
     out.trim_end().to_owned()
 }
 
-/// A receiver's health from its summary: CSS class and text. Late packets
-/// in the last hour are bad; a peak past 80 % of the latency is a warning.
+/// A receiver's health from its summary: CSS class and text. Only late
+/// packets (the receiver's own count of packets that came after their
+/// flow's latency, so were not played) make it bad; with none it is fine,
+/// whatever its peak.
 pub fn health(r: &ReceiverSummary) -> (&'static str, String) {
     if r.late_1h > 0 {
         return ("bad", format!("{} late in 1 h", r.late_1h));
     }
-    if r.latency_us > 0 && u64::from(r.peak_us) * 10 > u64::from(r.latency_us) * 8 {
-        return (
-            "warn",
-            format!("peak {} of {}", ms(r.peak_us), ms(r.latency_us)),
-        );
-    }
-    if r.latency_us > 0 {
-        let share = u64::from(r.peak_us) * 100 / u64::from(r.latency_us);
-        return ("ok", format!("peak {share} % of latency"));
-    }
-    ("ok", format!("peak {}", ms(r.peak_us)))
+    ("ok", "0 late in 1 h".to_owned())
 }
 
 #[cfg(test)]
@@ -276,10 +356,18 @@ mod tests {
     use super::*;
 
     fn flow(slot: u16, lat: u32, max: Vec<Option<u32>>, late: Vec<u64>) -> FlowHistory {
+        from("desk", slot, lat, max, late)
+    }
+
+    fn from(src: &str, slot: u16, lat: u32, max: Vec<Option<u32>>, late: Vec<u64>) -> FlowHistory {
         FlowHistory {
             slot,
             latency_us: lat,
-            sources: vec!["desk".into()],
+            sources: vec![src.into()],
+            channels: vec![format!("ch {slot}")],
+            peak_us: max.iter().flatten().copied().max().unwrap_or(0),
+            late_total: late.iter().sum(),
+            histogram: vec![1; 11],
             max_us: max,
             late,
             ..FlowHistory::default()
@@ -287,38 +375,92 @@ mod tests {
     }
 
     #[test]
-    fn the_chart_has_a_line_per_flow_a_threshold_per_latency_and_late_bars() {
+    fn flows_from_one_source_device_read_as_one_device_to_device() {
+        let h = History {
+            t: vec![10, 20, 30],
+            flows: vec![
+                from(
+                    "mixer",
+                    1,
+                    1000,
+                    vec![Some(100), None, Some(300)],
+                    vec![0, 0, 2],
+                ),
+                from(
+                    "desk",
+                    2,
+                    250,
+                    vec![Some(50), Some(200), None],
+                    vec![0, 1, 0],
+                ),
+                from(
+                    "mixer",
+                    3,
+                    250,
+                    vec![Some(200), Some(60), None],
+                    vec![0, 4, 0],
+                ),
+                // The same slot again, after its flow changed: still one source.
+                from("mixer", 1, 1000, vec![None, None, Some(400)], vec![0, 0, 1]),
+            ],
+            ..History::default()
+        };
+        let g = by_source(&h);
+        assert_eq!(g.len(), 2);
+        assert_eq!(g[0].source, "desk");
+        let m = &g[1];
+        assert_eq!(m.source, "mixer");
+        assert_eq!(m.slots, vec![1, 3]);
+        assert_eq!(m.channels, vec!["ch 1", "ch 3"]);
+        assert_eq!(m.latencies, vec![250, 1000]);
+        // Per bucket, the worst share of its own flow's latency.
+        assert_eq!(m.share, vec![Some(80.0), Some(24.0), Some(40.0)]);
+        assert_eq!(m.max_us, vec![Some(200), Some(60), Some(400)]);
+        assert_eq!(m.late, vec![0, 4, 3]);
+        assert_eq!(m.late_total, 7);
+        // The worst peak is the one closest to its latency (200 of 250), not the largest.
+        assert_eq!((m.peak_us, m.peak_latency_us), (200, 250));
+        assert_eq!(m.histogram, vec![3; 11]);
+    }
+
+    #[test]
+    fn the_chart_has_a_line_and_late_bars_per_source_device_and_a_threshold_per_latency() {
         let h = History {
             t: vec![10, 20, 30],
             flows: vec![
                 flow(1, 1000, vec![Some(100), None, Some(300)], vec![0, 0, 2]),
                 flow(2, 1000, vec![Some(50), Some(60), Some(70)], vec![0, 1, 0]),
-                flow(3, 250, vec![None, None, Some(10)], vec![0, 0, 0]),
+                from("tascam", 3, 250, vec![None, None, Some(10)], vec![0, 0, 0]),
             ],
             ..History::default()
         };
         let v: serde_json::Value = serde_json::from_str(&chart_json(&h, 300, Scale::Ms)).unwrap();
         assert_eq!(v["t"], serde_json::json!([10, 20, 30]));
         assert_eq!(v["unit"], "ms");
-        assert_eq!(v["flows"].as_array().unwrap().len(), 3);
-        assert_eq!(v["flows"][0]["label"], "Flow 1 · desk");
-        assert_eq!(v["flows"][0]["color"], PALETTE[0]);
-        assert_eq!(v["flows"][0]["values"], serde_json::json!([0.1, null, 0.3]));
+        assert_eq!(v["sources"].as_array().unwrap().len(), 2);
+        assert_eq!(v["sources"][0]["label"], "desk");
+        assert_eq!(v["sources"][0]["color"], PALETTE[0]);
+        assert_eq!(
+            v["sources"][0]["values"],
+            serde_json::json!([0.1, 0.06, 0.3])
+        );
+        assert_eq!(v["sources"][0]["late"], serde_json::json!([0, 1, 2]));
+        assert_eq!(v["sources"][1]["label"], "tascam");
         assert_eq!(v["thresholds"].as_array().unwrap().len(), 2);
         assert_eq!(v["thresholds"][0]["value"], 0.25);
         assert_eq!(v["thresholds"][1]["label"], "latency 1.00 ms");
-        assert_eq!(v["late"], serde_json::json!([0, 1, 2]));
+        assert_eq!(v["late"], true);
         assert_eq!(v["height"], 300);
         // As a share of each flow's own latency: one 100 % line for all.
         let p: serde_json::Value =
             serde_json::from_str(&chart_json(&h, 300, Scale::Share)).unwrap();
         assert_eq!(p["unit"], "%");
         assert_eq!(
-            p["flows"][0]["values"],
-            serde_json::json!([10.0, null, 30.0])
+            p["sources"][0]["values"],
+            serde_json::json!([10.0, 6.0, 30.0])
         );
         assert_eq!(
-            p["flows"][2]["values"],
+            p["sources"][1]["values"],
             serde_json::json!([null, null, 4.0])
         );
         assert_eq!(
@@ -326,7 +468,7 @@ mod tests {
             serde_json::json!([{"label": "latency", "color": "#f87171", "value": 100.0}])
         );
         assert_eq!(p["floor"], 105.0);
-        // No late packets: no bars.
+        // No late packets: no late chart.
         let quiet = History {
             t: vec![1],
             flows: vec![flow(1, 1000, vec![Some(1)], vec![0])],
@@ -334,7 +476,7 @@ mod tests {
         };
         let q: serde_json::Value =
             serde_json::from_str(&chart_json(&quiet, 200, Scale::Share)).unwrap();
-        assert!(q["late"].is_null());
+        assert_eq!(q["late"], false);
     }
 
     #[test]
@@ -412,25 +554,16 @@ mod tests {
             health(&r(100, 1000, 3)),
             ("bad", "3 late in 1 h".to_owned())
         );
+        // No late packets: fine, whatever the peak (even past the latency).
+        assert_eq!(health(&r(900, 1000, 0)), ("ok", "0 late in 1 h".to_owned()));
         assert_eq!(
-            health(&r(900, 1000, 0)),
-            ("warn", "peak 0.90 ms of 1.00 ms".to_owned())
+            health(&r(7000, 1000, 0)),
+            ("ok", "0 late in 1 h".to_owned())
         );
-        assert_eq!(
-            health(&r(110, 250, 0)),
-            ("ok", "peak 44 % of latency".to_owned())
-        );
-        assert_eq!(health(&r(110, 0, 0)), ("ok", "peak 0.11 ms".to_owned()));
         assert_eq!(over_text(3, 1), "3 s");
         assert_eq!(over_text(3, 60), "3 min");
         assert_eq!(over_text(3, 3600), "3 h");
-        assert_eq!(
-            label(&FlowHistory {
-                slot: 2,
-                ..FlowHistory::default()
-            }),
-            "Flow 2"
-        );
+        assert_eq!(source_of(&FlowHistory::default()), "?");
         assert_eq!(color(9), PALETTE[1]);
     }
 }

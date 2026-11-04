@@ -3,7 +3,7 @@
 //! zoom and is updated in place, never rebuilt by a poll.
 
 use super::*;
-use dcontroller_api::{FlowHistory, History, Overview, ReceiverSummary};
+use dcontroller_api::{History, Overview, ReceiverSummary};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
@@ -421,13 +421,26 @@ pub fn LatencyPage() -> impl IntoView {
             Some(Ok(hd)) => {
                 let step = if hd.step_s < 60 { format!("{} s", hd.step_s) } else if hd.step_s < 3600 { format!("{} min", hd.step_s / 60) } else { format!("{} h", hd.step_s / 3600) };
                 let tier = hd.tier_s;
+                let groups = hist::by_source(&hd);
+                let late: u64 = groups.iter().map(|s| s.late_total).sum();
+                let damaged: Vec<String> = groups
+                    .iter()
+                    .filter(|s| s.late_total > 0)
+                    .map(|s| format!("{} from {}", s.late_total, s.source))
+                    .collect();
+                let (vclass, verdict) = if late == 0 {
+                    ("chip ok", format!("No late packets: everything from {} source{} played on time.", groups.len(), if groups.len() == 1 { "" } else { "s" }))
+                } else {
+                    ("chip bad", format!("{late} late packets, not played: {}.", damaged.join(", ")))
+                };
                 view! {
-                    <p class="muted small" data-testid="lat-head">{format!("{name} · {} flows · one point per {step} (largest peak per point)", hd.flows.len())}</p>
+                    <p data-testid="lat-verdict"><span class=vclass>{verdict}</span></p>
+                    <p class="muted small" data-testid="lat-head">{format!("{name} · {} source devices · {} flows · one point per {step}", groups.len(), hd.flows.len())}</p>
                     <div class="table-wrap">
-                    <table class="grid" data-testid="lat-flows">
-                        <thead><tr><th></th><th>"Flow"</th><th>"From"</th><th>"Channels"</th><th>"Latency"</th><th>"Peak"</th><th>"Mean"</th><th>"Late"</th><th>"Past latency"</th><th>"Distribution"</th></tr></thead>
+                    <table class="grid" data-testid="lat-sources">
+                        <thead><tr><th></th><th>"From"</th><th>"Late (not played)"</th><th>"Worst peak"</th><th>"Latency"</th><th>"Past latency"</th><th>"Distribution"</th><th>"Channels"</th></tr></thead>
                         <tbody>
-                            {hd.flows.iter().enumerate().map(|(i, f)| flow_row(i, f, tier)).collect_view()}
+                            {groups.iter().enumerate().map(|(i, s)| source_row(i, s, tier)).collect_view()}
                         </tbody>
                     </table>
                     </div>
@@ -450,43 +463,62 @@ pub fn LatencyPage() -> impl IntoView {
     }
 }
 
-fn flow_row(i: usize, f: &FlowHistory, tier_s: i64) -> impl IntoView {
-    let top = f.histogram.iter().copied().max().unwrap_or(0).max(1);
-    let edges = dcontroller_api::latency_bins(f.latency_us);
-    let n_ok = edges
-        .iter()
-        .take_while(|&&e| e <= f.latency_us.max(1))
-        .count();
-    let chans = if f.channels.len() > 3 {
+fn source_row(i: usize, s: &hist::SourceHistory, tier_s: i64) -> impl IntoView {
+    let top = s.histogram.iter().copied().max().unwrap_or(0).max(1);
+    // The bins are eighths of each flow's latency, then 1.5×, 2× and over:
+    // the first eight are inside it.
+    let n_ok = 8;
+    let chans = if s.channels.len() > 3 {
         format!(
             "{}, {} … ({} ch)",
-            f.channels[0],
-            f.channels[1],
-            f.channels.len()
+            s.channels[0],
+            s.channels[1],
+            s.channels.len()
         )
     } else {
-        f.channels.join(", ")
+        s.channels.join(", ")
+    };
+    let flows = if s.slots.len() == 1 {
+        "1 flow".to_owned()
+    } else {
+        format!("{} flows", s.slots.len())
+    };
+    let peak = if s.peak_latency_us > 0 {
+        format!(
+            "{} ({} %)",
+            hist::ms(s.peak_us),
+            u64::from(s.peak_us) * 100 / u64::from(s.peak_latency_us)
+        )
+    } else {
+        hist::ms(s.peak_us)
+    };
+    let latency = if s.latencies.is_empty() {
+        "–".to_owned()
+    } else {
+        s.latencies
+            .iter()
+            .map(|&l| hist::ms(l))
+            .collect::<Vec<_>>()
+            .join(", ")
     };
     view! {
-        <tr data-testid="lat-flow">
+        <tr data-testid="lat-source" data-name=s.source.clone()>
             <td><span class="dot" style=format!("background:{}", hist::color(i))></span></td>
-            <td class="strong">{format!("Flow {}", f.slot)}</td>
-            <td>{if f.sources.is_empty() { "?".to_owned() } else { f.sources.join(", ") }}</td>
-            <td class="muted" title=f.channels.join(", ")>{chans}</td>
-            <td class="num" data-testid="lat-flow-latency">{if f.latency_us > 0 { hist::ms(f.latency_us) } else { "–".to_owned() }}</td>
-            <td class="num" data-testid="lat-flow-peak">{hist::ms(f.peak_us)}</td>
-            <td class="num">{hist::ms(f.avg_us)}</td>
-            <td class={if f.late_total > 0 { "num bad" } else { "num" }} data-testid="lat-flow-late">{f.late_total}</td>
-            <td class={if f.over > 0 { "num warn" } else { "num" }}>{hist::over_text(f.over, tier_s)}</td>
+            <td><span class="strong">{s.source.clone()}</span><br/><span class="muted small">{flows}</span></td>
+            <td class={if s.late_total > 0 { "num bad strong" } else { "num ok" }} data-testid="lat-source-late">{s.late_total}</td>
+            <td class="num" data-testid="lat-source-peak">{peak}</td>
+            <td class="num" data-testid="lat-source-latency">{latency}</td>
+            <td class="num">{hist::over_text(s.over, tier_s)}</td>
             <td>
                 <span class="hist" title="distribution of the peaks: eighths of the latency, then 1.5×, 2× and over">
-                    {f.histogram.iter().enumerate().map(|(k, &c)| {
+                    {s.histogram.iter().enumerate().map(|(k, &c)| {
                         let pct = if c == 0 { 0.0 } else { (c as f64 / top as f64 * 100.0).max(6.0) };
                         let class = if k >= n_ok { "hb late" } else { "hb" };
                         view! { <span class=class style=format!("height:{pct:.0}%") title=c.to_string()></span> }
                     }).collect_view()}
                 </span>
             </td>
+            <td class="muted" title=s.channels.join(", ")>{chans}</td>
         </tr>
     }
 }
