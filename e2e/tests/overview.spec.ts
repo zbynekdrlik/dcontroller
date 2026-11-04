@@ -32,9 +32,9 @@ test("the overview is the start page with health tiles and the receivers' last h
   const r = o.receivers.find((x: { device: string }) => x.device === DEVICE);
   expect(r.latency_us).toBe(10000);
   expect(r.flows).toBe(1);
-  await expect(page.getByTestId("tile-latency").locator(".tile-value")).toHaveText(
-    String(o.receivers.reduce((a: number, x: { late_1h: number }) => a + x.late_1h, 0)),
-  );
+  // The latency tile counts receivers with no late second in the hour.
+  const clean = o.receivers.filter((x: { late_s_1h: number }) => x.late_s_1h === 0).length;
+  await expect(page.getByTestId("tile-latency").locator(".tile-value")).toHaveText(`${clean} / ${o.receivers.length}`);
 
   // A receiver's name opens its latency history.
   await row.locator("a").click();

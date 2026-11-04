@@ -333,6 +333,11 @@ pub struct ReceiverSummary {
     /// Late packets in the last hour and the last day.
     pub late_1h: u64,
     pub late_24h: u64,
+    /// Seconds with late packets in the last hour and the last 5 minutes:
+    /// how much of the time was hit, not how many packets (one late packet
+    /// is a fraction of a millisecond of audio).
+    pub late_s_1h: u64,
+    pub late_s_5m: u64,
     /// The last hour in [`SPARK_POINTS`] buckets: the largest peak over all
     /// flows as a share of that flow's latency, per mille (1000 = at the
     /// latency); `None` with nothing recorded.

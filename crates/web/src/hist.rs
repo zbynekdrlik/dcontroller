@@ -358,13 +358,17 @@ pub fn spark_path(values: &[Option<u32>], w: f64, h: f64, top: u32) -> String {
 
 /// A receiver's health from its summary: CSS class and text. Only late
 /// packets (the receiver's own count of packets that came after their
-/// flow's latency, so were not played) make it bad; with none it is fine,
-/// whatever its peak.
+/// flow's latency, so were not played) count, by the seconds they hit: in
+/// the last 5 minutes it is bad (happening now), earlier in the hour a
+/// warning; with none it is fine, whatever its peak.
 pub fn health(r: &ReceiverSummary) -> (&'static str, String) {
-    if r.late_1h > 0 {
-        return ("bad", format!("{} late in 1 h", r.late_1h));
+    if r.late_s_5m > 0 {
+        return ("bad", format!("late now: {} s of 5 min", r.late_s_5m));
     }
-    ("ok", "0 late in 1 h".to_owned())
+    if r.late_s_1h > 0 {
+        return ("warn", format!("late in {} s of 1 h", r.late_s_1h));
+    }
+    ("ok", "no late packets".to_owned())
 }
 
 #[cfg(test)]
@@ -564,22 +568,32 @@ mod tests {
     }
 
     #[test]
-    fn health_reads_late_packets_and_the_margin() {
-        let r = |peak_us, latency_us, late_1h| ReceiverSummary {
+    fn health_reads_the_seconds_with_late_packets_never_the_peak() {
+        let r = |peak_us, latency_us, late_s_1h| ReceiverSummary {
             peak_us,
             latency_us,
-            late_1h,
+            late_s_1h,
             ..ReceiverSummary::default()
         };
+        // Late seconds earlier in the hour: a warning; in the last 5 min: bad.
         assert_eq!(
             health(&r(100, 1000, 3)),
-            ("bad", "3 late in 1 h".to_owned())
+            ("warn", "late in 3 s of 1 h".to_owned())
         );
+        let now = ReceiverSummary {
+            late_s_1h: 3,
+            late_s_5m: 1,
+            ..ReceiverSummary::default()
+        };
+        assert_eq!(health(&now), ("bad", "late now: 1 s of 5 min".to_owned()));
         // No late packets: fine, whatever the peak (even past the latency).
-        assert_eq!(health(&r(900, 1000, 0)), ("ok", "0 late in 1 h".to_owned()));
+        assert_eq!(
+            health(&r(900, 1000, 0)),
+            ("ok", "no late packets".to_owned())
+        );
         assert_eq!(
             health(&r(7000, 1000, 0)),
-            ("ok", "0 late in 1 h".to_owned())
+            ("ok", "no late packets".to_owned())
         );
         assert_eq!(over_text(3, 1), "3 s");
         assert_eq!(over_text(3, 60), "3 min");

@@ -184,27 +184,39 @@ pub fn OverviewPage() -> impl IntoView {
             .and_then(|o| o.as_ref().ok())
             .map(|o| o.receivers.clone())
             .unwrap_or_default();
-        let late: u64 = recs.iter().map(|r| r.late_1h).sum();
-        let worst = recs
+        // Receivers by the seconds their late packets hit, not by packets.
+        let clean = recs.iter().filter(|r| r.late_s_1h == 0).count();
+        let now_late: Vec<&str> = recs
             .iter()
-            .filter(|r| r.latency_us > 0)
-            .max_by_key(|r| u64::from(r.peak_us) * 1000 / u64::from(r.latency_us));
-        let lat_sub = match worst {
-            Some(w) => format!(
-                "closest: {} at {} of {}",
-                w.device,
-                hist::ms(w.peak_us),
-                hist::ms(w.latency_us)
-            ),
-            None => format!("{} receivers recorded", recs.len()),
+            .filter(|r| r.late_s_5m > 0)
+            .map(|r| r.device.as_str())
+            .collect();
+        let hit: Vec<String> = recs
+            .iter()
+            .filter(|r| r.late_s_1h > 0)
+            .map(|r| format!("{} {} s", r.device, r.late_s_1h))
+            .collect();
+        let lat_sub = if !now_late.is_empty() {
+            format!("late now: {}", now_late.join(", "))
+        } else if hit.is_empty() {
+            "no late packets in the last hour".to_owned()
+        } else {
+            format!("late seconds: {}", hit.join(", "))
+        };
+        let lat_class = if !now_late.is_empty() {
+            "bad"
+        } else if hit.is_empty() {
+            "ok"
+        } else {
+            "warn"
         };
         view! {
             <section class="tiles">
                 {tile("tile-devices", "Devices", format!("{}", d.devices.len()),
                     if failing > 0 { format!("{read} read · {failing} not answering") } else { format!("{read} read, all answering") },
                     if failing > 0 { "warn" } else { "ok" }, "#devices")}
-                {tile("tile-latency", "Late packets · 1 h", format!("{late}"), lat_sub,
-                    if late > 0 { "bad" } else { "ok" }, "#latency")}
+                {tile("tile-latency", "Receivers clean · 1 h", format!("{clean} / {}", recs.len()), lat_sub,
+                    lat_class, "#latency")}
                 {tile("tile-subs", "Subscriptions", format!("{}", subs.len()),
                     if not_rx > 0 { format!("{not_rx} not receiving") } else { "all receiving".to_owned() },
                     if not_rx > 0 { "warn" } else { "ok" }, "#routing")}
@@ -235,7 +247,7 @@ pub fn OverviewPage() -> impl IntoView {
         view! {
             <div class="table-wrap">
             <table class="grid" data-testid="overview-receivers">
-                <thead><tr><th>"Receiver"</th><th>"Last hour"</th><th>"Peak"</th><th>"Latency"</th><th>"Late 1 h"</th><th>"Late 24 h"</th><th>"State"</th></tr></thead>
+                <thead><tr><th>"Receiver"</th><th>"Last hour"</th><th>"Peak"</th><th>"Latency"</th><th>"Late seconds 1 h"</th><th>"Late packets 1 h"</th><th>"Late packets 24 h"</th><th>"State"</th></tr></thead>
                 <tbody>
                     {list.into_iter().map(|r| {
                         let (class, text) = hist::health(&r);
@@ -255,6 +267,7 @@ pub fn OverviewPage() -> impl IntoView {
                                 <td>{spark(Some(&r), "spark")}</td>
                                 <td class="num">{hist::ms(r.peak_us)}</td>
                                 <td class="num">{if r.latency_us > 0 { hist::ms(r.latency_us) } else { "–".to_owned() }}</td>
+                                <td class="num">{r.late_s_1h}</td>
                                 <td class="num">{r.late_1h}</td>
                                 <td class="num">{r.late_24h}</td>
                                 <td><span class=format!("chip {class}")>{text}</span></td>
