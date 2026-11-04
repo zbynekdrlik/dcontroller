@@ -517,32 +517,42 @@ impl Store {
         else {
             return Ok(out);
         };
-        let src = tier.source();
+        // Each stored value with the flow its slot carried at its time (the
+        // `since` of that description; before the first one, the first one):
+        // a slot whose flow changed in the range reads as one series per flow.
+        let src = format!(
+            "SELECT s.*, COALESCE(
+                 (SELECT MAX(since) FROM flow WHERE device = ?1 AND slot = s.slot AND since <= s.t),
+                 (SELECT MIN(since) FROM flow WHERE device = ?1 AND slot = s.slot), 0) AS seg
+             FROM ({}) s",
+            tier.source()
+        );
         let mut q = db
             .prepare(&format!(
-                "SELECT slot, t - (t - ?2) % ?4 AS b, MAX(peak), SUM(sum), SUM(n), SUM(late)
+                "SELECT slot, seg, t - (t - ?2) % ?4 AS b, MAX(peak), SUM(sum), SUM(n), SUM(late)
                  FROM ({src}) WHERE t >= ?2 AND t <= ?3
-                 GROUP BY slot, b ORDER BY slot, b"
+                 GROUP BY slot, seg, b ORDER BY slot, seg, b"
             ))
             .map_err(|e| e.to_string())?;
         let rows = q
             .query_map(params![id, first, to, step], |r| {
                 Ok((
-                    r.get::<_, u16>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, u32>(2)?,
-                    r.get::<_, i64>(3)?,
+                    (r.get::<_, u16>(0)?, r.get::<_, i64>(1)?),
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, u32>(3)?,
                     r.get::<_, i64>(4)?,
                     r.get::<_, i64>(5)?,
+                    r.get::<_, i64>(6)?,
                 ))
             })
             .map_err(|e| e.to_string())?;
         let mut flows: Vec<api::FlowHistory> = Vec::new();
         let mut sums: Vec<(i64, i64)> = Vec::new();
+        let mut segs: Vec<i64> = Vec::new();
         for row in rows {
-            let (slot, b, peak, s, cnt, late) = row.map_err(|e| e.to_string())?;
-            if flows.last().is_none_or(|f| f.slot != slot) {
-                let info = Self::flow_at(&db, id, slot, to)
+            let ((slot, seg), b, peak, s, cnt, late) = row.map_err(|e| e.to_string())?;
+            if flows.last().is_none_or(|f| f.slot != slot) || segs.last() != Some(&seg) {
+                let info = Self::flow_at(&db, id, slot, seg)
                     .map_err(|e| e.to_string())?
                     .unwrap_or_default();
                 flows.push(api::FlowHistory {
@@ -557,6 +567,7 @@ impl Store {
                     ..api::FlowHistory::default()
                 });
                 sums.push((0, 0));
+                segs.push(seg);
             }
             let (Some(f), Some(acc)) = (flows.last_mut(), sums.last_mut()) else {
                 continue;
@@ -579,10 +590,10 @@ impl Store {
         // The distribution and the count past the latency, over the stored values.
         let mut values = db
             .prepare(&format!(
-                "SELECT peak FROM ({src}) WHERE slot = ?2 AND t >= ?3 AND t <= ?4"
+                "SELECT peak FROM ({src}) WHERE slot = ?2 AND seg = ?5 AND t >= ?3 AND t <= ?4"
             ))
             .map_err(|e| e.to_string())?;
-        for (f, (s, cnt)) in flows.iter_mut().zip(sums) {
+        for ((f, (s, cnt)), seg) in flows.iter_mut().zip(sums).zip(segs) {
             f.avg_us = if cnt > 0 {
                 u32::try_from(s / cnt).unwrap_or(u32::MAX)
             } else {
@@ -591,7 +602,7 @@ impl Store {
             let edges = api::latency_bins(f.latency_us);
             f.histogram = vec![0; edges.len() + 1];
             let vals = values
-                .query_map(params![id, f.slot, first, to], |r| r.get::<_, u32>(0))
+                .query_map(params![id, f.slot, first, to, seg], |r| r.get::<_, u32>(0))
                 .map_err(|e| e.to_string())?;
             for v in vals {
                 let v = v.map_err(|e| e.to_string())?;
@@ -679,6 +690,65 @@ mod tests {
         let none = st.history("nobody", t0, t0 + 59, t0 + 59).unwrap();
         assert!(none.flows.is_empty());
         assert_eq!(none.t.len(), 60);
+    }
+
+    #[test]
+    fn a_slot_whose_flow_changed_in_the_range_reads_as_one_series_per_flow() {
+        let st = Store::memory().unwrap();
+        let t0 = 1_800_000_000;
+        let src = |s: &str, latency_us| FlowInfo {
+            sources: vec![s.into()],
+            ..flow(latency_us)
+        };
+        st.set_flow("desk", 1, &src("tascam", 1000), t0 - 10)
+            .unwrap();
+        st.set_flow("desk", 1, &src("master", 2000), t0 + 100)
+            .unwrap();
+        st.add(
+            "desk",
+            &[
+                s(1, t0 + 1, 1500, 4),
+                s(1, t0 + 99, 300, 0),
+                s(1, t0 + 100, 2500, 7),
+            ],
+        )
+        .unwrap();
+        let h = st.history("desk", t0, t0 + 299, t0 + 299).unwrap();
+        assert_eq!(h.flows.len(), 2);
+        let (old, new) = (&h.flows[0], &h.flows[1]);
+        // Each sample is under the flow the slot carried at its time.
+        assert_eq!(
+            (old.slot, old.sources.clone()),
+            (1, vec!["tascam".to_owned()])
+        );
+        assert_eq!(old.latency_us, 1000);
+        assert_eq!(
+            (old.max_us[1], old.max_us[99], old.max_us[100]),
+            (Some(1500), Some(300), None)
+        );
+        assert_eq!((old.peak_us, old.late_total, old.over), (1500, 4, 1));
+        assert_eq!(old.histogram.iter().sum::<u64>(), 2);
+        assert_eq!(
+            (new.slot, new.sources.clone()),
+            (1, vec!["master".to_owned()])
+        );
+        assert_eq!(new.latency_us, 2000);
+        assert_eq!((new.max_us[1], new.max_us[100]), (None, Some(2500)));
+        assert_eq!((new.peak_us, new.late_total, new.over), (2500, 7, 1));
+        assert_eq!(new.histogram.iter().sum::<u64>(), 1);
+    }
+
+    #[test]
+    fn samples_before_a_slots_first_description_take_that_description() {
+        let st = Store::memory().unwrap();
+        let t0 = 1_800_000_000;
+        st.add("desk", &[s(1, t0 + 1, 100, 0), s(1, t0 + 200, 100, 0)])
+            .unwrap();
+        st.set_flow("desk", 1, &flow(1000), t0 + 100).unwrap();
+        let h = st.history("desk", t0, t0 + 299, t0 + 299).unwrap();
+        assert_eq!(h.flows.len(), 1);
+        assert_eq!(h.flows[0].latency_us, 1000);
+        assert_eq!(h.flows[0].histogram.iter().sum::<u64>(), 2);
     }
 
     #[test]
@@ -798,10 +868,10 @@ mod tests {
             st.history("desk", t0, t0 + 50, t0 + 50).unwrap().flows[0].latency_us,
             1000
         );
-        assert_eq!(
-            st.history("desk", t0, t0 + 200, t0 + 200).unwrap().flows[0].latency_us,
-            250
-        );
+        // Over both: each description holds its own samples.
+        let both = st.history("desk", t0, t0 + 200, t0 + 200).unwrap();
+        let lat: Vec<u32> = both.flows.iter().map(|f| f.latency_us).collect();
+        assert_eq!(lat, vec![1000, 250]);
     }
 
     #[test]
