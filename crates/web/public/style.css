@@ -139,6 +139,7 @@ svg.spark .limit { stroke: var(--bad); stroke-width: 1; stroke-dasharray: 3 3; o
 .recv .spark { grid-area: spark; }
 .grow { flex: 1; }
 .chart { width: 100%; min-height: 320px; }
+.chart-late { margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--grid, #243049); }
 .hint { margin: 0.2rem 0 0.8rem; }
 @media (max-width: 900px) {
   .split { grid-template-columns: 1fr; }

@@ -407,7 +407,9 @@ impl Store {
             .map_err(|e| e.to_string())?;
         let mut late_q = db
             .prepare_cached(
-                "SELECT COALESCE(SUM(CASE WHEN t > ?2 THEN late ELSE 0 END), 0), COALESCE(SUM(late), 0)
+                "SELECT COALESCE(SUM(CASE WHEN t > ?2 THEN late ELSE 0 END), 0), COALESCE(SUM(late), 0),
+                        COUNT(DISTINCT CASE WHEN t > ?2 AND late > 0 THEN t END),
+                        COUNT(DISTINCT CASE WHEN t > ?4 - 300 AND late > 0 THEN t END)
                  FROM second WHERE device = ?1 AND t > ?3 AND t <= ?4",
             )
             .map_err(|e| e.to_string())?;
@@ -418,9 +420,9 @@ impl Store {
             )
             .map_err(|e| e.to_string())?;
         for (name, id, flows, last) in devices {
-            let (late_1h, late_24h): (i64, i64) = late_q
+            let (late_1h, late_24h, late_s_1h, late_s_5m): (i64, i64, i64, i64) = late_q
                 .query_row(params![id, hour, now - 24 * 3600, now], |r| {
-                    Ok((r.get(0)?, r.get(1)?))
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
                 })
                 .map_err(|e| e.to_string())?;
             let mut r = api::ReceiverSummary {
@@ -428,6 +430,8 @@ impl Store {
                 flows,
                 late_1h: u64::try_from(late_1h).unwrap_or(0),
                 late_24h: u64::try_from(late_24h).unwrap_or(0),
+                late_s_1h: u64::try_from(late_s_1h).unwrap_or(0),
+                late_s_5m: u64::try_from(late_s_5m).unwrap_or(0),
                 spark: vec![None; usize::try_from(api::SPARK_POINTS).unwrap_or(0)],
                 age_s: Some(now - last),
                 ..api::ReceiverSummary::default()
@@ -885,6 +889,8 @@ mod tests {
             &[
                 s(1, now - 3599, 400, 0),
                 s(2, now - 10, 200, 2),
+                s(1, now - 10, 300, 1), // the same second: counted once
+                s(1, now - 1000, 300, 4),
                 s(1, now - 5, 300, 0),
                 s(1, now - 5000, 100, 5), // over an hour ago: the day's count only
             ],
@@ -903,7 +909,9 @@ mod tests {
         assert_eq!(r.flows, 2);
         // The flow closest to its latency: 200 of 250 µs (80 %), not 400 of 1000.
         assert_eq!((r.peak_us, r.latency_us), (200, 250));
-        assert_eq!((r.late_1h, r.late_24h), (2, 7));
+        assert_eq!((r.late_1h, r.late_24h), (7, 12));
+        // Seconds with late packets: two in the hour, one in the last 5 min.
+        assert_eq!((r.late_s_1h, r.late_s_5m), (2, 1));
         assert_eq!(r.age_s, Some(5));
         assert_eq!(r.spark.len(), 60);
         assert_eq!(r.spark[0], Some(400)); // 400 of 1000 µs

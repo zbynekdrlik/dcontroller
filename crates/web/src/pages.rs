@@ -3,7 +3,7 @@
 //! zoom and is updated in place, never rebuilt by a poll.
 
 use super::*;
-use dcontroller_api::{FlowHistory, History, Overview, ReceiverSummary};
+use dcontroller_api::{History, Overview, ReceiverSummary};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
@@ -184,27 +184,39 @@ pub fn OverviewPage() -> impl IntoView {
             .and_then(|o| o.as_ref().ok())
             .map(|o| o.receivers.clone())
             .unwrap_or_default();
-        let late: u64 = recs.iter().map(|r| r.late_1h).sum();
-        let worst = recs
+        // Receivers by the seconds their late packets hit, not by packets.
+        let clean = recs.iter().filter(|r| r.late_s_1h == 0).count();
+        let now_late: Vec<&str> = recs
             .iter()
-            .filter(|r| r.latency_us > 0)
-            .max_by_key(|r| u64::from(r.peak_us) * 1000 / u64::from(r.latency_us));
-        let lat_sub = match worst {
-            Some(w) => format!(
-                "closest: {} at {} of {}",
-                w.device,
-                hist::ms(w.peak_us),
-                hist::ms(w.latency_us)
-            ),
-            None => format!("{} receivers recorded", recs.len()),
+            .filter(|r| r.late_s_5m > 0)
+            .map(|r| r.device.as_str())
+            .collect();
+        let hit: Vec<String> = recs
+            .iter()
+            .filter(|r| r.late_s_1h > 0)
+            .map(|r| format!("{} {} s", r.device, r.late_s_1h))
+            .collect();
+        let lat_sub = if !now_late.is_empty() {
+            format!("late now: {}", now_late.join(", "))
+        } else if hit.is_empty() {
+            "no late packets in the last hour".to_owned()
+        } else {
+            format!("late seconds: {}", hit.join(", "))
+        };
+        let lat_class = if !now_late.is_empty() {
+            "bad"
+        } else if hit.is_empty() {
+            "ok"
+        } else {
+            "warn"
         };
         view! {
             <section class="tiles">
                 {tile("tile-devices", "Devices", format!("{}", d.devices.len()),
                     if failing > 0 { format!("{read} read · {failing} not answering") } else { format!("{read} read, all answering") },
                     if failing > 0 { "warn" } else { "ok" }, "#devices")}
-                {tile("tile-latency", "Late packets · 1 h", format!("{late}"), lat_sub,
-                    if late > 0 { "bad" } else { "ok" }, "#latency")}
+                {tile("tile-latency", "Receivers clean · 1 h", format!("{clean} / {}", recs.len()), lat_sub,
+                    lat_class, "#latency")}
                 {tile("tile-subs", "Subscriptions", format!("{}", subs.len()),
                     if not_rx > 0 { format!("{not_rx} not receiving") } else { "all receiving".to_owned() },
                     if not_rx > 0 { "warn" } else { "ok" }, "#routing")}
@@ -235,7 +247,7 @@ pub fn OverviewPage() -> impl IntoView {
         view! {
             <div class="table-wrap">
             <table class="grid" data-testid="overview-receivers">
-                <thead><tr><th>"Receiver"</th><th>"Last hour"</th><th>"Peak"</th><th>"Latency"</th><th>"Late 1 h"</th><th>"Late 24 h"</th><th>"State"</th></tr></thead>
+                <thead><tr><th>"Receiver"</th><th>"Last hour"</th><th>"Peak"</th><th>"Latency"</th><th>"Late seconds 1 h"</th><th>"Late packets 1 h"</th><th>"Late packets 24 h"</th><th>"State"</th></tr></thead>
                 <tbody>
                     {list.into_iter().map(|r| {
                         let (class, text) = hist::health(&r);
@@ -255,6 +267,7 @@ pub fn OverviewPage() -> impl IntoView {
                                 <td>{spark(Some(&r), "spark")}</td>
                                 <td class="num">{hist::ms(r.peak_us)}</td>
                                 <td class="num">{if r.latency_us > 0 { hist::ms(r.latency_us) } else { "–".to_owned() }}</td>
+                                <td class="num">{r.late_s_1h}</td>
                                 <td class="num">{r.late_1h}</td>
                                 <td class="num">{r.late_24h}</td>
                                 <td><span class=format!("chip {class}")>{text}</span></td>
@@ -421,13 +434,26 @@ pub fn LatencyPage() -> impl IntoView {
             Some(Ok(hd)) => {
                 let step = if hd.step_s < 60 { format!("{} s", hd.step_s) } else if hd.step_s < 3600 { format!("{} min", hd.step_s / 60) } else { format!("{} h", hd.step_s / 3600) };
                 let tier = hd.tier_s;
+                let groups = hist::by_source(&hd);
+                let late: u64 = groups.iter().map(|s| s.late_total).sum();
+                let damaged: Vec<String> = groups
+                    .iter()
+                    .filter(|s| s.late_total > 0)
+                    .map(|s| format!("{} from {}", s.late_total, s.source))
+                    .collect();
+                let (vclass, verdict) = if late == 0 {
+                    ("chip ok", format!("No late packets: everything from {} source{} played on time.", groups.len(), if groups.len() == 1 { "" } else { "s" }))
+                } else {
+                    ("chip bad", format!("{late} late packets, not played: {}.", damaged.join(", ")))
+                };
                 view! {
-                    <p class="muted small" data-testid="lat-head">{format!("{name} · {} flows · one point per {step} (largest peak per point)", hd.flows.len())}</p>
+                    <p data-testid="lat-verdict"><span class=vclass>{verdict}</span></p>
+                    <p class="muted small" data-testid="lat-head">{format!("{name} · {} source devices · {} flows · one point per {step}", groups.len(), hd.flows.len())}</p>
                     <div class="table-wrap">
-                    <table class="grid" data-testid="lat-flows">
-                        <thead><tr><th></th><th>"Flow"</th><th>"From"</th><th>"Channels"</th><th>"Latency"</th><th>"Peak"</th><th>"Mean"</th><th>"Late"</th><th>"Past latency"</th><th>"Distribution"</th></tr></thead>
+                    <table class="grid" data-testid="lat-sources">
+                        <thead><tr><th></th><th>"From"</th><th>"Late (not played)"</th><th>"Worst peak"</th><th>"Latency"</th><th>"Past latency"</th><th>"Distribution"</th></tr></thead>
                         <tbody>
-                            {hd.flows.iter().enumerate().map(|(i, f)| flow_row(i, f, tier)).collect_view()}
+                            {groups.iter().enumerate().map(|(i, s)| source_row(i, s, tier)).collect_view()}
                         </tbody>
                     </table>
                     </div>
@@ -450,37 +476,45 @@ pub fn LatencyPage() -> impl IntoView {
     }
 }
 
-fn flow_row(i: usize, f: &FlowHistory, tier_s: i64) -> impl IntoView {
-    let top = f.histogram.iter().copied().max().unwrap_or(0).max(1);
-    let edges = dcontroller_api::latency_bins(f.latency_us);
-    let n_ok = edges
-        .iter()
-        .take_while(|&&e| e <= f.latency_us.max(1))
-        .count();
-    let chans = if f.channels.len() > 3 {
+fn source_row(i: usize, s: &hist::SourceHistory, tier_s: i64) -> impl IntoView {
+    let top = s.histogram.iter().copied().max().unwrap_or(0).max(1);
+    // The bins are eighths of each flow's latency, then 1.5×, 2× and over:
+    // the first eight are inside it.
+    let n_ok = 8;
+    let flows = if s.slots.len() == 1 {
+        "1 flow".to_owned()
+    } else {
+        format!("{} flows", s.slots.len())
+    };
+    let peak = if s.peak_latency_us > 0 {
         format!(
-            "{}, {} … ({} ch)",
-            f.channels[0],
-            f.channels[1],
-            f.channels.len()
+            "{} ({} %)",
+            hist::ms(s.peak_us),
+            u64::from(s.peak_us) * 100 / u64::from(s.peak_latency_us)
         )
     } else {
-        f.channels.join(", ")
+        hist::ms(s.peak_us)
+    };
+    let latency = if s.latencies.is_empty() {
+        "–".to_owned()
+    } else {
+        s.latencies
+            .iter()
+            .map(|&l| hist::ms(l))
+            .collect::<Vec<_>>()
+            .join(", ")
     };
     view! {
-        <tr data-testid="lat-flow">
+        <tr data-testid="lat-source" data-name=s.source.clone()>
             <td><span class="dot" style=format!("background:{}", hist::color(i))></span></td>
-            <td class="strong">{format!("Flow {}", f.slot)}</td>
-            <td>{if f.sources.is_empty() { "?".to_owned() } else { f.sources.join(", ") }}</td>
-            <td class="muted" title=f.channels.join(", ")>{chans}</td>
-            <td class="num" data-testid="lat-flow-latency">{if f.latency_us > 0 { hist::ms(f.latency_us) } else { "–".to_owned() }}</td>
-            <td class="num" data-testid="lat-flow-peak">{hist::ms(f.peak_us)}</td>
-            <td class="num">{hist::ms(f.avg_us)}</td>
-            <td class={if f.late_total > 0 { "num bad" } else { "num" }} data-testid="lat-flow-late">{f.late_total}</td>
-            <td class={if f.over > 0 { "num warn" } else { "num" }}>{hist::over_text(f.over, tier_s)}</td>
+            <td><span class="strong">{s.source.clone()}</span><br/><span class="muted small">{flows}</span></td>
+            <td class={if s.late_total > 0 { "num bad strong" } else { "num ok" }} data-testid="lat-source-late">{s.late_total}</td>
+            <td class="num" data-testid="lat-source-peak">{peak}</td>
+            <td class="num" data-testid="lat-source-latency">{latency}</td>
+            <td class="num">{hist::over_text(s.over, tier_s)}</td>
             <td>
                 <span class="hist" title="distribution of the peaks: eighths of the latency, then 1.5×, 2× and over">
-                    {f.histogram.iter().enumerate().map(|(k, &c)| {
+                    {s.histogram.iter().enumerate().map(|(k, &c)| {
                         let pct = if c == 0 { 0.0 } else { (c as f64 / top as f64 * 100.0).max(6.0) };
                         let class = if k >= n_ok { "hb late" } else { "hb" };
                         view! { <span class=class style=format!("height:{pct:.0}%") title=c.to_string()></span> }
