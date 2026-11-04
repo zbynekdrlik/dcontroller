@@ -105,7 +105,7 @@
       scales: { x: { time: true }, y: { auto: true, range: (u, lo, hi) => [0, Math.max(hi * 1.1, d.floor || 0.1)] } },
       axes: [
         axis,
-        { ...axis, label: d.unit === "%" ? "worst peak, % of latency" : "worst peak, ms", labelSize: 14, size: 52,
+        { ...axis, label: d.unit === "%" ? "typical peak, % of latency" : "typical peak, ms", labelSize: 14, size: 52,
           values: (u, v) => v.map((x) => (d.unit === "%" ? x.toFixed(0) : x.toFixed(2))) },
       ],
       series,

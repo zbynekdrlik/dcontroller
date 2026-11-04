@@ -32,7 +32,8 @@ test.describe("latency history", () => {
     await expect(page.getByTestId("lat-source")).toHaveCount(1);
     await expect(src).toHaveAttribute("data-name", DEVICE);
     await expect(src).toContainText("1 flow");
-    await expect(src).toContainText("Stage L");
+    // No channel lists: a device may carry hundreds.
+    await expect(src).not.toContainText("Stage L");
     await expect(src.getByTestId("lat-source-latency")).toHaveText("10.00 ms");
     await expect(src.locator(".hist .hb")).toHaveCount(11);
     await expect(page.getByTestId("lat-live")).toBeVisible();

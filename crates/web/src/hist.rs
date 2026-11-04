@@ -117,6 +117,11 @@ pub struct SourceHistory {
     pub share: Vec<Option<f64>>,
     /// Per bucket: the largest peak, µs.
     pub max_us: Vec<Option<u32>>,
+    /// Per bucket: the typical second, the mean of the per-second peaks,
+    /// as a share of its own flow's latency, % (the flow furthest along).
+    pub typical: Vec<Option<f64>>,
+    /// Per bucket: the largest mean of the per-second peaks, µs.
+    pub typical_us: Vec<Option<u32>>,
     /// Per bucket: the late packets of all its flows.
     pub late: Vec<u64>,
     pub late_total: u64,
@@ -144,6 +149,8 @@ pub fn by_source(h: &History) -> Vec<SourceHistory> {
                     source: name,
                     share: vec![None; n],
                     max_us: vec![None; n],
+                    typical: vec![None; n],
+                    typical_us: vec![None; n],
                     late: vec![0; n],
                     ..SourceHistory::default()
                 });
@@ -169,6 +176,13 @@ pub fn by_source(h: &History) -> Vec<SourceHistory> {
                 if f.latency_us > 0 {
                     let p = f64::from(us) * 100.0 / f64::from(f.latency_us);
                     s.share[k] = Some(s.share[k].map_or(p, |m| m.max(p)));
+                }
+            }
+            if let Some(us) = f.mean_us.get(k).copied().flatten() {
+                s.typical_us[k] = Some(s.typical_us[k].map_or(us, |m| m.max(us)));
+                if f.latency_us > 0 {
+                    let p = f64::from(us) * 100.0 / f64::from(f.latency_us);
+                    s.typical[k] = Some(s.typical[k].map_or(p, |m| m.max(p)));
                 }
             }
             s.late[k] += f.late.get(k).copied().unwrap_or(0);
@@ -228,7 +242,9 @@ pub enum Scale {
 struct ChartSource {
     label: String,
     color: &'static str,
-    /// The margin: the worst peak per bucket in the chart's unit.
+    /// The margin: the typical second per bucket (the mean of its
+    /// per-second peaks) in the chart's unit. The worst second of an hour
+    /// would paint the whole hour; it stays in the table.
     values: Vec<Option<f64>>,
     /// The damage: late packets per bucket.
     late: Vec<u64>,
@@ -269,11 +285,11 @@ pub fn chart_json(h: &History, height: u32, scale: Scale) -> String {
             color: color(i),
             values: match scale {
                 Scale::Ms => s
-                    .max_us
+                    .typical_us
                     .iter()
                     .map(|v| v.map(|us| f64::from(us) / 1000.0))
                     .collect(),
-                Scale::Share => s.share.clone(),
+                Scale::Share => s.typical.clone(),
             },
             late: s.late.clone(),
         })
@@ -368,6 +384,7 @@ mod tests {
             peak_us: max.iter().flatten().copied().max().unwrap_or(0),
             late_total: late.iter().sum(),
             histogram: vec![1; 11],
+            mean_us: max.iter().map(|v| v.map(|us| us / 2)).collect(),
             max_us: max,
             late,
             ..FlowHistory::default()
@@ -416,6 +433,9 @@ mod tests {
         // Per bucket, the worst share of its own flow's latency.
         assert_eq!(m.share, vec![Some(80.0), Some(24.0), Some(40.0)]);
         assert_eq!(m.max_us, vec![Some(200), Some(60), Some(400)]);
+        // The typical second: the mean of the peaks, here half of each.
+        assert_eq!(m.typical, vec![Some(40.0), Some(12.0), Some(20.0)]);
+        assert_eq!(m.typical_us, vec![Some(100), Some(30), Some(200)]);
         assert_eq!(m.late, vec![0, 4, 3]);
         assert_eq!(m.late_total, 7);
         // The worst peak is the one closest to its latency (200 of 250), not the largest.
@@ -442,7 +462,8 @@ mod tests {
         assert_eq!(v["sources"][0]["color"], PALETTE[0]);
         assert_eq!(
             v["sources"][0]["values"],
-            serde_json::json!([0.1, 0.06, 0.3])
+            // The line is the typical second (the mean), not the worst one.
+            serde_json::json!([0.05, 0.03, 0.15])
         );
         assert_eq!(v["sources"][0]["late"], serde_json::json!([0, 1, 2]));
         assert_eq!(v["sources"][1]["label"], "tascam");
@@ -457,11 +478,11 @@ mod tests {
         assert_eq!(p["unit"], "%");
         assert_eq!(
             p["sources"][0]["values"],
-            serde_json::json!([10.0, 6.0, 30.0])
+            serde_json::json!([5.0, 3.0, 15.0])
         );
         assert_eq!(
             p["sources"][1]["values"],
-            serde_json::json!([null, null, 4.0])
+            serde_json::json!([null, null, 2.0])
         );
         assert_eq!(
             p["thresholds"],

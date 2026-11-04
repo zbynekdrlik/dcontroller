@@ -438,7 +438,7 @@ pub fn LatencyPage() -> impl IntoView {
                     <p class="muted small" data-testid="lat-head">{format!("{name} · {} source devices · {} flows · one point per {step}", groups.len(), hd.flows.len())}</p>
                     <div class="table-wrap">
                     <table class="grid" data-testid="lat-sources">
-                        <thead><tr><th></th><th>"From"</th><th>"Late (not played)"</th><th>"Worst peak"</th><th>"Latency"</th><th>"Past latency"</th><th>"Distribution"</th><th>"Channels"</th></tr></thead>
+                        <thead><tr><th></th><th>"From"</th><th>"Late (not played)"</th><th>"Worst peak"</th><th>"Latency"</th><th>"Past latency"</th><th>"Distribution"</th></tr></thead>
                         <tbody>
                             {groups.iter().enumerate().map(|(i, s)| source_row(i, s, tier)).collect_view()}
                         </tbody>
@@ -468,16 +468,6 @@ fn source_row(i: usize, s: &hist::SourceHistory, tier_s: i64) -> impl IntoView {
     // The bins are eighths of each flow's latency, then 1.5×, 2× and over:
     // the first eight are inside it.
     let n_ok = 8;
-    let chans = if s.channels.len() > 3 {
-        format!(
-            "{}, {} … ({} ch)",
-            s.channels[0],
-            s.channels[1],
-            s.channels.len()
-        )
-    } else {
-        s.channels.join(", ")
-    };
     let flows = if s.slots.len() == 1 {
         "1 flow".to_owned()
     } else {
@@ -518,7 +508,6 @@ fn source_row(i: usize, s: &hist::SourceHistory, tier_s: i64) -> impl IntoView {
                     }).collect_view()}
                 </span>
             </td>
-            <td class="muted" title=s.channels.join(", ")>{chans}</td>
         </tr>
     }
 }
