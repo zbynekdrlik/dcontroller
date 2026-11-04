@@ -517,32 +517,42 @@ impl Store {
         else {
             return Ok(out);
         };
-        let src = tier.source();
+        // Each stored value with the flow its slot carried at its time (the
+        // `since` of that description; before the first one, the first one):
+        // a slot whose flow changed in the range reads as one series per flow.
+        let src = format!(
+            "SELECT s.*, COALESCE(
+                 (SELECT MAX(since) FROM flow WHERE device = ?1 AND slot = s.slot AND since <= s.t),
+                 (SELECT MIN(since) FROM flow WHERE device = ?1 AND slot = s.slot), 0) AS seg
+             FROM ({}) s",
+            tier.source()
+        );
         let mut q = db
             .prepare(&format!(
-                "SELECT slot, t - (t - ?2) % ?4 AS b, MAX(peak), SUM(sum), SUM(n), SUM(late)
+                "SELECT slot, seg, t - (t - ?2) % ?4 AS b, MAX(peak), SUM(sum), SUM(n), SUM(late)
                  FROM ({src}) WHERE t >= ?2 AND t <= ?3
-                 GROUP BY slot, b ORDER BY slot, b"
+                 GROUP BY slot, seg, b ORDER BY slot, seg, b"
             ))
             .map_err(|e| e.to_string())?;
         let rows = q
             .query_map(params![id, first, to, step], |r| {
                 Ok((
-                    r.get::<_, u16>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, u32>(2)?,
-                    r.get::<_, i64>(3)?,
+                    (r.get::<_, u16>(0)?, r.get::<_, i64>(1)?),
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, u32>(3)?,
                     r.get::<_, i64>(4)?,
                     r.get::<_, i64>(5)?,
+                    r.get::<_, i64>(6)?,
                 ))
             })
             .map_err(|e| e.to_string())?;
         let mut flows: Vec<api::FlowHistory> = Vec::new();
         let mut sums: Vec<(i64, i64)> = Vec::new();
+        let mut segs: Vec<i64> = Vec::new();
         for row in rows {
-            let (slot, b, peak, s, cnt, late) = row.map_err(|e| e.to_string())?;
-            if flows.last().is_none_or(|f| f.slot != slot) {
-                let info = Self::flow_at(&db, id, slot, to)
+            let ((slot, seg), b, peak, s, cnt, late) = row.map_err(|e| e.to_string())?;
+            if flows.last().is_none_or(|f| f.slot != slot) || segs.last() != Some(&seg) {
+                let info = Self::flow_at(&db, id, slot, seg)
                     .map_err(|e| e.to_string())?
                     .unwrap_or_default();
                 flows.push(api::FlowHistory {
@@ -557,6 +567,7 @@ impl Store {
                     ..api::FlowHistory::default()
                 });
                 sums.push((0, 0));
+                segs.push(seg);
             }
             let (Some(f), Some(acc)) = (flows.last_mut(), sums.last_mut()) else {
                 continue;
@@ -579,10 +590,10 @@ impl Store {
         // The distribution and the count past the latency, over the stored values.
         let mut values = db
             .prepare(&format!(
-                "SELECT peak FROM ({src}) WHERE slot = ?2 AND t >= ?3 AND t <= ?4"
+                "SELECT peak FROM ({src}) WHERE slot = ?2 AND seg = ?5 AND t >= ?3 AND t <= ?4"
             ))
             .map_err(|e| e.to_string())?;
-        for (f, (s, cnt)) in flows.iter_mut().zip(sums) {
+        for ((f, (s, cnt)), seg) in flows.iter_mut().zip(sums).zip(segs) {
             f.avg_us = if cnt > 0 {
                 u32::try_from(s / cnt).unwrap_or(u32::MAX)
             } else {
@@ -591,7 +602,7 @@ impl Store {
             let edges = api::latency_bins(f.latency_us);
             f.histogram = vec![0; edges.len() + 1];
             let vals = values
-                .query_map(params![id, f.slot, first, to], |r| r.get::<_, u32>(0))
+                .query_map(params![id, f.slot, first, to, seg], |r| r.get::<_, u32>(0))
                 .map_err(|e| e.to_string())?;
             for v in vals {
                 let v = v.map_err(|e| e.to_string())?;

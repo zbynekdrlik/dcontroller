@@ -347,8 +347,9 @@ pub const SPARK_POINTS: i64 = 60;
 /// The most buckets a history answer has.
 pub const HISTORY_POINTS: i64 = 1500;
 
-/// One RX flow's history: its description as last recorded and a value
-/// per bucket of [`History::t`] (`None`: nothing recorded then).
+/// One RX flow's history: its description and a value per bucket of
+/// [`History::t`] (`None`: nothing recorded then). A slot whose flow changed
+/// inside the range comes as one entry per flow, each with its own samples.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlowHistory {
     pub slot: u16,
