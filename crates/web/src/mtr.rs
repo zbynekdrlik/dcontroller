@@ -38,6 +38,28 @@ pub fn text(l: &ChannelLevel) -> String {
     }
 }
 
+/// How loud a level is, for picking the loudest: clipping beats any
+/// level, a level beats silence, muted and unsent.
+fn loudness(l: &ChannelLevel) -> f32 {
+    match (l.clip, l.muted, l.dbfs) {
+        (true, _, _) => f32::INFINITY,
+        (_, false, Some(d)) => d,
+        _ => f32::NEG_INFINITY,
+    }
+}
+
+/// The level a matrix header shows: channel `channel` (by number), or for
+/// a folded device (`None`) its loudest channel. `None` when there is no
+/// such channel.
+pub fn pick(levels: &[ChannelLevel], channel: Option<u16>) -> Option<&ChannelLevel> {
+    match channel {
+        Some(n) => levels.iter().find(|l| l.channel == n),
+        None => levels
+            .iter()
+            .max_by(|a, b| loudness(a).total_cmp(&loudness(b))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -50,6 +72,33 @@ mod tests {
             clip,
             muted,
         }
+    }
+
+    #[test]
+    fn a_folded_device_shows_its_loudest_channel_and_an_open_one_each() {
+        let ch = |n: u16, dbfs: Option<f32>, clip: bool, muted: bool| ChannelLevel {
+            channel: n,
+            label: format!("Ch {n}"),
+            dbfs,
+            clip,
+            muted,
+        };
+        let l = vec![
+            ch(1, Some(-40.0), false, false),
+            ch(2, Some(-12.0), false, false),
+            ch(3, Some(0.0), false, true),
+            ch(4, None, false, false),
+        ];
+        assert_eq!(pick(&l, None).map(|x| x.channel), Some(2));
+        assert_eq!(pick(&l, Some(1)).map(|x| x.channel), Some(1));
+        assert_eq!(pick(&l, Some(9)), None);
+        assert_eq!(pick(&[], None), None);
+        let mut c = l.clone();
+        c.push(ch(5, Some(0.0), true, false));
+        assert_eq!(pick(&c, None).map(|x| x.channel), Some(5));
+        // All silent or muted: the folded bar still has a channel, at no level.
+        let quiet = vec![ch(1, None, false, true), ch(2, None, false, false)];
+        assert_eq!(fill(pick(&quiet, None).unwrap()), 0.0);
     }
 
     #[test]

@@ -206,6 +206,35 @@ async fn meter_report(
         })
 }
 
+/// `?devices=a,b,…` of `GET /api/levels`.
+#[derive(Debug, Deserialize)]
+pub struct LevelsQuery {
+    #[serde(default)]
+    pub devices: String,
+}
+
+/// The meter reports of several devices in one answer (the routing
+/// matrix's bars): each starts or keeps its device's watch, as
+/// `/api/meters/{device}` does.
+async fn levels_report(
+    State(s): State<Shared>,
+    axum::extract::Query(q): axum::extract::Query<LevelsQuery>,
+) -> Result<axum::Json<Vec<dcontroller_api::MeterReport>>, StatusCode> {
+    let names = meters::names(&q.devices);
+    tokio::task::spawn_blocking(move || {
+        names
+            .iter()
+            .map(|n| s.meters.report(&s.dante, n))
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map(axum::Json)
+    .map_err(|e| {
+        tracing::error!(error = %e, "levels: task failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })
+}
+
 async fn rename(
     State(s): State<Shared>,
     headers: axum::http::HeaderMap,
@@ -269,6 +298,7 @@ pub fn app(web_dir: &Path, shared: Shared) -> Router {
         .route("/api/history/{device}", get(history_report))
         .route("/api/overview", get(overview))
         .route("/api/meters/{device}", get(meter_report))
+        .route("/api/levels", get(levels_report))
         .route("/api", any(api_not_found))
         .route("/api/", any(api_not_found))
         .route("/api/{*rest}", any(api_not_found))

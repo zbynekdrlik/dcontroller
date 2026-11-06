@@ -4,7 +4,7 @@
 //! user confirms it, and the server reads it back and logs it. The version label is
 //! build-injected from the same `buildver` as the server's `/api/version`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
 use dcontroller_api::{
@@ -146,6 +146,44 @@ fn App() -> impl IntoView {
         });
     };
     let _ = set_interval_with_handle(poll_meters, MTR_POLL);
+    // The matrix's devices' levels, while the routing view is open.
+    let lv = Levels(RwSignal::new(HashMap::new()));
+    provide_context(lv);
+    let lv_busy = RwSignal::new(false);
+    let poll_levels = move || {
+        if view_now.get_untracked() != View::Routing || lv_busy.get_untracked() {
+            return;
+        }
+        let names: Vec<String> = devices.with_untracked(|d| match d {
+            Some(Ok(d)) => d
+                .devices
+                .iter()
+                .filter(|dev| {
+                    dev.channels
+                        .as_ref()
+                        .is_some_and(|c| !c.tx.is_empty() || !c.rx.is_empty())
+                })
+                .map(|dev| dev.name.clone())
+                .collect(),
+            _ => Vec::new(),
+        });
+        if names.is_empty() {
+            return;
+        }
+        lv_busy.set(true);
+        spawn_local(async move {
+            match fetch_levels(&names).await {
+                Ok(r) => lv.0.set(
+                    r.into_iter()
+                        .map(|m| (m.device.to_ascii_lowercase(), m))
+                        .collect(),
+                ),
+                Err(e) => leptos::logging::log!("levels: {e}"),
+            }
+            lv_busy.set(false);
+        });
+    };
+    let _ = set_interval_with_handle(poll_levels, MTR_POLL);
     Effect::new(move |_| {
         let _ = (mtr.device.get(), view_now.get());
         poll_meters();
@@ -357,6 +395,65 @@ async fn fetch_meters(device: &str) -> Result<MeterReport, String> {
         return Err(format!("server answered {}", res.status()));
     }
     res.json::<MeterReport>().await.map_err(|e| e.to_string())
+}
+
+/// The routing matrix's live levels, by device name (lower case).
+#[derive(Clone, Copy)]
+struct Levels(RwSignal<HashMap<String, MeterReport>>);
+
+async fn fetch_levels(names: &[String]) -> Result<Vec<MeterReport>, String> {
+    let url = format!(
+        "/api/levels?devices={}",
+        String::from(js_sys::encode_uri_component(&names.join(",")))
+    );
+    let res = gloo_net::http::Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.ok() {
+        return Err(format!("server answered {}", res.status()));
+    }
+    res.json::<Vec<MeterReport>>()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// A live level bar in a matrix header: `device`'s TX (`tx`) or RX
+/// channel `channel`, or for a folded device its loudest. Vertical in a
+/// TX channel's column, horizontal elsewhere.
+fn level_bar(device: &str, tx: bool, channel: Option<u16>, vertical: bool) -> impl IntoView {
+    let Levels(lv) = expect_context::<Levels>();
+    let key = device.to_ascii_lowercase();
+    let now = move || {
+        lv.with(|m| {
+            m.get(&key).and_then(|r| {
+                let levels = if tx { &r.tx } else { &r.rx };
+                mtr::pick(levels, channel).cloned()
+            })
+        })
+    };
+    let now2 = now.clone();
+    let now3 = now.clone();
+    let style = move || {
+        let f = now().map_or(0.0, |l| mtr::fill(&l));
+        if vertical {
+            format!("height: {f:.1}%")
+        } else {
+            format!("width: {f:.1}%")
+        }
+    };
+    let title = move || {
+        now2().map_or_else(
+            || "no level".to_owned(),
+            |l| format!("{} {}", l.label, mtr::text(&l)),
+        )
+    };
+    view! {
+        <span class=if vertical { "lvl v" } else { "lvl" } data-testid="lvl"
+            data-dir=if tx { "tx" } else { "rx" } title=title>
+            <span class=move || now3().map_or("meter none", |l| mtr::class(&l)) style=style></span>
+        </span>
+    }
 }
 
 /// The meters view: pick a device, see its TX and RX channels' levels.
@@ -923,11 +1020,13 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
             let name = t.device.clone();
             let label = t.device.clone();
             let name_attr = t.device.clone();
+            let bar = (!open).then(|| level_bar(&t.device, true, None, false));
             view! {
                 <th class=if open { "txdev open" } else { "txdev" } colspan=span
                     data-testid="tx-device" data-name=name_attr
                     on:click=move |_| flip(tx_open, &name)>
                     <span>{label}</span>
+                    {bar}
                 </th>
             }
         })
@@ -944,6 +1043,7 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
                         title="Rename this TX channel"
                         on:click=move |_| ctl.renaming.set(Some(ask.clone()))>
                         <span>{t.channels[c].clone()}</span>
+                        {level_bar(&t.device, true, Some(t.numbers[c]), true)}
                     </th>
                 }
                 .into_any()
@@ -957,6 +1057,7 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
         let name = r.device.clone();
         let label = r.device.clone();
         let name_attr = r.device.clone();
+        let bar = (!open).then(|| level_bar(&r.device, false, None, false));
         let cells = cols
             .iter()
             .map(|&(i, c)| {
@@ -978,7 +1079,10 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
         rows.push(view! {
             <tr class="rxdev">
                 <th class=if open { "rxname open" } else { "rxname" } data-testid="rx-device" data-name=name_attr
-                    on:click=move |_| flip(rx_open, &name)>{label}</th>
+                    on:click=move |_| flip(rx_open, &name)>
+                    <span>{label}</span>
+                    {bar}
+                </th>
                 {cells}
             </tr>
         }.into_any());
@@ -1020,7 +1124,10 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
                                 on:click={
                                     let ask = RenameAsk::rx(&r.device, rc.channel, &rc.label);
                                     move |_| ctl.renaming.set(Some(ask.clone()))
-                                }>{rc.label.clone()}</th>
+                                }>
+                                <span>{rc.label.clone()}</span>
+                                {level_bar(&r.device, false, Some(rc.channel), false)}
+                            </th>
                             {cells}
                         </tr>
                     }
