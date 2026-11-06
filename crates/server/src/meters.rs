@@ -42,6 +42,20 @@ pub fn free_port(used: impl IntoIterator<Item = u16>) -> Option<u16> {
     PORTS.clone().find(|p| !used.contains(p))
 }
 
+/// The device names of a `/api/levels?devices=` list: comma-separated,
+/// blanks and repeats (case aside) dropped, at most as many as [`PORTS`]
+/// can watch at once.
+pub fn names(list: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for n in list.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+        if !out.iter().any(|o| o.eq_ignore_ascii_case(n)) {
+            out.push(n.to_owned());
+        }
+    }
+    out.truncate(PORTS.clone().count());
+    out
+}
+
 /// The levels of `raw` (one byte per channel) with the channels' labels by
 /// number (from 1); a channel without a label shows its number.
 pub fn levels(raw: &[u8], labels: &[(u16, String)]) -> Vec<api::ChannelLevel> {
@@ -274,6 +288,16 @@ impl Watches {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_levels_list_drops_blanks_and_repeats_and_keeps_to_the_ports() {
+        assert_eq!(names(" a, b,,A ,c"), vec!["a", "b", "c"]);
+        assert!(names("").is_empty());
+        let many: Vec<String> = (0..40).map(|i| format!("d{i}")).collect();
+        let got = names(&many.join(","));
+        assert_eq!(got.len(), PORTS.clone().count());
+        assert_eq!(got[0], "d0");
+    }
 
     #[test]
     fn levels_read_the_meter_scale_with_the_channel_labels() {

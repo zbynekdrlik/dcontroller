@@ -48,6 +48,43 @@ test.describe("routing matrix", () => {
     expect(console_msgs).toEqual([]);
   });
 
+  test("headers carry live levels: the loudest channel folded, each channel open", async ({ page }) => {
+    // dstack's device answers a meter subscription with silence (-126 dBFS).
+    await page.goto("/#routing");
+    const matrix = page.getByTestId("matrix");
+    const txDev = matrix.locator(`[data-testid="tx-device"][data-name="${DEVICE}"]`);
+    const rxDev = matrix.locator(`[data-testid="rx-device"][data-name="${DEVICE}"]`);
+    const txBar = txDev.getByTestId("lvl");
+    const rxBar = rxDev.getByTestId("lvl");
+    // Folded: one bar each, naming the loudest channel and its level.
+    await expect(txBar).toHaveAttribute("title", /^(Mix L|Mix R|Talkback|Click) < -60 dB$/, { timeout: 30_000 });
+    await expect(rxBar).toHaveAttribute("title", /^(Stage L|Stage R|Spare 3|Spare 4) < -60 dB$/);
+    await expect(txBar).toHaveAttribute("data-dir", "tx");
+    await expect(rxBar).toHaveAttribute("data-dir", "rx");
+    // Silence fills nothing.
+    await expect(txBar.locator("span")).toHaveAttribute("style", "width: 0.0%");
+
+    // The page reads what the server has for the device.
+    const lv = await page.evaluate((d) => fetch(`/api/levels?devices=${d}`).then((r) => r.json()), DEVICE);
+    expect(lv.map((m: { device: string }) => m.device)).toEqual([DEVICE]);
+    expect(lv[0].tx.map((c: { label: string }) => c.label)).toEqual(["Mix L", "Mix R", "Talkback", "Click"]);
+
+    // Unfolded: the device's bar moves to a bar per channel.
+    await txDev.click();
+    await rxDev.click();
+    await expect(txBar).toHaveCount(0);
+    await expect(rxBar).toHaveCount(0);
+    const mixL = matrix.locator(`[data-testid="tx-channel-head"][data-name="${DEVICE}/Mix L"]`).getByTestId("lvl");
+    await expect(mixL).toHaveAttribute("title", "Mix L < -60 dB");
+    await expect(mixL).toHaveClass(/\bv\b/);
+    await expect(mixL.locator("span")).toHaveAttribute("style", "height: 0.0%");
+    await expect(matrix.locator('[data-testid="tx-channel-head"] [data-testid="lvl"]')).toHaveCount(4);
+    const stageR = matrix.locator(`[data-testid="rx-channel-head"][data-name="${DEVICE}/Stage R"]`).getByTestId("lvl");
+    await expect(stageR).toHaveAttribute("title", "Stage R < -60 dB");
+    await expect(matrix.locator('[data-testid="rx-channel-head"] [data-testid="lvl"]')).toHaveCount(4);
+    expect(console_msgs).toEqual([]);
+  });
+
   test("tabs switch between routing and devices and keep the view in the URL", async ({ page }) => {
     await page.goto("/#routing");
     await page.getByTestId("tab-devices").click();

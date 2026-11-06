@@ -145,6 +145,21 @@ async fn api_devices_without_a_dante_interface_is_an_empty_off_list() {
     assert_eq!(d.interface, None);
 }
 
+#[tokio::test]
+async fn api_levels_answers_one_report_per_listed_device() {
+    let dir = web();
+    let (status, body, _) = get(dir.path(), "/api/levels?devices=a,b,,A").await;
+    assert_eq!(status, StatusCode::OK);
+    let r: Vec<dcontroller_api::MeterReport> = serde_json::from_str(&body).unwrap();
+    let names: Vec<&str> = r.iter().map(|m| m.device.as_str()).collect();
+    assert_eq!(names, vec!["a", "b"]);
+    // Discovery is off: nothing is listed, so each says why it has no levels.
+    assert!(r.iter().all(|m| m.tx.is_empty() && m.error.is_some()));
+    let (status, body, _) = get(dir.path(), "/api/levels").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "[]");
+}
+
 async fn post(dir: &std::path::Path, uri: &str, ctype: &str, body: &str) -> (StatusCode, String) {
     let res = app(dir, off())
         .oneshot(
