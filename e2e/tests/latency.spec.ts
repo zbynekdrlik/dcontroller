@@ -16,6 +16,44 @@ test.describe("latency history", () => {
     page.on("pageerror", (e) => console_msgs.push(`pageerror: ${e.message}`));
   });
 
+  test.describe("seen from another time zone", () => {
+    test.use({ timezoneId: "America/New_York" });
+
+    test("the chart reads Slovak time in Slovak format", async ({ page }) => {
+      await page.goto("/#latency");
+      // 15 January 2026, 12:00 UTC: 13:00 in Slovakia.
+      const t0 = 1768478400;
+      const got = await page.evaluate((t0) => {
+        const el = document.createElement("div");
+        el.id = "tz-test";
+        el.style.width = "800px";
+        document.body.appendChild(el);
+        (window as any).dcChart.latency(el, JSON.stringify({
+          t: [t0, t0 + 3600],
+          unit: "%",
+          floor: 105,
+          height: 280,
+          thresholds: [],
+          sources: [{ label: "src", color: "#60a5fa", values: [20, 30], late: [0, 0] }],
+        }));
+        const u = (el as any)._dc;
+        u.setCursor({ left: u.valToPos(t0, "x"), top: 10 });
+        const axis = u.axes[0].values;
+        return {
+          legend: el.querySelector(".u-legend .u-series .u-value")!.textContent,
+          hours: axis(u, [t0], 0, 0, 3600),
+          seconds: axis(u, [t0 + 5], 0, 0, 5),
+          days: axis(u, [t0], 0, 0, 86400),
+        };
+      }, t0);
+      expect(got.legend).toBe("15. 1. 2026 13:00:00");
+      expect(got.hours).toEqual(["13:00"]);
+      expect(got.seconds).toEqual(["13:00:05"]);
+      expect(got.days).toEqual(["15. 1."]);
+      expect(console_msgs).toEqual([]);
+    });
+  });
+
   test("late packets are marks on the one chart, per the sources showing", async ({ page }) => {
     await page.goto("/#latency");
     // The recorded device has none to rely on: the chart gets a known history.
