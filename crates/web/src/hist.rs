@@ -392,6 +392,44 @@ mod tests {
     }
 
     #[test]
+    fn a_source_device_has_one_colour_on_every_receivers_chart() {
+        let order: Vec<String> = ["desk", "band", "aux"].map(String::from).to_vec();
+        let chart = |sources: &[&str]| {
+            let h = History {
+                t: vec![10],
+                flows: sources
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| from(s, i as u16 + 1, 1000, vec![Some(1)], vec![0]))
+                    .collect(),
+                source_order: order.clone(),
+                ..History::default()
+            };
+            let v: serde_json::Value =
+                serde_json::from_str(&chart_json(&h, 300, Scale::Ms)).unwrap();
+            v["sources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| {
+                    (
+                        s["label"].as_str().unwrap().to_owned(),
+                        s["color"].as_str().unwrap().to_owned(),
+                    )
+                })
+                .collect::<std::collections::HashMap<_, _>>()
+        };
+        let both = chart(&["band", "desk"]);
+        let alone = chart(&["band"]);
+        // Sorted first here, so its place in this chart's own list moves "band".
+        let other = chart(&["aux", "band"]);
+        assert_eq!(both["band"], alone["band"]);
+        assert_eq!(both["band"], other["band"]);
+        assert_ne!(both["band"], both["desk"]);
+        assert_ne!(other["band"], other["aux"]);
+    }
+
+    #[test]
     fn flows_from_one_source_device_read_as_one_device_to_device() {
         let h = History {
             t: vec![10, 20, 30],

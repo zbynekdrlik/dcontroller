@@ -307,6 +307,9 @@ pub struct History {
     /// Each bucket's start, unix seconds; the flows' series align with it.
     pub t: Vec<i64>,
     pub flows: Vec<FlowHistory>,
+    /// Every source device recorded so far, on any receiver, first seen
+    /// first: a device's place here gives it its colour on every chart.
+    pub source_order: Vec<String>,
     /// Why there is nothing, when there is nothing.
     pub error: Option<String>,
 }

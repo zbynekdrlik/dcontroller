@@ -644,6 +644,30 @@ mod tests {
     }
 
     #[test]
+    fn source_devices_keep_their_first_seen_order_on_every_receiver() {
+        let st = Store::memory().unwrap();
+        let t0 = 1_000_000;
+        let src = |s: &str, latency_us| FlowInfo {
+            sources: vec![s.into()],
+            ..flow(latency_us)
+        };
+        st.set_flow("desk", 1, &src("tascam", 1000), t0).unwrap();
+        st.set_flow("desk", 2, &src("master", 1000), t0 + 10)
+            .unwrap();
+        st.set_flow("rack", 1, &src("MASTER", 1000), t0 + 20)
+            .unwrap();
+        st.set_flow("rack", 2, &src("band", 1000), t0 + 30).unwrap();
+        let order = |device: &str| {
+            st.history(device, t0, t0 + 60, t0 + 60)
+                .unwrap()
+                .source_order
+        };
+        assert_eq!(order("desk"), vec!["tascam", "master", "band"]);
+        assert_eq!(order("rack"), order("desk"));
+        assert_eq!(order("nobody"), order("desk"));
+    }
+
+    #[test]
     fn plan_picks_the_tier_by_span_and_keeps_the_buckets_few() {
         assert_eq!(plan(300, 0), (Tier::Second, 1));
         assert_eq!(plan(3600, 0), (Tier::Second, 3));
