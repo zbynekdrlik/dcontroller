@@ -45,6 +45,21 @@ fn now_s() -> i64 {
     (js_sys::Date::now() / 1000.0) as i64
 }
 
+/// A time in Slovak format and Slovak time, wherever the browser is.
+pub fn time_text(unix: i64) -> String {
+    let opts = js_sys::Object::new();
+    js_sys::Reflect::set(
+        &opts,
+        &JsValue::from_str("timeZone"),
+        &JsValue::from_str("Europe/Bratislava"),
+    )
+    .expect("set on a new object");
+    String::from(
+        js_sys::Date::new(&JsValue::from_f64(unix as f64 * 1000.0))
+            .to_locale_string("sk-SK", &opts),
+    )
+}
+
 async fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, String> {
     let res = gloo_net::http::Request::get(url)
         .send()
@@ -391,10 +406,7 @@ pub fn LatencyPage() -> impl IntoView {
     let head = move || {
         let zoom = h.zoom.get().map(|(a, b)| {
             let t = |s: i64| {
-                String::from(
-                    js_sys::Date::new(&JsValue::from_f64(s as f64 * 1000.0))
-                        .to_locale_string("sk-SK", &JsValue::UNDEFINED),
-                )
+                time_text(s)
             };
             view! {
                 <button class="chip info" data-testid="lat-unzoom" on:click=move |_| h.zoom.set(None)>

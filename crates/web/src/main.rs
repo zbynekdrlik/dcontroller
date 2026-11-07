@@ -937,11 +937,10 @@ fn ChangeLog() -> impl IntoView {
                 <thead><tr><th>"When"</th><th>"Who"</th><th>"Channel"</th><th>"Before"</th><th>"Asked"</th><th>"After"</th><th>"Result"</th></tr></thead>
                 <tbody>
                     {v.into_iter().map(|e| {
-                        let when = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(e.at as f64 * 1000.0))
-                            .to_locale_string("sk-SK", &wasm_bindgen::JsValue::UNDEFINED);
+                        let when = pages::time_text(e.at as i64);
                         view! {
                             <tr data-testid="change-row" class=if !e.ok { "err" } else if e.user == "outside dcontroller" { "ext" } else { "" }>
-                                <td>{String::from(when)}</td>
+                                <td>{when}</td>
                                 <td>{if e.user == "outside dcontroller" {
                                     view! { <span class="chip info">"outside dcontroller"</span> }.into_any()
                                 } else {

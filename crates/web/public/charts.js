@@ -13,6 +13,24 @@
 "use strict";
 (() => {
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  // Times read in Slovak format and Slovak time, wherever the browser is.
+  const ZONE = "Europe/Bratislava";
+  const format = (opts) => new Intl.DateTimeFormat("sk-SK", { timeZone: ZONE, ...opts });
+  const clock = { hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
+  const fmtMinutes = format(clock);
+  const fmtSeconds = format({ ...clock, second: "2-digit" });
+  const fmtDay = format({ day: "numeric", month: "numeric" });
+  const fmtDate = format({ day: "numeric", month: "numeric", year: "numeric" });
+  const when = (fmt, t) => fmt.format(new Date(t * 1000));
+
+  // An axis tick: the date for a day's step or at midnight, else the clock.
+  function tick(t, step) {
+    if (step >= 86400) return when(fmtDay, t);
+    if (step < 60) return when(fmtSeconds, t);
+    const text = when(fmtMinutes, t);
+    return text === "00:00" ? when(fmtDay, t) : text;
+  }
+
   function axisStyle() {
     const grid = { stroke: css("--grid") || "#243049", width: 1 };
     return { stroke: css("--muted") || "#8b97ad", grid, ticks: grid, font: "11px system-ui, sans-serif" };
@@ -93,7 +111,7 @@
   function build(el, d, width) {
     const fmt = (v) => (v == null ? "–" : d.unit === "%" ? `${v.toFixed(0)} %` : `${v.toFixed(2)} ms`);
     const axis = axisStyle();
-    const series = [{}];
+    const series = [{ value: (_, t) => (t == null ? "–" : `${when(fmtDate, t)} ${when(fmtSeconds, t)}`) }];
     for (const s of d.sources) {
       series.push({
         label: s.label,
@@ -121,8 +139,9 @@
       select: { show: true },
       legend: { live: true },
       scales: { x: { time: true }, y: { auto: true, range: (u, lo, hi) => [0, Math.max(hi * 1.1, d.floor || 0.1)] } },
+      tzDate: (t) => uPlot.tzDate(new Date(t * 1000), ZONE),
       axes: [
-        axis,
+        { ...axis, values: (u, splits, _, __, step) => splits.map((t) => tick(t, step)) },
         { ...axis, label: d.unit === "%" ? "typical peak, % of latency" : "typical peak, ms", labelSize: 14, size: 52,
           values: (u, v) => v.map((x) => (d.unit === "%" ? x.toFixed(0) : x.toFixed(2))) },
       ],
