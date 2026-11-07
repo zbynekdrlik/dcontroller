@@ -129,6 +129,10 @@ test.describe("latency history", () => {
     // One chart: uPlot draws it and names the source device and its latency in the legend.
     const margin = page.getByTestId("lat-chart");
     await expect(margin.locator("canvas")).toHaveCount(1);
+    // The source's colour comes from the server's recorded order, the same in the chart and the table.
+    const color = await margin.evaluate((el) => (el as any)._dcData.sources[0].color);
+    expect(color).toMatch(/^hsl\(/);
+    await expect(src.locator(".dot")).toHaveAttribute("data-color", color);
     await expect(margin.locator("canvas")).toBeVisible();
     await expect(margin.locator(".u-legend")).toContainText(DEVICE);
     await expect(margin.locator(".u-legend")).not.toContainText("Flow 1");

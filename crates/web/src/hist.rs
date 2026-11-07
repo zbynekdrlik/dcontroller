@@ -82,14 +82,19 @@ pub fn same_name(a: &str, b: &str) -> bool {
 /// The range a page opens with.
 pub const DEFAULT_RANGE: i64 = 3600;
 
-/// Distinct line colours for flows, readable on the dark background.
-pub const PALETTE: [&str; 8] = [
-    "#5b9dff", "#34d399", "#c084fc", "#fbbf24", "#22d3ee", "#f472b6", "#a3e635", "#fb923c",
-];
+/// The colour of a source device that is not in the recorded order.
+const UNKNOWN_COLOR: &str = "#8b97ad";
 
-/// The colour of the `i`-th flow.
-pub fn color(i: usize) -> &'static str {
-    PALETTE[i % PALETTE.len()]
+/// A source device's line colour, the same on every receiver's chart: its
+/// place in `order` (first seen first, [`History::source_order`]) steps round
+/// the hue circle by the golden angle, so any few devices stay far apart.
+/// Several sources in one label take the first one's.
+pub fn color_of(order: &[String], source: &str) -> String {
+    let first = source.split(", ").next().unwrap_or(source);
+    match order.iter().position(|o| o.eq_ignore_ascii_case(first)) {
+        Some(i) => format!("hsl({:.0}, 75%, 66%)", (215.0 + i as f64 * 137.508) % 360.0),
+        None => UNKNOWN_COLOR.to_owned(),
+    }
 }
 
 /// What a flow comes from: its source devices, or `?` when not known.
@@ -241,7 +246,7 @@ pub enum Scale {
 #[derive(Serialize)]
 struct ChartSource {
     label: String,
-    color: &'static str,
+    color: String,
     /// The margin: the typical second per bucket (the mean of its
     /// per-second peaks) in the chart's unit. The worst second of an hour
     /// would paint the whole hour; it stays in the table.
@@ -276,10 +281,9 @@ pub fn chart_json(h: &History, height: u32, scale: Scale) -> String {
     let groups = by_source(h);
     let sources: Vec<ChartSource> = groups
         .iter()
-        .enumerate()
-        .map(|(i, s)| ChartSource {
+        .map(|s| ChartSource {
             label: s.source.clone(),
-            color: color(i),
+            color: color_of(&h.source_order, &s.source),
             values: match scale {
                 Scale::Ms => s
                     .typical_us
@@ -497,7 +501,8 @@ mod tests {
         assert_eq!(v["unit"], "ms");
         assert_eq!(v["sources"].as_array().unwrap().len(), 2);
         assert_eq!(v["sources"][0]["label"], "desk");
-        assert_eq!(v["sources"][0]["color"], PALETTE[0]);
+        // Not in the recorded order: the plain colour, not another device's.
+        assert_eq!(v["sources"][0]["color"], UNKNOWN_COLOR);
         assert_eq!(
             v["sources"][0]["values"],
             // The line is the typical second (the mean), not the worst one.
@@ -623,6 +628,5 @@ mod tests {
         assert_eq!(over_text(3, 60), "3 min");
         assert_eq!(over_text(3, 3600), "3 h");
         assert_eq!(source_of(&FlowHistory::default()), "?");
-        assert_eq!(color(9), PALETTE[1]);
     }
 }

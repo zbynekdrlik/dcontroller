@@ -155,9 +155,9 @@
     latency(el, json) {
       const d = JSON.parse(json);
       el._dcData = d;
-      // Labels, latency lines and the floor live in the chart's options: a
-      // change to any of them builds it anew.
-      const shape = [d.unit, d.sources.map((s) => s.label).join("|"), d.thresholds.map((th) => th.label + "=" + th.value).join("|"), d.floor].join("#");
+      // Labels, colours, latency lines and the floor live in the chart's
+      // options: a change to any of them builds it anew.
+      const shape = [d.unit, d.sources.map((s) => s.label + "=" + s.color).join("|"), d.thresholds.map((th) => th.label + "=" + th.value).join("|"), d.floor].join("#");
       if (el._dc && el._dcShape === shape) {
         el._dc.setData(chartData(d));
         return;
