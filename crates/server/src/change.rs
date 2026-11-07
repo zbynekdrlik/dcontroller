@@ -396,6 +396,12 @@ impl Changes {
                         Some(n) => after.as_deref() == Some(n.as_str()),
                         None => after.is_some(),
                     };
+                if let (true, api::RenameTarget::Device, Some(new)) = (ok, &req.target, &after) {
+                    dante
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .own_rename(&device.name, new);
+                }
                 let message = match (&send_error, ok) {
                     (Some(e), _) => e.clone(),
                     (None, true) => format!(

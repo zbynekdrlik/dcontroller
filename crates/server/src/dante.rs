@@ -253,8 +253,27 @@ impl State {
         }
     }
 
-    /// Our own rename of device `old` to `new` went through.
-    pub fn own_rename(&mut self, _old: &str, _new: &str) {}
+    /// Our own rename of device `old` to `new` went through. The device moves
+    /// its own subscriptions to the new name (other devices keep theirs), so
+    /// what is kept of it, under either name while discovery catches up,
+    /// moves too: the next read must not log that as a foreign change. A read
+    /// begun before now may hold either state and is dropped.
+    pub fn own_rename(&mut self, old: &str, new: &str) {
+        let now = Instant::now();
+        for name in [old, new] {
+            let Some(e) = self.devices.get_mut(&name.to_ascii_lowercase()) else {
+                continue;
+            };
+            e.own_at = Some(now);
+            for r in e.channels.iter_mut().flat_map(|c| c.rx.iter_mut()) {
+                if let Some(s) = &mut r.source
+                    && s.device.eq_ignore_ascii_case(old)
+                {
+                    new.clone_into(&mut s.device);
+                }
+            }
+        }
+    }
 
     /// As [`State::record`] for a read begun at `started`, returning what it
     /// shows changed since the last read (made outside dcontroller). A read
