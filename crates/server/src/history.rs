@@ -9,7 +9,7 @@ use std::sync::Mutex;
 
 use dcontroller_api as api;
 use rusqlite::{Connection, OptionalExtension, params};
-use tracing::info;
+use tracing::{info, warn};
 
 /// How long each tier is kept, seconds.
 pub const KEEP_SECONDS: i64 = 24 * 3600;
@@ -483,6 +483,27 @@ impl Store {
     /// The history of `device` from `from` to `to` (unix seconds), asked
     /// at `now`. The range is clamped to what is kept (a year back, an hour
     /// ahead), so any request stays small.
+    /// Every source device in the flow table (never pruned), first seen
+    /// first, case aside.
+    fn source_order(db: &Connection) -> rusqlite::Result<Vec<String>> {
+        let mut q = db.prepare("SELECT sources FROM flow ORDER BY since, device, slot")?;
+        let rows = q.query_map([], |r| r.get::<_, String>(0))?;
+        let mut order: Vec<String> = Vec::new();
+        for text in rows {
+            let text = text?;
+            let sources: Vec<String> = serde_json::from_str(&text).unwrap_or_else(|e| {
+                warn!(sources = %text, error = %e, "history: flow sources not readable");
+                Vec::new()
+            });
+            for s in sources {
+                if !order.iter().any(|o| o.eq_ignore_ascii_case(&s)) {
+                    order.push(s);
+                }
+            }
+        }
+        Ok(order)
+    }
+
     pub fn history(
         &self,
         device: &str,
@@ -510,6 +531,7 @@ impl Store {
             .take_while(|&b| b <= to)
             .collect();
         let db = self.conn();
+        out.source_order = Self::source_order(&db).map_err(|e| e.to_string())?;
         let Some(id) = db
             .query_row(
                 "SELECT id FROM device WHERE name = ?1 COLLATE NOCASE",
@@ -641,6 +663,30 @@ mod tests {
             channels: vec!["In 1".into()],
             sources: vec!["desk".into()],
         }
+    }
+
+    #[test]
+    fn source_devices_keep_their_first_seen_order_on_every_receiver() {
+        let st = Store::memory().unwrap();
+        let t0 = 1_000_000;
+        let src = |s: &str, latency_us| FlowInfo {
+            sources: vec![s.into()],
+            ..flow(latency_us)
+        };
+        st.set_flow("desk", 1, &src("tascam", 1000), t0).unwrap();
+        st.set_flow("desk", 2, &src("master", 1000), t0 + 10)
+            .unwrap();
+        st.set_flow("rack", 1, &src("MASTER", 1000), t0 + 20)
+            .unwrap();
+        st.set_flow("rack", 2, &src("band", 1000), t0 + 30).unwrap();
+        let order = |device: &str| {
+            st.history(device, t0, t0 + 60, t0 + 60)
+                .unwrap()
+                .source_order
+        };
+        assert_eq!(order("desk"), vec!["tascam", "master", "band"]);
+        assert_eq!(order("rack"), order("desk"));
+        assert_eq!(order("nobody"), order("desk"));
     }
 
     #[test]

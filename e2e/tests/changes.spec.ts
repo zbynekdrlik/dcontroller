@@ -14,6 +14,9 @@ const card = (channel: number, label: string) =>
     { input: JSON.stringify([{ type: "rx", channel, label }]) },
   ).toString();
 
+// The list reads Slovak time, whatever zone the browser is in.
+test.use({ timezoneId: "America/New_York" });
+
 test("a channel renamed outside dcontroller shows in Changes", async ({ page }) => {
   test.setTimeout(120_000);
   const msgs: string[] = [];
@@ -42,6 +45,9 @@ test("a channel renamed outside dcontroller shows in Changes", async ({ page }) 
     const row = page.getByTestId("change-row").filter({ hasText: "Ext 3" }).first();
     await expect(row).toContainText("outside dcontroller");
     await expect(row).toContainText(`rename RX 3 @ ${DEVICE}`);
+    const logged = await page.evaluate(() => fetch("/api/changes").then((r) => r.json()));
+    const at = logged.find((e: { name_after: string }) => e.name_after === "Ext 3").at;
+    await expect(row).toContainText(new Date(at * 1000).toLocaleString("sk-SK", { timeZone: "Europe/Bratislava" }));
     await expect(row).toContainText("Spare 3");
   } finally {
     card(3, "Spare 3");

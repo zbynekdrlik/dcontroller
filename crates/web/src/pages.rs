@@ -45,6 +45,21 @@ fn now_s() -> i64 {
     (js_sys::Date::now() / 1000.0) as i64
 }
 
+/// A time in Slovak format and Slovak time, wherever the browser is.
+pub fn time_text(unix: i64) -> String {
+    let opts = js_sys::Object::new();
+    js_sys::Reflect::set(
+        &opts,
+        &JsValue::from_str("timeZone"),
+        &JsValue::from_str("Europe/Bratislava"),
+    )
+    .expect("set on a new object");
+    String::from(
+        js_sys::Date::new(&JsValue::from_f64(unix as f64 * 1000.0))
+            .to_locale_string("sk-SK", &opts),
+    )
+}
+
 async fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, String> {
     let res = gloo_net::http::Request::get(url)
         .send()
@@ -391,10 +406,7 @@ pub fn LatencyPage() -> impl IntoView {
     let head = move || {
         let zoom = h.zoom.get().map(|(a, b)| {
             let t = |s: i64| {
-                String::from(
-                    js_sys::Date::new(&JsValue::from_f64(s as f64 * 1000.0))
-                        .to_locale_string("sk-SK", &JsValue::UNDEFINED),
-                )
+                time_text(s)
             };
             view! {
                 <button class="chip info" data-testid="lat-unzoom" on:click=move |_| h.zoom.set(None)>
@@ -453,7 +465,7 @@ pub fn LatencyPage() -> impl IntoView {
                     <table class="grid" data-testid="lat-sources">
                         <thead><tr><th></th><th>"From"</th><th>"Late (not played)"</th><th>"Worst peak"</th><th>"Latency"</th><th>"Past latency"</th><th>"Distribution"</th></tr></thead>
                         <tbody>
-                            {groups.iter().enumerate().map(|(i, s)| source_row(i, s, tier)).collect_view()}
+                            {groups.iter().map(|s| source_row(hist::color_of(&hd.source_order, &s.source), s, tier)).collect_view()}
                         </tbody>
                     </table>
                     </div>
@@ -476,7 +488,7 @@ pub fn LatencyPage() -> impl IntoView {
     }
 }
 
-fn source_row(i: usize, s: &hist::SourceHistory, tier_s: i64) -> impl IntoView {
+fn source_row(color: String, s: &hist::SourceHistory, tier_s: i64) -> impl IntoView {
     let top = s.histogram.iter().copied().max().unwrap_or(0).max(1);
     // The bins are eighths of each flow's latency, then 1.5×, 2× and over:
     // the first eight are inside it.
@@ -506,7 +518,7 @@ fn source_row(i: usize, s: &hist::SourceHistory, tier_s: i64) -> impl IntoView {
     };
     view! {
         <tr data-testid="lat-source" data-name=s.source.clone()>
-            <td><span class="dot" style=format!("background:{}", hist::color(i))></span></td>
+            <td><span class="dot" data-color=color.clone() style=format!("background:{color}")></span></td>
             <td><span class="strong">{s.source.clone()}</span><br/><span class="muted small">{flows}</span></td>
             <td class={if s.late_total > 0 { "num bad strong" } else { "num ok" }} data-testid="lat-source-late">{s.late_total}</td>
             <td class="num" data-testid="lat-source-peak">{peak}</td>
