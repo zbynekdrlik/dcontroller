@@ -67,6 +67,9 @@
     ctx.save();
     ctx.lineWidth = 1.5 * px;
     ctx.font = `600 ${11 * px}px system-ui, sans-serif`;
+    // uPlot leaves the last series' dash and the axes' alignment on the context.
+    ctx.setLineDash([]);
+    ctx.textAlign = "left";
     ctx.textBaseline = "top";
     let lastLabel = -Infinity;
     for (const m of marks) {
