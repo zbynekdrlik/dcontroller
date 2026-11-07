@@ -5,15 +5,14 @@
 // element ({from, to} in unix seconds) so the app can fetch finer data.
 // Double-click asks for the app's range again ("dc-unzoom").
 //
-// One series per source device. Two charts share the time axis and the
-// cursor: late packets (the damage: packets that came after their flow's
-// latency and were not played), shown only when there are any, and the
-// margin (the worst peak against the flow's latency).
+// One series per source device: the typical peak against the latency. A
+// bucket with late packets (they came after their flow's latency and were
+// not played) is a vertical line at that time, in the colour of the source
+// with the most of them, with the count at its top. The legend gives each
+// source's level and late packets under the cursor.
 "use strict";
 (() => {
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  const SYNC = "dc-latency";
-
   function axisStyle() {
     const grid = { stroke: css("--grid") || "#243049", width: 1 };
     return { stroke: css("--muted") || "#8b97ad", grid, ticks: grid, font: "11px system-ui, sans-serif" };
@@ -33,46 +32,62 @@
     };
   }
 
-  function lateData(d) {
-    return [d.t, ...d.sources.map((s) => s.late.map((v) => (v ? v : null)))];
-  }
-
-  function marginData(d) {
+  function chartData(d) {
     return [d.t, ...d.sources.map((s) => s.values), ...d.thresholds.map((th) => d.t.map(() => th.value))];
   }
 
-  function buildLate(box, el, d, width) {
-    const axis = axisStyle();
-    const series = [{}];
-    for (const s of d.sources) {
-      series.push({
-        label: `${s.label} · late`,
-        stroke: s.color,
-        fill: s.color + "55",
-        width: 1,
-        paths: uPlot.paths.bars({ size: [0.9, 14] }),
-        points: { show: false },
-        value: (_, v) => (v == null ? "0" : String(v)),
+  // Per bucket with late packets, among the sources showing: its total and
+  // the colour of the source with the most.
+  function lateMarks(u, d) {
+    const marks = [];
+    d.t.forEach((t, i) => {
+      let total = 0;
+      let most = 0;
+      let color = "";
+      d.sources.forEach((s, k) => {
+        const n = s.late[i] || 0;
+        if (!n || !u.series[k + 1].show) return;
+        total += n;
+        if (n > most) {
+          most = n;
+          color = s.color;
+        }
       });
-    }
-    const opts = {
-      width,
-      height: 150,
-      cursor: { sync: { key: SYNC }, drag: { x: true, y: false, setScale: false }, points: { show: false } },
-      select: { show: true },
-      legend: { live: true },
-      scales: { x: { time: true }, y: { auto: true, range: (u, lo, hi) => [0, Math.max(hi, 1) * 1.1] } },
-      axes: [
-        axis,
-        { ...axis, label: "late packets", labelSize: 14, size: 52, values: (u, v) => v.map((x) => (Number.isInteger(x) ? x : "")) },
-      ],
-      series,
-      hooks: zoomHooks(el),
-    };
-    return new uPlot(opts, lateData(d), box);
+      if (total) marks.push({ t, total, color });
+    });
+    return marks;
   }
 
-  function buildMargin(box, el, d, width) {
+  function drawLate(u, el, d) {
+    const marks = lateMarks(u, d);
+    el.dataset.lateMarks = String(marks.length);
+    const { left, top, width, height } = u.bbox;
+    const px = uPlot.pxRatio;
+    const ctx = u.ctx;
+    ctx.save();
+    ctx.lineWidth = 1.5 * px;
+    ctx.font = `600 ${11 * px}px system-ui, sans-serif`;
+    ctx.textBaseline = "top";
+    let lastLabel = -Infinity;
+    for (const m of marks) {
+      const x = Math.round(u.valToPos(m.t, "x", true));
+      if (x < left || x > left + width) continue;
+      ctx.strokeStyle = m.color;
+      ctx.beginPath();
+      ctx.moveTo(x, top);
+      ctx.lineTo(x, top + height);
+      ctx.stroke();
+      // Close marks share the first one's label room.
+      if (x - lastLabel >= 32 * px) {
+        ctx.fillStyle = m.color;
+        ctx.fillText(String(m.total), x + 3 * px, top + 2 * px);
+        lastLabel = x;
+      }
+    }
+    ctx.restore();
+  }
+
+  function build(el, d, width) {
     const fmt = (v) => (v == null ? "–" : d.unit === "%" ? `${v.toFixed(0)} %` : `${v.toFixed(2)} ms`);
     const axis = axisStyle();
     const series = [{}];
@@ -83,7 +98,7 @@
         width: 1.5,
         points: { show: d.t.length < 120 },
         spanGaps: false,
-        value: (_, v) => fmt(v),
+        value: (_, v, __, i) => fmt(v) + (i != null && s.late[i] ? ` · ${s.late[i]} late` : ""),
       });
     }
     for (const th of d.thresholds) {
@@ -99,7 +114,7 @@
     const opts = {
       width,
       height: d.height || 280,
-      cursor: { sync: { key: SYNC }, drag: { x: true, y: false, setScale: false }, points: { size: 6 } },
+      cursor: { drag: { x: true, y: false, setScale: false }, points: { size: 6 } },
       select: { show: true },
       legend: { live: true },
       scales: { x: { time: true }, y: { auto: true, range: (u, lo, hi) => [0, Math.max(hi * 1.1, d.floor || 0.1)] } },
@@ -109,51 +124,31 @@
           values: (u, v) => v.map((x) => (d.unit === "%" ? x.toFixed(0) : x.toFixed(2))) },
       ],
       series,
-      hooks: zoomHooks(el),
+      hooks: { ...zoomHooks(el), draw: [(u) => drawLate(u, el, el._dcData)] },
     };
-    return new uPlot(opts, marginData(d), box);
-  }
-
-  function destroy(el) {
-    for (const u of el._dc || []) u.destroy();
-    el._dc = null;
+    return new uPlot(opts, chartData(d), el);
   }
 
   window.dcChart = {
     latency(el, json) {
       const d = JSON.parse(json);
-      // Labels, latency lines, the floor and whether late packets show live
-      // in the charts' options: a change to any of them builds them anew.
-      const shape = [d.unit, d.sources.map((s) => s.label).join("|"), d.thresholds.map((th) => th.label + "=" + th.value).join("|"), d.late, d.floor].join("#");
+      el._dcData = d;
+      // Labels, latency lines and the floor live in the chart's options: a
+      // change to any of them builds it anew.
+      const shape = [d.unit, d.sources.map((s) => s.label).join("|"), d.thresholds.map((th) => th.label + "=" + th.value).join("|"), d.floor].join("#");
       if (el._dc && el._dcShape === shape) {
-        const [late, margin] = el._dcLate ? el._dc : [null, el._dc[0]];
-        if (late) late.setData(lateData(d));
-        margin.setData(marginData(d));
+        el._dc.setData(chartData(d));
         return;
       }
-      destroy(el);
+      if (el._dc) el._dc.destroy();
       el.textContent = "";
-      const width = el.clientWidth || 600;
-      const charts = [];
-      if (d.late) {
-        const box = document.createElement("div");
-        box.className = "chart-late";
-        box.dataset.testid = "lat-chart-late";
-        el.appendChild(box);
-        charts.push(buildLate(box, el, d, width));
-      }
-      const box = document.createElement("div");
-      box.className = "chart-margin";
-      box.dataset.testid = "lat-chart-margin";
-      el.appendChild(box);
-      charts.push(buildMargin(box, el, d, width));
-      for (const u of charts) u.over.addEventListener("dblclick", () => el.dispatchEvent(new CustomEvent("dc-unzoom")));
-      el._dc = charts;
-      el._dcLate = !!d.late;
+      const u = build(el, d, el.clientWidth || 600);
+      u.over.addEventListener("dblclick", () => el.dispatchEvent(new CustomEvent("dc-unzoom")));
+      el._dc = u;
       el._dcShape = shape;
       if (!el._dcResize) {
         el._dcResize = new ResizeObserver(() => {
-          if (el._dc && el.clientWidth > 0) for (const u of el._dc) u.setSize({ width: el.clientWidth, height: u.height });
+          if (el._dc && el.clientWidth > 0) el._dc.setSize({ width: el.clientWidth, height: el._dc.height });
         });
         el._dcResize.observe(el);
       }
