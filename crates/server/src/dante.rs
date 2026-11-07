@@ -253,6 +253,9 @@ impl State {
         }
     }
 
+    /// Our own rename of device `old` to `new` went through.
+    pub fn own_rename(&mut self, _old: &str, _new: &str) {}
+
     /// As [`State::record`] for a read begun at `started`, returning what it
     /// shows changed since the last read (made outside dcontroller). A read
     /// begun before our own last change is dropped whole.
@@ -1126,6 +1129,41 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn our_rename_of_a_device_taking_its_own_channel_logs_no_outside_change() {
+        let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
+        // The old name's entry lives on while mDNS catches up, so the device
+        // is read under both names; "other" takes the device's channel too.
+        for d in [dev("home", 1), dev("away", 1), dev("other", 2)] {
+            s.apply(Change::Added(d));
+        }
+        let own = |by: &str| Read {
+            channels: chans(&["Mix"], vec![rx(1, "In", Some(("Mix", by)))]),
+            ..read("x")
+        };
+        let t0 = Instant::now();
+        s.record_read(&dev("home", 1), Ok(own("away")), t0, t0, 1);
+        s.record_read(&dev("away", 1), Ok(own("away")), t0, t0, 1);
+        s.record_read(&dev("other", 2), Ok(own("away")), t0, t0, 1);
+        s.own_rename("away", "home");
+        // A read begun before the rename ended is dropped, not logged.
+        let late = Instant::now();
+        assert!(
+            s.record_read(&dev("home", 1), Ok(own("home")), t0, late, 2)
+                .is_empty()
+        );
+        // Under the new name its own subscription follows: nothing to log.
+        let t1 = Instant::now();
+        assert!(
+            s.record_read(&dev("home", 1), Ok(own("home")), t1, t1, 3)
+                .is_empty()
+        );
+        // A device that takes the old name keeps it, and a real change still shows.
+        let found = s.record_read(&dev("other", 2), Ok(own("home")), t1, t1, 4);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, "subscription");
     }
 
     #[test]
