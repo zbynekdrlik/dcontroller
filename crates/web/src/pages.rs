@@ -469,7 +469,7 @@ pub fn LatencyPage() -> impl IntoView {
                 <header class="panel-head">{head}</header>
                 <div class="chart" node_ref=chart_ref data-testid="lat-chart"
                     style=move || if h.data.get().is_some_and(|d| d.is_ok_and(|x| !x.flows.is_empty())) { "" } else { "display:none" }></div>
-                <p class="muted small hint">"Drag across the chart to zoom in; double-click to zoom out."</p>
+                <p class="muted small hint">"A vertical line with a number: late packets at that time. Drag across the chart to zoom in; double-click to zoom out."</p>
                 {figures}
             </section>
         </div>

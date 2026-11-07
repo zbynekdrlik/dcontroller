@@ -263,17 +263,14 @@ struct Chart<'a> {
     unit: &'static str,
     sources: Vec<ChartSource>,
     thresholds: Vec<Threshold>,
-    /// Whether any source has late packets in the range (the late chart
-    /// shows only then).
-    late: bool,
-    /// The margin's y axis reaches at least the (smallest) latency.
+    /// The y axis reaches at least the (smallest) latency.
     floor: f64,
     height: u32,
 }
 
-/// The chart's data for `dcChart.latency`: per source device its late
-/// packets (the damage) and its worst peak per bucket (the margin), and the
-/// latency line(s). `Share` leaves out the margin of a source whose
+/// The chart's data for `dcChart.latency`: per source device its typical
+/// peak per bucket (the margin) and its late packets (the damage, drawn as
+/// marks on the same chart), and the latency line(s). `Share` leaves out the margin of a source whose
 /// latency is not known.
 pub fn chart_json(h: &History, height: u32, scale: Scale) -> String {
     let groups = by_source(h);
@@ -320,7 +317,6 @@ pub fn chart_json(h: &History, height: u32, scale: Scale) -> String {
             Scale::Share => "%",
         },
         floor: thresholds.first().map_or(0.0, |t| t.value * 1.05),
-        late: groups.iter().any(|s| s.late.iter().any(|&l| l > 0)),
         sources,
         thresholds,
         height,
@@ -474,7 +470,6 @@ mod tests {
         assert_eq!(v["thresholds"].as_array().unwrap().len(), 2);
         assert_eq!(v["thresholds"][0]["value"], 0.25);
         assert_eq!(v["thresholds"][1]["label"], "latency 1.00 ms");
-        assert_eq!(v["late"], true);
         assert_eq!(v["height"], 300);
         // As a share of each flow's own latency: one 100 % line for all.
         let p: serde_json::Value =
@@ -493,15 +488,6 @@ mod tests {
             serde_json::json!([{"label": "latency", "color": "#f87171", "value": 100.0}])
         );
         assert_eq!(p["floor"], 105.0);
-        // No late packets: no late chart.
-        let quiet = History {
-            t: vec![1],
-            flows: vec![flow(1, 1000, vec![Some(1)], vec![0])],
-            ..History::default()
-        };
-        let q: serde_json::Value =
-            serde_json::from_str(&chart_json(&quiet, 200, Scale::Share)).unwrap();
-        assert_eq!(q["late"], false);
     }
 
     #[test]

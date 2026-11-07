@@ -16,6 +16,45 @@ test.describe("latency history", () => {
     page.on("pageerror", (e) => console_msgs.push(`pageerror: ${e.message}`));
   });
 
+  test("late packets are marks on the one chart, per the sources showing", async ({ page }) => {
+    await page.goto("/#latency");
+    // The recorded device has none to rely on: the chart gets a known history.
+    const box = page.locator("#late-test");
+    await page.evaluate(() => {
+      const el = document.createElement("div");
+      el.id = "late-test";
+      el.style.width = "800px";
+      document.body.appendChild(el);
+      const t = [1000, 1060, 1120, 1180];
+      (window as any).dcChart.latency(el, JSON.stringify({
+        t,
+        unit: "%",
+        floor: 105,
+        height: 280,
+        thresholds: [{ label: "latency", color: "#f87171", value: 100 }],
+        sources: [
+          { label: "src-a", color: "#60a5fa", values: [20, 30, 20, 25], late: [0, 3, 0, 2] },
+          { label: "src-b", color: "#34d399", values: [10, 12, 11, 10], late: [0, 1, 0, 0] },
+        ],
+      }));
+    });
+    await expect(box.locator("canvas")).toHaveCount(1);
+    // Two buckets have late packets, whichever source they came from.
+    await expect(box).toHaveAttribute("data-late-marks", "2");
+    // The legend names a source's late packets under the cursor.
+    await page.evaluate(() => {
+      const u = (document.getElementById("late-test") as any)._dc;
+      u.setCursor({ left: u.valToPos(1060, "x"), top: 10 });
+    });
+    await expect(box.locator(".u-legend")).toContainText("3 late");
+    await expect(box.locator(".u-legend")).toContainText("1 late");
+    // A source switched off in the legend takes its marks along: the second
+    // bucket stays for src-b, the fourth was src-a's alone.
+    await box.locator(".u-legend .u-label", { hasText: "src-a" }).click();
+    await expect(box).toHaveAttribute("data-late-marks", "1");
+    expect(console_msgs).toEqual([]);
+  });
+
   test("charts a receiver device to device: late packets as the verdict, the margin per source, ranges and zoom", async ({ page }) => {
     await page.goto("/#latency");
     await expect(page.getByTestId("tab-latency")).toHaveClass(/\bon\b/);
@@ -49,13 +88,14 @@ test.describe("latency history", () => {
     await expect(src.getByTestId("lat-source-late")).toHaveText(String(late));
     await expect(page.getByTestId("lat-verdict")).toContainText(late === 0 ? "No late packets" : `${late} late packets`);
 
-    // The chart: uPlot draws the margin chart and names the source device and its latency in the legend.
-    const margin = page.getByTestId("lat-chart-margin");
+    // One chart: uPlot draws it and names the source device and its latency in the legend.
+    const margin = page.getByTestId("lat-chart");
+    await expect(margin.locator("canvas")).toHaveCount(1);
     await expect(margin.locator("canvas")).toBeVisible();
     await expect(margin.locator(".u-legend")).toContainText(DEVICE);
     await expect(margin.locator(".u-legend")).not.toContainText("Flow 1");
-    // The late chart shows only when there are late packets.
-    await expect(page.getByTestId("lat-chart-late")).toHaveCount(late === 0 ? 0 : 1);
+    // No late packets, no late marks.
+    if (late === 0) await expect(margin).toHaveAttribute("data-late-marks", "0");
     // The default scale is each flow's share of its own latency: one 100 % line.
     await expect(page.getByTestId("lat-scale-share")).toHaveClass(/\bon\b/);
     await expect(margin.locator(".u-legend")).toContainText("latency");
@@ -91,7 +131,7 @@ test.describe("latency history", () => {
     // The choice survives a reload (kept in the URL), and the history is still there.
     await page.reload();
     await expect(page.getByTestId("lat-source").first()).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByTestId("lat-chart-margin").locator("canvas")).toBeVisible();
+    await expect(page.getByTestId("lat-chart").locator("canvas")).toBeVisible();
     expect(console_msgs).toEqual([]);
   });
 
