@@ -341,9 +341,10 @@ pub struct ReceiverSummary {
     /// is a fraction of a millisecond of audio).
     pub late_s_1h: u64,
     pub late_s_5m: u64,
-    /// The last hour in [`SPARK_POINTS`] buckets: the largest peak over all
-    /// flows as a share of that flow's latency, per mille (1000 = at the
-    /// latency); `None` with nothing recorded.
+    /// The last hour in [`SPARK_POINTS`] buckets: the typical second (the
+    /// mean of the per-second peaks, as the latency chart draws it), largest
+    /// over all flows, as a share of that flow's latency, per mille (1000 =
+    /// at the latency); `None` with nothing recorded.
     pub spark: Vec<Option<u32>>,
     /// Seconds since the last sample.
     pub age_s: Option<i64>,

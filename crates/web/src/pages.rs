@@ -128,7 +128,8 @@ fn summary_of<'a>(
         .find(|r| r.device.eq_ignore_ascii_case(name))
 }
 
-/// A small sparkline of a receiver's last hour (peak as a share of the latency).
+/// A small sparkline of a receiver's last hour (typical peak as a share of
+/// the latency, the measure the chart draws).
 fn spark(r: Option<&ReceiverSummary>, class: &'static str) -> AnyView {
     let path = r
         .map(|r| hist::spark_path(&r.spark, 120.0, 28.0, 1000))
