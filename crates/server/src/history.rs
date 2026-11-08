@@ -1000,6 +1000,23 @@ mod tests {
     }
 
     #[test]
+    fn overview_sparkline_takes_the_latency_of_the_flow_at_that_time() {
+        // A slot re-patched within the hour: its old samples belong to the
+        // old flow's latency, not today's (#50: 2.2 ms of an 8.4 ms flow
+        // read as 880 % of a 0.25 ms one).
+        let st = Store::memory().unwrap();
+        let now = 1_800_000_000;
+        st.set_flow("iem", 1, &flow(8000), now - 7200).unwrap();
+        st.set_flow("iem", 1, &flow(250), now - 1800).unwrap();
+        st.add("iem", &[s(1, now - 3599, 2000, 0), s(1, now - 10, 200, 0)])
+            .unwrap();
+        let r = &st.overview(now).unwrap().receivers[0];
+        assert_eq!(r.spark[0], Some(250), "2000 of the old 8000 µs");
+        assert_eq!(r.spark[59], Some(800), "200 of today's 250 µs");
+        assert_eq!((r.peak_us, r.latency_us), (200, 250));
+    }
+
+    #[test]
     fn device_names_match_case_aside() {
         // The recorder once stored samples under "stage-1" and flows under
         // "Stage-1": two device rows, and neither page found both.
