@@ -22,7 +22,7 @@ mod mtr;
 mod net;
 mod pages;
 mod settings;
-use matrix::{Grid, affected, cell, elsewhere};
+use matrix::{Grid, affected, cell, elsewhere, problems};
 
 const VERSION: &str = env!("DC_VERSION");
 /// How often the page asks the server for the device list.
@@ -999,6 +999,30 @@ fn Routing(d: Devices) -> impl IntoView {
 
 fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
     let line = status_line(d);
+    // Subscriptions not receiving, with Dante's reason, in plain sight.
+    let trouble = problems(d);
+    let trouble = (!trouble.is_empty()).then(|| {
+        let n = trouble.len();
+        view! {
+            <div class="problems" data-testid="sub-problems">
+                <p class="problems-head">{format!("{n} subscription(s) not receiving")}</p>
+                <ul>
+                    {trouble.into_iter().map(|matrix::Problem { rx, source, status, error }| {
+                        let key = rx.clone();
+                        let from = format!("\u{2190} {source}");
+                        view! {
+                            <li class=if error { "problem err" } else { "problem warn" }
+                                data-testid="sub-problem" data-rx=key>
+                                <span class="p-rx">{rx}</span>
+                                <span class="p-from">{from}</span>
+                                <span class="p-status">{status}</span>
+                            </li>
+                        }
+                    }).collect_view()}
+                </ul>
+            </div>
+        }
+    });
     let grid = Grid::of(d);
     let Expanded {
         tx: tx_open,
@@ -1172,6 +1196,7 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
     });
     view! {
         <p class="status" data-testid="status">{line}</p>
+        {trouble}
         <div class="matrix-wrap" node_ref=wrap
             on:scroll=move |ev| {
                 let el = event_target::<web_sys::HtmlElement>(&ev);

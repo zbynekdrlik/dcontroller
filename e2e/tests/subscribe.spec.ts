@@ -88,4 +88,36 @@ test.describe("subscription changes", () => {
     expect(log.every((e: { ok: boolean }) => e.ok)).toBe(true);
     expect(console_msgs).toEqual([]);
   });
+
+  test("a subscription that does not receive is listed above the matrix with the device's reason", async ({ page }) => {
+    await openMatrix(page);
+    const problem = page.locator(`[data-testid="sub-problem"][data-rx="Stage R @ ${DEVICE}"]`);
+    await expect(problem).toHaveCount(0);
+    // A channel no transmitter has: the device cannot resolve it.
+    const ask = (source: { channel: string; device: string } | null) =>
+      page.evaluate(
+        (body) =>
+          fetch("/api/subscription", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          }).then((r) => r.json()),
+        { rx_device: DEVICE, rx_channel: 2, source },
+      );
+    await ask({ channel: "Nowhere", device: DEVICE });
+    await expect(problem).toBeVisible({ timeout: 30_000 });
+    await expect(problem.locator(".p-from")).toHaveText(`\u2190 Nowhere @ ${DEVICE}`);
+    await expect(page.getByTestId("sub-problems")).toContainText("not receiving");
+    // The list says what the device says.
+    const st = await stageR(page);
+    expect(st.state).not.toBe("connected");
+    await expect(problem.locator(".p-status")).toHaveText(st.status);
+    await expect(problem).toHaveClass(st.state === "error" ? /\berr\b/ : /\bwarn\b/);
+
+    // Removed, it leaves the list.
+    await ask(null);
+    await expect(problem).toHaveCount(0, { timeout: 30_000 });
+    expect((await stageR(page)).source).toBeNull();
+    expect(console_msgs).toEqual([]);
+  });
 });
