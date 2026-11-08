@@ -22,7 +22,7 @@ mod mtr;
 mod net;
 mod pages;
 mod settings;
-use matrix::{Grid, affected, cell, elsewhere, problems};
+use matrix::{Grid, affected, cell, elsewhere, problems, tally};
 
 const VERSION: &str = env!("DC_VERSION");
 /// How often the page asks the server for the device list.
@@ -202,6 +202,25 @@ fn App() -> impl IntoView {
     load();
     // The interval lives as long as the page.
     let _ = set_interval_with_handle(load, POLL);
+    // A tab open across a deploy keeps running the old app: when the
+    // server answers another version, load the new one, once no dialog
+    // or change is open.
+    let watch_version = move || {
+        spawn_local(async move {
+            let Ok(server) = fetch_version().await else {
+                return;
+            };
+            let quiet = ctl.pending.get_untracked().is_none()
+                && ctl.renaming.get_untracked().is_none()
+                && ctl.setting.get_untracked().is_none()
+                && !ctl.busy.get_untracked();
+            if new_version(VERSION, &server) && quiet {
+                leptos::logging::log!("server runs {server}, this page {VERSION}: reloading");
+                let _ = window().location().reload();
+            }
+        })
+    };
+    let _ = set_interval_with_handle(watch_version, VERSION_POLL);
     // Which page shows, and whether the device list is there: the
     // overview and latency pages stay mounted across device refreshes.
     let page = Memo::new(move |_| {
@@ -405,6 +424,27 @@ async fn fetch_meters(device: &str) -> Result<MeterReport, String> {
         return Err(format!("server answered {}", res.status()));
     }
     res.json::<MeterReport>().await.map_err(|e| e.to_string())
+}
+
+/// How often an open page asks the server for its version.
+const VERSION_POLL: Duration = Duration::from_secs(15);
+
+async fn fetch_version() -> Result<String, String> {
+    let res = gloo_net::http::Request::get("/api/version")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.ok() {
+        return Err(format!("server answered {}", res.status()));
+    }
+    res.text().await.map_err(|e| e.to_string())
+}
+
+/// The server answers a version other than the page's own (an empty or
+/// non-version answer, such as a login page, is no new version).
+fn new_version(page: &str, server: &str) -> bool {
+    let server = server.trim();
+    server.starts_with('v') && server.len() < 64 && server != page
 }
 
 /// The routing matrix's live levels, by device name (lower case).
@@ -999,28 +1039,41 @@ fn Routing(d: Devices) -> impl IntoView {
 
 fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
     let line = status_line(d);
-    // Subscriptions not receiving, with Dante's reason, in plain sight.
+    // One line, only when a subscription to a device on the network does
+    // not receive; a switched-off source is no error. Details on a click.
     let trouble = problems(d);
-    let trouble = (!trouble.is_empty()).then(|| {
-        let n = trouble.len();
+    let (failing, unresolved, offline) = tally(&trouble);
+    let trouble = (failing + unresolved > 0).then(|| {
+        let mut parts = Vec::new();
+        if failing > 0 {
+            parts.push(view! { <span class="t-err" data-testid="sub-failing">{format!("{failing} failing")}</span> }.into_any());
+        }
+        if unresolved > 0 {
+            parts.push(view! { <span class="t-warn" data-testid="sub-unresolved">{format!("{unresolved} not resolved")}</span> }.into_any());
+        }
+        if offline > 0 {
+            parts.push(view! { <span class="t-off" data-testid="sub-offline">{format!("{offline} from devices offline")}</span> }.into_any());
+        }
+        let rows = trouble
+            .into_iter()
+            .filter(|p| p.kind != matrix::Kind::Offline)
+            .map(|p| {
+                let key = p.rx.clone();
+                let text = format!("{} \u{2190} {}", p.rx, p.source);
+                view! {
+                    <li class=p.kind.class() data-testid="sub-problem" data-rx=key>
+                        <span class="p-what">{text}</span>
+                        <span class="p-status">{p.status}</span>
+                    </li>
+                }
+            })
+            .collect_view();
+        let box_class = if failing > 0 { "problems err" } else { "problems warn" };
         view! {
-            <div class="problems" data-testid="sub-problems">
-                <p class="problems-head">{format!("{n} subscription(s) not receiving")}</p>
-                <ul>
-                    {trouble.into_iter().map(|matrix::Problem { rx, source, status, error }| {
-                        let key = rx.clone();
-                        let from = format!("\u{2190} {source}");
-                        view! {
-                            <li class=if error { "problem err" } else { "problem warn" }
-                                data-testid="sub-problem" data-rx=key>
-                                <span class="p-rx">{rx}</span>
-                                <span class="p-from">{from}</span>
-                                <span class="p-status">{status}</span>
-                            </li>
-                        }
-                    }).collect_view()}
-                </ul>
-            </div>
+            <details class=box_class data-testid="sub-problems">
+                <summary data-testid="sub-summary">"Subscriptions: "{parts}</summary>
+                <ul>{rows}</ul>
+            </details>
         }
     });
     let grid = Grid::of(d);
@@ -1545,6 +1598,15 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_another_server_version_asks_for_a_reload() {
+        assert!(new_version("v0.1.36 (e04ca65)", "v0.1.37 (1234567)\n"));
+        assert!(!new_version("v0.1.36 (e04ca65)", "v0.1.36 (e04ca65)\n"));
+        // A login page or an empty answer is no new version.
+        assert!(!new_version("v0.1.36 (e04ca65)", ""));
+        assert!(!new_version("v0.1.36 (e04ca65)", "<!doctype html><html>"));
+    }
 
     fn devices(enabled: bool, error: Option<&str>, n: usize) -> Devices {
         Devices {

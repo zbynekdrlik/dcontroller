@@ -24,6 +24,7 @@ test.describe("dashboard", () => {
     expect(console_msgs).toEqual([]);
   });
 
+
   test("version label is visible on a client-side route too", async ({ page }) => {
     await page.goto("/devices");
     await expect(page.getByTestId("version")).toHaveText(VERSION_RE);
@@ -76,4 +77,42 @@ test.describe("dashboard", () => {
     const probeLine = /Failed to load resource: net::ERR_INTERNET_DISCONNECTED/;
     expect(console_msgs.filter((m) => !probeLine.test(m))).toEqual([]);
   });
+});
+
+test.describe("a deploy reaches an open page", () => {
+  // page.route sees the app's own requests only without the service worker.
+  test.use({ serviceWorkers: "block" });
+  let console_msgs: string[];
+
+  test.beforeEach(async ({ page }) => {
+    console_msgs = [];
+    page.on("console", (m: ConsoleMessage) => {
+      if (m.type() === "error" || m.type() === "warning") console_msgs.push(`${m.type()}: ${m.text()}`);
+    });
+    page.on("pageerror", (e) => console_msgs.push(`pageerror: ${e.message}`));
+  });
+
+    test("an open page loads the new app by itself when the server's version changes", async ({ page }) => {
+    // The page asks every 15 s: one answer equal, then one new.
+    test.setTimeout(70_000);
+      await page.goto("/#routing");
+      await expect(page.getByTestId("version")).toHaveText(VERSION_RE);
+      const own = (await page.getByTestId("version").textContent())!.trim();
+      let loads = 0;
+      page.on("load", () => loads++);
+      // Same version: the page stays.
+      await page.waitForResponse((r) => r.url().endsWith("/api/version"), { timeout: 20_000 });
+      await page.waitForTimeout(1_000);
+      expect(loads).toBe(0);
+      // A deploy: the server answers another version (simulated, as no
+      // second build runs in the test), and the page reloads.
+      await page.route("**/api/version", (r) => r.fulfill({ status: 200, contentType: "text/plain", body: "v9.9.9 (0000000)\n" }));
+      await expect.poll(() => loads, { timeout: 25_000 }).toBeGreaterThan(0);
+      await page.unroute("**/api/version");
+      await expect(page.getByTestId("version")).toHaveText(own);
+      await expect(page).toHaveURL(/#routing$/);
+      // Playwright itself says it blocked the worker; anything else is the app's.
+      const blocked = "warning: Service Worker registration blocked by Playwright";
+      expect(console_msgs.filter((m) => m !== blocked)).toEqual([]);
+    });
 });

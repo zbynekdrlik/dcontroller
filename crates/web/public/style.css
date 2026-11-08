@@ -177,12 +177,16 @@ ol.tx { columns: 12rem; font-size: 0.85rem; margin: 0 0 0.8rem; }
 .picker { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 1rem; }
 .tab { color: var(--muted); text-decoration: none; padding: 0.35rem 0.75rem; border-radius: 999px; background: var(--surface); border: 1px solid var(--border); font-size: 0.85rem; }
 .tab.on { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
-.problems { margin: 0 0 0.75rem; padding: 0.5rem 0.8rem; border: 1px solid var(--border); border-left: 3px solid var(--bad); border-radius: var(--radius); background: var(--surface); }
-.problems-head { margin: 0 0 0.3rem; font-weight: 600; }
-.problems ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.2rem; }
-.problem { display: flex; flex-wrap: wrap; gap: 0.2rem 0.6rem; font-size: 0.9rem; }
-.p-rx { font-weight: 600; }
-.p-from { color: var(--muted); }
+.problems { margin: 0 0 0.5rem; padding: 0.3rem 0.7rem; border: 1px solid var(--border); border-left: 3px solid var(--warn); border-radius: var(--radius); background: var(--surface); font-size: 0.9rem; }
+.problems.err { border-left-color: var(--bad); }
+.problems summary { cursor: pointer; }
+.problems summary > span + span::before { content: " · "; color: var(--muted); font-weight: 400; }
+.t-err { color: var(--bad); font-weight: 600; }
+.t-warn { color: var(--warn); }
+.t-off { color: var(--muted); }
+.problems ul { margin: 0.3rem 0 0; padding: 0; list-style: none; max-height: 12rem; overflow-y: auto; }
+.problem { display: flex; gap: 0.6rem; white-space: nowrap; }
+.p-what { overflow: hidden; text-overflow: ellipsis; }
 .problem.err .p-status { color: var(--bad); font-weight: 600; }
 .problem.warn .p-status { color: var(--warn); }
 .matrix-wrap { overflow: auto; max-height: calc(100vh - 9rem); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
