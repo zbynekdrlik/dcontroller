@@ -415,7 +415,7 @@ impl Store {
             .map_err(|e| e.to_string())?;
         let mut per = db
             .prepare_cached(
-                "SELECT slot, (t - ?2 - 1) / ?4 AS b, MAX(peak) FROM second
+                "SELECT slot, (t - ?2 - 1) / ?4 AS b, MAX(peak), CAST(AVG(peak) AS INTEGER) FROM second
                  WHERE device = ?1 AND t > ?2 AND t <= ?3 GROUP BY slot, b",
             )
             .map_err(|e| e.to_string())?;
@@ -442,6 +442,7 @@ impl Store {
                         rw.get::<_, u16>(0)?,
                         rw.get::<_, i64>(1)?,
                         rw.get::<_, u32>(2)?,
+                        rw.get::<_, u32>(3)?,
                     ))
                 })
                 .map_err(|e| e.to_string())?;
@@ -450,7 +451,7 @@ impl Store {
             // latency known, the largest peak.
             let mut best: Option<(u32, u32)> = None;
             for row in rows {
-                let (slot, b, peak) = row.map_err(|e| e.to_string())?;
+                let (slot, b, peak, mean) = row.map_err(|e| e.to_string())?;
                 let lat = match latencies.iter().find(|(s, _)| *s == slot) {
                     Some((_, l)) => *l,
                     None => {
@@ -461,18 +462,24 @@ impl Store {
                         l
                     }
                 };
-                let share = if lat > 0 {
-                    u32::try_from(u64::from(peak) * 1000 / u64::from(lat)).unwrap_or(u32::MAX)
-                } else {
-                    0
+                let per_mille = |us: u32| {
+                    if lat > 0 {
+                        u32::try_from(u64::from(us) * 1000 / u64::from(lat)).unwrap_or(u32::MAX)
+                    } else {
+                        0
+                    }
                 };
+                let share = per_mille(peak);
                 if best.is_none_or(|(s, p)| (share, peak) > (s, p)) {
                     best = Some((share, peak));
                     r.peak_us = peak;
                     r.latency_us = lat;
                 }
                 if let Some(cell) = usize::try_from(b).ok().and_then(|i| r.spark.get_mut(i)) {
-                    *cell = Some(cell.map_or(share, |c| c.max(share)));
+                    // The typical second (mean of the per-second peaks), as
+                    // the chart draws it; the worst second is `peak_us`.
+                    let typical = per_mille(mean);
+                    *cell = Some(cell.map_or(typical, |c| c.max(typical)));
                 }
             }
             out.receivers.push(r);
@@ -983,7 +990,11 @@ mod tests {
         )
         .unwrap();
         let r = &st.overview(now).unwrap().receivers[0];
-        assert_eq!(r.spark[0], Some(800), "mean 200 of 250 µs, not the worst 300");
+        assert_eq!(
+            r.spark[0],
+            Some(800),
+            "mean 200 of 250 µs, not the worst 300"
+        );
         // The worst peak stays reported on its own.
         assert_eq!((r.peak_us, r.latency_us), (300, 250));
     }
