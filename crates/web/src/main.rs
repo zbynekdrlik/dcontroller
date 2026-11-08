@@ -22,7 +22,7 @@ mod mtr;
 mod net;
 mod pages;
 mod settings;
-use matrix::{Grid, affected, cell, elsewhere};
+use matrix::{Grid, affected, cell, elsewhere, problems};
 
 const VERSION: &str = env!("DC_VERSION");
 /// How often the page asks the server for the device list.
@@ -47,6 +47,7 @@ fn App() -> impl IntoView {
     provide_context(Expanded {
         tx: RwSignal::new(BTreeSet::new()),
         rx: RwSignal::new(BTreeSet::new()),
+        scroll: StoredValue::new((0, 0)),
     });
     let view_now = RwSignal::new(View::from_hash());
     let ctl = Ctl {
@@ -188,7 +189,16 @@ fn App() -> impl IntoView {
         let _ = (mtr.device.get(), view_now.get());
         poll_meters();
     });
-    let load = move || spawn_local(async move { devices.set(Some(fetch_devices().await)) });
+    // An answer equal to the one shown changes nothing: setting it would
+    // rebuild the open view (the matrix's scroll, a click half done).
+    let load = move || {
+        spawn_local(async move {
+            let new = Some(fetch_devices().await);
+            if devices.with_untracked(|d| *d != new) {
+                devices.set(new);
+            }
+        })
+    };
     load();
     // The interval lives as long as the page.
     let _ = set_interval_with_handle(load, POLL);
@@ -966,6 +976,8 @@ fn ChangeLog() -> impl IntoView {
 struct Expanded {
     tx: RwSignal<BTreeSet<String>>,
     rx: RwSignal<BTreeSet<String>>,
+    /// The matrix box's scroll (top, left), kept across rebuilds.
+    scroll: StoredValue<(i32, i32)>,
 }
 
 fn flip(set: RwSignal<BTreeSet<String>>, name: &str) {
@@ -987,10 +999,35 @@ fn Routing(d: Devices) -> impl IntoView {
 
 fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
     let line = status_line(d);
+    // Subscriptions not receiving, with Dante's reason, in plain sight.
+    let trouble = problems(d);
+    let trouble = (!trouble.is_empty()).then(|| {
+        let n = trouble.len();
+        view! {
+            <div class="problems" data-testid="sub-problems">
+                <p class="problems-head">{format!("{n} subscription(s) not receiving")}</p>
+                <ul>
+                    {trouble.into_iter().map(|matrix::Problem { rx, source, status, error }| {
+                        let key = rx.clone();
+                        let from = format!("\u{2190} {source}");
+                        view! {
+                            <li class=if error { "problem err" } else { "problem warn" }
+                                data-testid="sub-problem" data-rx=key>
+                                <span class="p-rx">{rx}</span>
+                                <span class="p-from">{from}</span>
+                                <span class="p-status">{status}</span>
+                            </li>
+                        }
+                    }).collect_view()}
+                </ul>
+            </div>
+        }
+    });
     let grid = Grid::of(d);
     let Expanded {
         tx: tx_open,
         rx: rx_open,
+        scroll,
     } = ex;
     let ctl = expect_context::<Ctl>();
     let txo = tx_open.get();
@@ -1148,9 +1185,23 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
             }
         }
     }
+    // A rebuilt matrix opens where the last one was scrolled to, once laid out.
+    let wrap = NodeRef::<leptos::html::Div>::new();
+    wrap.on_load(move |el| {
+        request_animation_frame(move || {
+            let (top, left) = scroll.get_value();
+            el.set_scroll_top(top);
+            el.set_scroll_left(left);
+        });
+    });
     view! {
         <p class="status" data-testid="status">{line}</p>
-        <div class="matrix-wrap">
+        {trouble}
+        <div class="matrix-wrap" node_ref=wrap
+            on:scroll=move |ev| {
+                let el = event_target::<web_sys::HtmlElement>(&ev);
+                scroll.set_value((el.scroll_top(), el.scroll_left()));
+            }>
             <table class="matrix" data-testid="matrix">
                 <thead>
                     <tr><th class="corner" rowspan="2">"RX ↓  TX →"</th>{head_devices}</tr>

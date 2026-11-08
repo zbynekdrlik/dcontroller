@@ -151,6 +151,43 @@ pub fn elsewhere<'a>(grid: &Grid, rx: &'a Rx) -> Vec<(&'a str, String)> {
         .collect()
 }
 
+/// A subscription that is not receiving: which RX channel, from where,
+/// and Dante's status for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Problem {
+    /// `label @ device` of the RX channel.
+    pub rx: String,
+    /// `channel @ device` it asks for.
+    pub source: String,
+    /// Dante's status text, such as "No more unicast flows (Tx)".
+    pub status: String,
+    /// Dante reports an error (red), not a subscription still on its way.
+    pub error: bool,
+}
+
+/// Every subscription of the read devices that is not receiving, errors
+/// first, then by receiver in the server's order.
+pub fn problems(d: &Devices) -> Vec<Problem> {
+    let mut out: Vec<Problem> = d
+        .devices
+        .iter()
+        .filter_map(|dev| dev.channels.as_ref().map(|c| (dev, c)))
+        .flat_map(|(dev, c)| {
+            c.rx.iter().filter_map(move |r| {
+                let s = r.source.as_ref()?;
+                (!r.receiving()).then(|| Problem {
+                    rx: format!("{} @ {}", r.label, dev.name),
+                    source: format!("{} @ {}", s.channel, s.device),
+                    status: r.status.clone().unwrap_or_else(|| "no status".into()),
+                    error: r.state.as_deref() == Some("error"),
+                })
+            })
+        })
+        .collect();
+    out.sort_by_key(|p| !p.error);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,6 +254,44 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn problems_list_subscriptions_not_receiving_errors_first() {
+        let mut d = site();
+        let mut flows = rx("In 9", Some(("Mix R", "desk")), "x");
+        flows.status = Some("No more unicast flows (Tx)".into());
+        flows.state = Some("error".into());
+        d.devices.push(device("iem", &[], vec![flows]));
+        let p = problems(&d);
+        assert_eq!(
+            p,
+            vec![
+                Problem {
+                    rx: "In 9 @ iem".into(),
+                    source: "Mix R @ desk".into(),
+                    status: "No more unicast flows (Tx)".into(),
+                    error: true,
+                },
+                Problem {
+                    rx: "In 2 @ stage".into(),
+                    source: "mix r @ DESK".into(),
+                    status: "unresolved".into(),
+                    error: false,
+                },
+                Problem {
+                    rx: "In 4 @ stage".into(),
+                    source: "Vox @ gone".into(),
+                    status: "unresolved".into(),
+                    error: false,
+                },
+            ]
+        );
+        // Receiving and unsubscribed channels are no problem.
+        assert!(
+            p.iter()
+                .all(|x| !x.rx.starts_with("In 1") && !x.rx.starts_with("In 3"))
+        );
     }
 
     #[test]

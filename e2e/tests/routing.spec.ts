@@ -85,6 +85,32 @@ test.describe("routing matrix", () => {
     expect(console_msgs).toEqual([]);
   });
 
+  test("an unfolded matrix keeps its scroll position across refreshes", async ({ page }) => {
+    // A small window, so the unfolded matrix scrolls inside its box.
+    await page.setViewportSize({ width: 480, height: 330 });
+    await page.goto("/#routing");
+    const matrix = page.getByTestId("matrix");
+    await expect(matrix.locator(`[data-testid="cell"][data-rx="${DEVICE}"][data-tx="${DEVICE}"]`)).toHaveText("1", {
+      timeout: 30_000,
+    });
+    await matrix.locator(`[data-testid="rx-device"][data-name="${DEVICE}"]`).click();
+    await matrix.locator(`[data-testid="tx-device"][data-name="${DEVICE}"]`).click();
+    const wrap = page.locator(".matrix-wrap");
+    await expect(matrix.locator('[data-testid="cell"]', { hasText: "●" })).toHaveCount(1);
+    const room = await wrap.evaluate((e) => ({ y: e.scrollHeight - e.clientHeight, x: e.scrollWidth - e.clientWidth }));
+    expect(room.y).toBeGreaterThan(20);
+    await wrap.evaluate((e) => {
+      e.scrollTop = 20;
+      e.scrollLeft = Math.min(30, e.scrollWidth - e.clientWidth);
+    });
+    const at = await wrap.evaluate((e) => ({ y: e.scrollTop, x: e.scrollLeft }));
+    // Two device refreshes (3 s each) later, the box shows the same place.
+    for (let i = 0; i < 2; i++) await page.waitForResponse((r) => r.url().endsWith("/api/devices"));
+    await page.waitForTimeout(300);
+    expect(await page.locator(".matrix-wrap").evaluate((e) => ({ y: e.scrollTop, x: e.scrollLeft }))).toEqual(at);
+    expect(console_msgs).toEqual([]);
+  });
+
   test("tabs switch between routing and devices and keep the view in the URL", async ({ page }) => {
     await page.goto("/#routing");
     await page.getByTestId("tab-devices").click();
