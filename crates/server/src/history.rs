@@ -966,6 +966,29 @@ mod tests {
     }
 
     #[test]
+    fn overview_sparkline_is_the_typical_second_as_the_chart() {
+        // The chart draws the mean of the per-second peaks; the list's
+        // sparkline must draw the same, or one rare second over the latency
+        // shows as "exceeded" beside a chart under its line (#50).
+        let st = Store::memory().unwrap();
+        let now = 1_800_000_000;
+        st.set_flow("iem", 1, &flow(250), now - 7200).unwrap();
+        st.add(
+            "iem",
+            &[
+                s(1, now - 3599, 150, 0),
+                s(1, now - 3598, 150, 0),
+                s(1, now - 3597, 300, 0), // one rare second past 250 µs
+            ],
+        )
+        .unwrap();
+        let r = &st.overview(now).unwrap().receivers[0];
+        assert_eq!(r.spark[0], Some(800), "mean 200 of 250 µs, not the worst 300");
+        // The worst peak stays reported on its own.
+        assert_eq!((r.peak_us, r.latency_us), (300, 250));
+    }
+
+    #[test]
     fn device_names_match_case_aside() {
         // The recorder once stored samples under "stage-1" and flows under
         // "Stage-1": two device rows, and neither page found both.
