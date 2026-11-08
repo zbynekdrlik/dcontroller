@@ -415,8 +415,15 @@ impl Store {
             .map_err(|e| e.to_string())?;
         let mut per = db
             .prepare_cached(
-                "SELECT slot, (t - ?2 - 1) / ?4 AS b, MAX(peak), CAST(AVG(peak) AS INTEGER) FROM second
-                 WHERE device = ?1 AND t > ?2 AND t <= ?3 GROUP BY slot, b",
+                // Each second against the flow its slot carried at that
+                // second: a slot re-patched within the hour keeps its old
+                // samples on the old latency (0: no flow known).
+                "SELECT s.slot, (s.t - ?2 - 1) / ?4 AS b, COALESCE(f.latency_us, 0),
+                        MAX(s.peak), CAST(AVG(s.peak) AS INTEGER)
+                 FROM second s LEFT JOIN flow f ON f.device = s.device AND f.slot = s.slot
+                     AND f.since = (SELECT MAX(since) FROM flow
+                                    WHERE device = s.device AND slot = s.slot AND since <= s.t)
+                 WHERE s.device = ?1 AND s.t > ?2 AND s.t <= ?3 GROUP BY s.slot, b, f.since",
             )
             .map_err(|e| e.to_string())?;
         for (name, id, flows, last) in devices {
@@ -439,29 +446,18 @@ impl Store {
             let rows = per
                 .query_map(params![id, hour, now, step], |rw| {
                     Ok((
-                        rw.get::<_, u16>(0)?,
                         rw.get::<_, i64>(1)?,
                         rw.get::<_, u32>(2)?,
                         rw.get::<_, u32>(3)?,
+                        rw.get::<_, u32>(4)?,
                     ))
                 })
                 .map_err(|e| e.to_string())?;
-            let mut latencies: Vec<(u16, u32)> = Vec::new();
             // The flow closest to its latency (largest share); with no
             // latency known, the largest peak.
             let mut best: Option<(u32, u32)> = None;
             for row in rows {
-                let (slot, b, peak, mean) = row.map_err(|e| e.to_string())?;
-                let lat = match latencies.iter().find(|(s, _)| *s == slot) {
-                    Some((_, l)) => *l,
-                    None => {
-                        let l = Self::flow_at(&db, id, slot, now)
-                            .map_err(|e| e.to_string())?
-                            .map_or(0, |f| f.latency_us);
-                        latencies.push((slot, l));
-                        l
-                    }
-                };
+                let (b, lat, peak, mean) = row.map_err(|e| e.to_string())?;
                 let per_mille = |us: u32| {
                     if lat > 0 {
                         u32::try_from(u64::from(us) * 1000 / u64::from(lat)).unwrap_or(u32::MAX)
@@ -997,6 +993,23 @@ mod tests {
         );
         // The worst peak stays reported on its own.
         assert_eq!((r.peak_us, r.latency_us), (300, 250));
+    }
+
+    #[test]
+    fn overview_sparkline_takes_the_latency_of_the_flow_at_that_time() {
+        // A slot re-patched within the hour: its old samples belong to the
+        // old flow's latency, not today's (#50: 2.2 ms of an 8.4 ms flow
+        // read as 880 % of a 0.25 ms one).
+        let st = Store::memory().unwrap();
+        let now = 1_800_000_000;
+        st.set_flow("iem", 1, &flow(8000), now - 7200).unwrap();
+        st.set_flow("iem", 1, &flow(250), now - 1800).unwrap();
+        st.add("iem", &[s(1, now - 3599, 2000, 0), s(1, now - 10, 200, 0)])
+            .unwrap();
+        let r = &st.overview(now).unwrap().receivers[0];
+        assert_eq!(r.spark[0], Some(250), "2000 of the old 8000 µs");
+        assert_eq!(r.spark[59], Some(800), "200 of today's 250 µs");
+        assert_eq!((r.peak_us, r.latency_us), (200, 250));
     }
 
     #[test]
