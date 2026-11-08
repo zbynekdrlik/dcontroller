@@ -10,3 +10,4 @@ paths:
 - Charts: `crates/web/public/charts.js` (uPlot, vendored in `public/vendor/uplot`) is called through `wasm_bindgen` (`pages.rs` `chart_latency`) with JSON from `hist::chart_json`. Zoom comes back as `dc-zoom`/`dc-unzoom` DOM events.
 - The hash is the address: a `hashchange` listener moves the view; links may use plain `href="#…"`.
 - `python3` string replace on Rust after `cargo fmt` silently misses reformatted text: assert every replacement.
+- The device poll sets `devices` only when the answer differs; any view inside `move || devices.get()` still rebuilds on a real change, so state held in its DOM (a scroll box's position) must live in a signal and be put back (`Expanded.scroll` in Routing).
