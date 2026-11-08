@@ -161,13 +161,43 @@ pub struct Problem {
     pub source: String,
     /// Dante's status text, such as "No more unicast flows (Tx)".
     pub status: String,
-    /// Dante reports an error (red), not a subscription still on its way.
-    pub error: bool,
+    pub kind: Kind,
 }
 
-/// Every subscription of the read devices that is not receiving, errors
-/// first, then by receiver in the server's order.
+/// Why a subscription does not receive, worst first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Kind {
+    /// Dante reports an error, such as no free flow on the transmitter:
+    /// the alarm.
+    Failing,
+    /// The source device is on the network, but the channel is not found
+    /// or the flow is not up yet.
+    Unresolved,
+    /// The source device is not on the network (switched off, on
+    /// purpose or not): no error.
+    Offline,
+}
+
+impl Kind {
+    pub fn class(self) -> &'static str {
+        match self {
+            Kind::Failing => "problem err",
+            Kind::Unresolved => "problem warn",
+            Kind::Offline => "problem off",
+        }
+    }
+}
+
+/// The one-line count of [`problems`]: (failing, unresolved, offline).
+pub fn tally(p: &[Problem]) -> (usize, usize, usize) {
+    let n = |k| p.iter().filter(|x| x.kind == k).count();
+    (n(Kind::Failing), n(Kind::Unresolved), n(Kind::Offline))
+}
+
+/// Every subscription of the read devices that is not receiving, worst
+/// kind first, then by receiver in the server's order.
 pub fn problems(d: &Devices) -> Vec<Problem> {
+    let online = |name: &str| d.devices.iter().any(|x| same(&x.name, name));
     let mut out: Vec<Problem> = d
         .devices
         .iter()
@@ -179,12 +209,18 @@ pub fn problems(d: &Devices) -> Vec<Problem> {
                     rx: format!("{} @ {}", r.label, dev.name),
                     source: format!("{} @ {}", s.channel, s.device),
                     status: r.status.clone().unwrap_or_else(|| "no status".into()),
-                    error: r.state.as_deref() == Some("error"),
+                    kind: if r.state.as_deref() == Some("error") {
+                        Kind::Failing
+                    } else if online(&s.device) {
+                        Kind::Unresolved
+                    } else {
+                        Kind::Offline
+                    },
                 })
             })
         })
         .collect();
-    out.sort_by_key(|p| !p.error);
+    out.sort_by_key(|p| p.kind);
     out
 }
 
@@ -271,22 +307,24 @@ mod tests {
                     rx: "In 9 @ iem".into(),
                     source: "Mix R @ desk".into(),
                     status: "No more unicast flows (Tx)".into(),
-                    error: true,
+                    kind: Kind::Failing,
                 },
                 Problem {
                     rx: "In 2 @ stage".into(),
                     source: "mix r @ DESK".into(),
                     status: "unresolved".into(),
-                    error: false,
+                    kind: Kind::Unresolved,
                 },
+                // "gone" is not on the network: offline, no error.
                 Problem {
                     rx: "In 4 @ stage".into(),
                     source: "Vox @ gone".into(),
                     status: "unresolved".into(),
-                    error: false,
+                    kind: Kind::Offline,
                 },
             ]
         );
+        assert_eq!(tally(&p), (1, 1, 1));
         // Receiving and unsubscribed channels are no problem.
         assert!(
             p.iter()

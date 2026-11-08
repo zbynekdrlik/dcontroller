@@ -89,11 +89,11 @@ test.describe("subscription changes", () => {
     expect(console_msgs).toEqual([]);
   });
 
-  test("a subscription that does not receive is listed above the matrix with the device's reason", async ({ page }) => {
+  test("a subscription that does not receive is one line above the matrix, details on a click", async ({ page }) => {
     await openMatrix(page);
+    const box = page.getByTestId("sub-problems");
     const problem = page.locator(`[data-testid="sub-problem"][data-rx="Stage R @ ${DEVICE}"]`);
-    await expect(problem).toHaveCount(0);
-    // A channel no transmitter has: the device cannot resolve it.
+    await expect(box).toHaveCount(0);
     const ask = (source: { channel: string; device: string } | null) =>
       page.evaluate(
         (body) =>
@@ -104,19 +104,37 @@ test.describe("subscription changes", () => {
           }).then((r) => r.json()),
         { rx_device: DEVICE, rx_channel: 2, source },
       );
+
+    // A source device that is not on the network is no error: no line at all.
+    await ask({ channel: "Mic", device: "dc-e2e-switched-off" });
+    await expect.poll(async () => (await stageR(page)).source?.device, { timeout: 15_000 }).toBe("dc-e2e-switched-off");
+    expect((await stageR(page)).state).not.toBe("connected");
+    await page.waitForResponse((r) => r.url().endsWith("/api/devices"));
+    await page.waitForTimeout(500);
+    await expect(box).toHaveCount(0);
+
+    // The device is on the network, the channel is not there: one line, the row hidden.
     await ask({ channel: "Nowhere", device: DEVICE });
-    await expect(problem).toBeVisible({ timeout: 30_000 });
-    await expect(problem.locator(".p-from")).toHaveText(`\u2190 Nowhere @ ${DEVICE}`);
-    await expect(page.getByTestId("sub-problems")).toContainText("not receiving");
-    // The list says what the device says.
+    const summary = page.getByTestId("sub-summary");
+    await expect(summary).toBeVisible({ timeout: 30_000 });
     const st = await stageR(page);
     expect(st.state).not.toBe("connected");
+    // Other specs leave subscriptions to devices that are gone: those only count as offline.
+    await expect(page.getByTestId(st.state === "error" ? "sub-failing" : "sub-unresolved")).toHaveText(
+      st.state === "error" ? "1 failing" : "1 not resolved",
+    );
+    await expect(page.locator('[data-testid="sub-problem"]')).toHaveCount(1);
+    await expect(problem).toBeHidden();
+    // A click opens the details: which channel, from where, what the device says.
+    await summary.click();
+    await expect(problem).toBeVisible();
+    await expect(problem.locator(".p-what")).toHaveText(`Stage R @ ${DEVICE} \u2190 Nowhere @ ${DEVICE}`);
     await expect(problem.locator(".p-status")).toHaveText(st.status);
     await expect(problem).toHaveClass(st.state === "error" ? /\berr\b/ : /\bwarn\b/);
 
-    // Removed, it leaves the list.
+    // Removed, the line goes.
     await ask(null);
-    await expect(problem).toHaveCount(0, { timeout: 30_000 });
+    await expect(box).toHaveCount(0, { timeout: 30_000 });
     expect((await stageR(page)).source).toBeNull();
     expect(console_msgs).toEqual([]);
   });
