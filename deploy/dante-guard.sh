@@ -4,7 +4,8 @@
 #
 # 1. Firewall (dante-guard.nft, unit dante-guard.service, loaded before the
 #    network): only the dcontroller user, DHCP, IGMP and PTP send on the NIC;
-#    inbound takes replies, DHCP, PTP, mDNS and UDP multicast only.
+#    inbound takes replies, DHCP, PTP, mDNS (with unicast answers from 5353)
+#    and UDP multicast only.
 # 2. ARP: the NIC answers and announces only its own address.
 # 3. Routing (NetworkManager): no default route, no DNS, no IPv6 on the NIC;
 #    its subnet lives in table 100, used only by sockets bound to the NIC's
