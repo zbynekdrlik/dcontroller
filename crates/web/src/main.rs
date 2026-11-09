@@ -48,6 +48,7 @@ fn App() -> impl IntoView {
         tx: RwSignal::new(BTreeSet::new()),
         rx: RwSignal::new(BTreeSet::new()),
         scroll: StoredValue::new((0, 0)),
+        problems: StoredValue::new(false),
     });
     let view_now = RwSignal::new(View::from_hash());
     let ctl = Ctl {
@@ -1018,6 +1019,8 @@ struct Expanded {
     rx: RwSignal<BTreeSet<String>>,
     /// The matrix box's scroll (top, left), kept across rebuilds.
     scroll: StoredValue<(i32, i32)>,
+    /// The subscriptions line above the matrix is open, kept across rebuilds.
+    problems: StoredValue<bool>,
 }
 
 fn flip(set: RwSignal<BTreeSet<String>>, name: &str) {
@@ -1069,8 +1072,13 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
             })
             .collect_view();
         let box_class = if failing > 0 { "problems err" } else { "problems warn" };
+        let is_open = ex.problems.get_value();
+        let toggle = move |ev: leptos::ev::Event| {
+            ex.problems
+                .set_value(event_target::<web_sys::HtmlDetailsElement>(&ev).open());
+        };
         view! {
-            <details class=box_class data-testid="sub-problems">
+            <details class=box_class data-testid="sub-problems" open=is_open on:toggle=toggle>
                 <summary data-testid="sub-summary">"Subscriptions: "{parts}</summary>
                 <ul>{rows}</ul>
             </details>
@@ -1081,6 +1089,7 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
         tx: tx_open,
         rx: rx_open,
         scroll,
+        ..
     } = ex;
     let ctl = expect_context::<Ctl>();
     let txo = tx_open.get();
