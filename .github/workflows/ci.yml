@@ -253,6 +253,9 @@ jobs:
           PY
           }
           answer 9999   # no guard yet: anything arrives
+          # The step above started the unit 5 times in a few seconds, systemd's
+          # start limit; a site box never restarts it that often.
+          sudo systemctl reset-failed dante-guard.service
           sudo DC_IFACE=dante1 DC_GUARD_SKIP_ROUTING=1 "$rel/dante-guard.sh"
           if answer 9999; then echo "unsolicited unicast accepted on the Dante NIC"; exit 1; fi
           answer 5353
