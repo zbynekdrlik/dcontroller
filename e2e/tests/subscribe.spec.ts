@@ -90,6 +90,8 @@ test.describe("subscription changes", () => {
   });
 
   test("a subscription that does not receive is one line above the matrix, details on a click", async ({ page }) => {
+    // A device is re-read every 30 s; the test waits for one re-read.
+    test.setTimeout(90_000);
     await openMatrix(page);
     const box = page.getByTestId("sub-problems");
     const problem = page.locator(`[data-testid="sub-problem"][data-rx="Stage R @ ${DEVICE}"]`);
@@ -131,6 +133,17 @@ test.describe("subscription changes", () => {
     await expect(problem.locator(".p-what")).toHaveText(`Stage R @ ${DEVICE} \u2190 Nowhere @ ${DEVICE}`);
     await expect(problem.locator(".p-status")).toHaveText(st.status);
     await expect(problem).toHaveClass(st.state === "error" ? /\berr\b/ : /\bwarn\b/);
+
+    // Opened, it stays open while the matrix takes a new device answer.
+    const readAt = async () =>
+      (await page.evaluate(() => fetch("/api/devices").then((r) => r.json()))).devices.find(
+        (x: { name: string }) => x.name === DEVICE,
+      ).read_at;
+    const read = await readAt();
+    await expect.poll(readAt, { timeout: 45_000 }).not.toBe(read);
+    for (let i = 0; i < 2; i++) await page.waitForResponse((r) => r.url().endsWith("/api/devices"));
+    await page.waitForTimeout(300);
+    await expect(problem).toBeVisible();
 
     // Removed, the line goes.
     await ask(null);
