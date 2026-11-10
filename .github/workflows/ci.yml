@@ -207,6 +207,13 @@ jobs:
           test "$(sysctl -n net.ipv4.conf.dante0.arp_ignore)" = 1
           send dcontroller
           if send nobody; then echo "foreign user sent on the Dante NIC"; exit 1; fi
+          # Out only to the Dante subnet and Dante's multicast groups (dstack
+          # docs/two-networks.md §3), even for dcontroller.
+          sudo ip route add 10.99.8.0/24 dev dante0
+          if sudo -u dcontroller python3 -I -c 'import socket;s=socket.socket(2,2);s.bind(("10.99.7.2",0));s.sendto(b"x",("10.99.8.9",9))'; then echo "dcontroller sent outside the Dante subnet"; exit 1; fi
+          sudo -u dcontroller python3 -I -c 'import socket;s=socket.socket(2,2);s.bind(("10.99.7.2",0));s.setsockopt(0,32,socket.inet_aton("10.99.7.2"));s.sendto(b"x",("224.0.0.251",5353))'
+          # A static leg takes no DHCP.
+          if sudo grep -qE 'dport (67|\{ ?68)' /etc/dcontroller/dante-guard.nft; then echo "DHCP rules on a static leg"; exit 1; fi
           if sudo python3 -I -c 'import socket;s=socket.socket(2,2);s.bind(("10.99.7.2",0));s.sendto(b"x",("10.99.7.9",9))'; then echo "root sent on the Dante NIC"; exit 1; fi
           # An update refreshes the guard's rules: a stale rule file (no meter
           # ports, as before v0.1.21) comes back whole from install.sh.
