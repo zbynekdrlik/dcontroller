@@ -49,6 +49,8 @@ test.describe("subscription changes", () => {
     const matrix = await openMatrix(page);
     const cell = matrix.locator(`[data-testid="cell"][data-rx="${DEVICE}/Stage R"][data-tx="${DEVICE}/Mix R"]`);
     await expect(cell).toHaveText("");
+    // Other specs log subscriptions too: count only this test's.
+    const logged = (await page.evaluate(() => fetch("/api/changes").then((r) => r.json()))).length;
 
     await cell.click();
     await page.getByTestId("confirm-change").click();
@@ -78,9 +80,8 @@ test.describe("subscription changes", () => {
     await expect(cell).toHaveText("");
     expect((await stageR(page)).source).toBeNull();
 
-    const log = (await page.evaluate(() => fetch("/api/changes").then((r) => r.json()))).filter(
-      (e: { kind: string }) => e.kind === "subscription",
-    );
+    const all = await page.evaluate(() => fetch("/api/changes").then((r) => r.json()));
+    const log = all.slice(0, all.length - logged).filter((e: { kind: string }) => e.kind === "subscription");
     expect(log.length).toBe(2);
     expect(log[0].requested).toBeNull();
     expect(log[0].after).toBeNull();
