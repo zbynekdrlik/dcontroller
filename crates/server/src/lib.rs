@@ -2,6 +2,7 @@
 
 pub mod change;
 pub mod dante;
+pub mod flows;
 pub mod history;
 pub mod latency;
 pub mod meters;
@@ -145,6 +146,35 @@ async fn subscription(
             tracing::error!(error = %e, "change: task failed");
             StatusCode::INTERNAL_SERVER_ERROR
         })
+}
+
+async fn multicast(
+    State(s): State<Shared>,
+    headers: axum::http::HeaderMap,
+    axum::Json(req): axum::Json<dcontroller_api::MulticastCreate>,
+) -> Result<axum::Json<dcontroller_api::ChangeResult>, StatusCode> {
+    let who = user(&headers);
+    tokio::task::spawn_blocking(move || s.changes.multicast(&s.dante, &who, &req))
+        .await
+        .map(axum::Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "multicast: task failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+async fn tx_flows(
+    State(s): State<Shared>,
+    axum::extract::Path(device): axum::extract::Path<String>,
+) -> Result<axum::Json<dcontroller_api::TxFlows>, (StatusCode, String)> {
+    tokio::task::spawn_blocking(move || flows::list(&s.dante, &device))
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "flows: task failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        })?
+        .map(axum::Json)
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e))
 }
 
 async fn overview(
@@ -295,6 +325,8 @@ pub fn app(web_dir: &Path, shared: Shared) -> Router {
         .route("/api/rename", axum::routing::post(rename))
         .route("/api/setting", axum::routing::post(setting))
         .route("/api/changes", get(changes))
+        .route("/api/multicast", axum::routing::post(multicast))
+        .route("/api/flows/{device}", get(tx_flows))
         .route("/api/history/{device}", get(history_report))
         .route("/api/overview", get(overview))
         .route("/api/meters/{device}", get(meter_report))
