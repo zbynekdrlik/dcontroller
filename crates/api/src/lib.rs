@@ -229,6 +229,38 @@ pub enum RenameTarget {
     Device,
 }
 
+/// `GET /api/flows/{device}`: the device's TX flows, as it lists them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TxFlows {
+    pub device: String,
+    pub flows: Vec<TxFlow>,
+    /// Records the device listed that did not read.
+    pub unread: usize,
+}
+
+/// One TX flow.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TxFlow {
+    /// The flow's global id.
+    pub id: u16,
+    /// Its media-local slot.
+    pub slot: u16,
+    pub multicast: bool,
+    /// The TX channels it carries (from 1), in order.
+    pub channels: Vec<u16>,
+    /// Where it goes, `ip:port`: a multicast flow's group, a unicast flow's
+    /// receiver.
+    pub destinations: Vec<String>,
+}
+
+/// `POST /api/multicast`: a new multicast flow of these TX channels (from
+/// 1, at most 8) on `device`. Sent only after the user confirmed it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MulticastCreate {
+    pub device: String,
+    pub channels: Vec<u16>,
+}
+
 /// One logged change (`GET /api/changes`, newest first): a subscription
 /// change, or a rename (`kind` `rename`, the names in `name_*`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -239,7 +271,8 @@ pub struct ChangeEntry {
     /// The Cloudflare Access e-mail, or `local` without Access.
     pub user: String,
     /// `subscription` (also when empty, as in the first log lines),
-    /// `rename` or `setting`.
+    /// `rename`, `setting` or `multicast` (a new TX multicast flow: the
+    /// channels in `name_asked`, the flow read back in `name_after`).
     pub kind: String,
     /// For a rename: `tx`, `rx` or `device`; for a setting: `latency`,
     /// `sample_rate` or `encoding`.

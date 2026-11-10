@@ -448,6 +448,110 @@ impl Changes {
     }
 }
 
+impl Changes {
+    /// Runs one confirmed multicast create by `user`: lists the device's TX
+    /// flows, creates a multicast flow of the channels in the lowest free
+    /// slot, lists again (the device names the group only there) and logs it.
+    pub fn multicast(
+        &self,
+        dante: &Shared,
+        user: &str,
+        req: &api::MulticastCreate,
+    ) -> api::ChangeResult {
+        let _one = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        info!(%user, device = %req.device, channels = ?req.channels, "multicast: asked");
+        let refuse = |message: String| {
+            warn!(%user, device = %req.device, %message, "multicast: refused before sending");
+            api::ChangeResult {
+                ok: false,
+                message,
+                channel: None,
+            }
+        };
+        let (target, tx) = {
+            let st = dante.read().unwrap_or_else(|e| e.into_inner());
+            let tx = st.tx_channels(&req.device);
+            (dante::State::target(&st, &req.device), tx)
+        };
+        let Some((ip, device)) = target else {
+            return refuse(format!(
+                "{} is not listed (discovery off or device gone)",
+                req.device
+            ));
+        };
+        if let Err(m) = crate::flows::validate(req, &tx) {
+            return refuse(m);
+        }
+        let seq = AtomicU16::new(1);
+        let requests = Requests::default();
+        let stop = AtomicBool::new(false);
+        let asked = req
+            .channels
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut entry = api::ChangeEntry {
+            at: now(),
+            user: user.to_owned(),
+            kind: "multicast".into(),
+            what: "tx".into(),
+            rx_device: device.name.clone(),
+            name_asked: Some(asked),
+            ..api::ChangeEntry::default()
+        };
+        let run = || -> Result<(String, dstack::arc::flows::TxFlow), String> {
+            use dstack::arc::flows;
+            let mut udp = Udp::open(ip, device.arc, &seq, REPLY_TIMEOUT, &requests, &stop)
+                .map_err(|e| format!("socket: {e}"))?;
+            let before = flows::list_tx_flows(&mut udp).map_err(|e| format!("list before: {e}"))?;
+            let slot = crate::flows::free_slot(&before);
+            let listed = before
+                .flows
+                .iter()
+                .map(crate::flows::text)
+                .collect::<Vec<_>>()
+                .join("; ");
+            info!(device = %device.name, %slot, before = %listed, "multicast: sending");
+            let made = flows::create_multicast(&mut udp, slot, &req.channels, flows::OPTIONS[0])
+                .map_err(|e| format!("device: {e}"))?;
+            // The group: the device names it only in the list.
+            let after = flows::list_tx_flows(&mut udp).map_err(|e| format!("list back: {e}"))?;
+            let flow = after
+                .flows
+                .into_iter()
+                .find(|f| f.local_id == made.local_id && f.multicast())
+                .ok_or_else(|| format!("created in slot {slot}, but the list does not show it"))?;
+            Ok((listed, flow))
+        };
+        let result = match run() {
+            Err(message) => api::ChangeResult {
+                ok: false,
+                message,
+                channel: None,
+            },
+            Ok((before, flow)) => {
+                entry.name_before = Some(before);
+                let text = crate::flows::text(&flow);
+                entry.name_after = Some(text.clone());
+                api::ChangeResult {
+                    ok: true,
+                    message: format!("done, read back from the device: {text}"),
+                    channel: None,
+                }
+            }
+        };
+        entry.ok = result.ok;
+        entry.message = result.message.clone();
+        info!(%user, device = %entry.rx_device, asked = ?entry.name_asked, before = ?entry.name_before,
+            after = ?entry.name_after, ok = entry.ok, message = %entry.message, "multicast: done");
+        if let Err(e) = self.append(&entry) {
+            warn!(error = %e, "changes log: entry not written (it is in the journal above)");
+        }
+        result
+    }
+}
+
 /// How long a sample-rate or encoding write waits to read its value back.
 const WRITE_WAIT: Duration = Duration::from_secs(5);
 /// How often an encoding write reads the device's channels again.

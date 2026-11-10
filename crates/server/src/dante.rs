@@ -338,6 +338,16 @@ impl State {
         Some((ip, e.device.clone()))
     }
 
+    /// The TX channel numbers of the listed device `name` as last read
+    /// (empty when not read yet).
+    pub fn tx_channels(&self, name: &str) -> Vec<u16> {
+        self.devices
+            .get(&name.to_ascii_lowercase())
+            .and_then(|e| e.channels.as_ref())
+            .map(|c| c.tx.iter().map(|t| t.channel).collect())
+            .unwrap_or_default()
+    }
+
     /// Whether `device`'s product info is still to be read.
     pub fn needs_info(&self, device: &Device) -> bool {
         self.devices

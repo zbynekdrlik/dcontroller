@@ -4,17 +4,18 @@
 //! user confirms it, and the server reads it back and logs it. The version label is
 //! build-injected from the same `buildver` as the server's `/api/version`.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Duration;
 
 use dcontroller_api::{
-    ChangeEntry, ChangeResult, ChannelLevel, Device, Devices, Info, MeterReport, Rename,
-    RenameTarget, RxChannel, SettingChange, Settings, Source, SubscriptionChange,
+    ChangeEntry, ChangeResult, ChannelLevel, Device, Devices, Info, MeterReport, MulticastCreate,
+    Rename, RenameTarget, RxChannel, SettingChange, Settings, Source, SubscriptionChange, TxFlows,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 mod clock;
+mod flows;
 mod hist;
 mod lat;
 mod matrix;
@@ -56,6 +57,8 @@ fn App() -> impl IntoView {
         pending: RwSignal::new(None),
         renaming: RwSignal::new(None),
         setting: RwSignal::new(None),
+        multicast: RwSignal::new(None),
+        flows: RwSignal::new(BTreeMap::new()),
         busy: RwSignal::new(false),
         result: RwSignal::new(None),
     };
@@ -286,6 +289,7 @@ fn App() -> impl IntoView {
         <ConfirmDialog/>
         <RenameDialog/>
         <SettingDialog/>
+        <MulticastDialog/>
         <ResultLine/>
     }
 }
@@ -628,6 +632,7 @@ fn change_target(e: &ChangeEntry) -> String {
         ("rename", "tx") => format!("rename TX {} @ {}", e.rx_channel, e.rx_device),
         ("rename", _) => format!("rename RX {} @ {}", e.rx_channel, e.rx_device),
         ("setting", w) => format!("{} @ {}", w.replace('_', " "), e.rx_device),
+        ("multicast", _) => format!("new multicast flow @ {}", e.rx_device),
         _ => format!("{} @ {}", e.rx_label, e.rx_device),
     }
 }
@@ -664,6 +669,11 @@ struct Ctl {
     pending: RwSignal<Option<Pending>>,
     renaming: RwSignal<Option<RenameAsk>>,
     setting: RwSignal<Option<settings::Ask>>,
+    /// A new multicast flow waiting in its dialog.
+    multicast: RwSignal<Option<McAsk>>,
+    /// The devices whose TX flows are open, with their last list (kept
+    /// across the device poll's rebuilds).
+    flows: RwSignal<BTreeMap<String, Option<Result<TxFlows, String>>>>,
     busy: RwSignal<bool>,
     result: RwSignal<Option<ChangeResult>>,
 }
@@ -960,6 +970,197 @@ fn SettingDialog() -> impl IntoView {
     }
 }
 
+async fn fetch_flows(device: &str) -> Result<TxFlows, String> {
+    let url = format!("/api/flows/{}", js_sys::encode_uri_component(device));
+    let res = gloo_net::http::Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.ok() {
+        let why = res.text().await.unwrap_or_default();
+        return Err(format!("server answered {}: {why}", res.status()));
+    }
+    res.json::<TxFlows>().await.map_err(|e| e.to_string())
+}
+
+/// Lists `device`'s TX flows into the open set.
+fn load_flows(ctl: Ctl, device: String) {
+    ctl.flows.update(|m| {
+        m.insert(device.clone(), None);
+    });
+    spawn_local(async move {
+        let r = fetch_flows(&device).await;
+        ctl.flows.update(|m| {
+            if m.contains_key(&device) {
+                m.insert(device, Some(r));
+            }
+        });
+    });
+}
+
+/// A device's TX flows, listed when the operator opens them, and the
+/// button that asks for a new multicast flow.
+#[component]
+fn TxFlowsBox(device: String, tx: Vec<(u16, String)>) -> impl IntoView {
+    let ctl = expect_context::<Ctl>();
+    let key = device.clone();
+    let open = move || ctl.flows.with(|m| m.contains_key(&key));
+    let toggle = {
+        let device = device.clone();
+        move |_| {
+            if ctl.flows.with_untracked(|m| m.contains_key(&device)) {
+                ctl.flows.update(|m| {
+                    m.remove(&device);
+                });
+            } else {
+                load_flows(ctl, device.clone());
+            }
+        }
+    };
+    let ask = {
+        let device = device.clone();
+        let tx = tx.clone();
+        move |_| {
+            ctl.multicast.set(Some(McAsk {
+                device: device.clone(),
+                tx: tx.clone(),
+                chosen: Vec::new(),
+            }))
+        }
+    };
+    let list = {
+        let device = device.clone();
+        move || {
+            let state = ctl.flows.with(|m| m.get(&device).cloned());
+            match state {
+                None => ().into_any(),
+                Some(None) => view! { <p class="status" data-testid="flows-loading">"Reading the flows…"</p> }.into_any(),
+                Some(Some(Err(e))) => view! { <p class="error" data-testid="flows-error">{format!("Flows not readable: {e}")}</p> }.into_any(),
+                Some(Some(Ok(f))) => {
+                    let all = ctl.devices.with_untracked(|d| match d {
+                        Some(Ok(d)) => flows::rows(&f.flows, &tx, d),
+                        _ => flows::rows(&f.flows, &tx, &Devices::default()),
+                    });
+                    let n = all.len();
+                    view! {
+                        <p class="subs" data-testid="flows-count">{format!("{n} TX flow{}", if n == 1 { "" } else { "s" })}
+                            {(f.unread > 0).then(|| format!(" ({} not readable)", f.unread))}</p>
+                        <table class="grid" data-testid="flows-table">
+                            <thead><tr><th>"Slot"</th><th>"Kind"</th><th>"Channels"</th><th>"To"</th></tr></thead>
+                            <tbody>{all.into_iter().map(|r| view! {
+                                <tr data-testid="flow-row" data-kind=if r.multicast { "multicast" } else { "unicast" }>
+                                    <td>{r.slot}</td>
+                                    <td>{if r.multicast { "multicast" } else { "unicast" }}</td>
+                                    <td data-testid="flow-channels">{r.channels}</td>
+                                    <td data-testid="flow-to">{r.to}</td>
+                                </tr>
+                            }).collect_view()}</tbody>
+                        </table>
+                    }.into_any()
+                }
+            }
+        }
+    };
+    view! {
+        <div class="actions">
+            <button data-testid="tx-flows" on:click=toggle>{move || if open() { "Hide TX flows" } else { "TX flows" }}</button>
+            <button data-testid="create-multicast" on:click=ask>"Create multicast flow"</button>
+        </div>
+        {list}
+    }
+}
+
+/// A new multicast flow the operator is choosing channels for.
+#[derive(Clone, Debug, PartialEq)]
+struct McAsk {
+    device: String,
+    tx: Vec<(u16, String)>,
+    chosen: Vec<u16>,
+}
+
+async fn send_multicast(req: &MulticastCreate) -> Result<ChangeResult, String> {
+    let res = gloo_net::http::Request::post("/api/multicast")
+        .json(req)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.ok() {
+        return Err(format!("server answered {}", res.status()));
+    }
+    res.json::<ChangeResult>().await.map_err(|e| e.to_string())
+}
+
+#[component]
+fn MulticastDialog() -> impl IntoView {
+    let ctl = expect_context::<Ctl>();
+    let create = move |_| {
+        let Some(a) = ctl.multicast.get_untracked() else {
+            return;
+        };
+        ctl.busy.set(true);
+        spawn_local(async move {
+            let req = MulticastCreate {
+                device: a.device.clone(),
+                channels: a.chosen.clone(),
+            };
+            let r = send_multicast(&req).await.unwrap_or_else(|e| ChangeResult {
+                ok: false,
+                message: e,
+                channel: None,
+            });
+            ctl.result.set(Some(r));
+            load_flows(ctl, a.device.clone());
+            ctl.busy.set(false);
+            ctl.multicast.set(None);
+        });
+    };
+    move || {
+        ctl.multicast.get().map(|a| {
+            let busy = ctl.busy.get();
+            let full = a.chosen.len() >= flows::MAX_CHANNELS;
+            view! {
+                <div class="modal-back">
+                    <div class="modal" role="dialog" data-testid="multicast-dialog">
+                        <p>{format!("New multicast flow on {}: choose up to {} TX channels.", a.device, flows::MAX_CHANNELS)}</p>
+                        <div class="checks">
+                            {a.tx.iter().map(|(n, l)| {
+                                let n = *n;
+                                let on = a.chosen.contains(&n);
+                                view! {
+                                    <label data-testid="multicast-channel" data-channel=n.to_string()>
+                                        <input type="checkbox" checked=on disabled=busy || (full && !on)
+                                            on:change=move |_| ctl.multicast.update(|m| if let Some(m) = m {
+                                                if let Some(i) = m.chosen.iter().position(|c| *c == n) {
+                                                    m.chosen.remove(i);
+                                                } else {
+                                                    m.chosen.push(n);
+                                                    m.chosen.sort_unstable();
+                                                }
+                                            })/>
+                                        {format!(" {l} ({n})")}
+                                    </label>
+                                }
+                            }).collect_view()}
+                        </div>
+                        {(!a.chosen.is_empty()).then(|| view! {
+                            <p class="warn" data-testid="multicast-question">{flows::question(&a.device, &a.chosen, &a.tx)}</p>
+                        })}
+                        <div class="buttons">
+                            <button data-testid="multicast-cancel" disabled=busy
+                                on:click=move |_| ctl.multicast.set(None)>"Cancel"</button>
+                            <button class="primary" data-testid="multicast-create"
+                                disabled=busy || a.chosen.is_empty() on:click=create>
+                                {if busy { "Sending…" } else { "Create" }}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            }
+        })
+    }
+}
+
 async fn fetch_changes() -> Result<Vec<ChangeEntry>, String> {
     let res = gloo_net::http::Request::get("/api/changes")
         .send()
@@ -998,9 +1199,9 @@ fn ChangeLog() -> impl IntoView {
                                     e.user.clone().into_any()
                                 }}</td>
                                 <td>{change_target(&e)}</td>
-                                <td>{if e.kind == "rename" || e.kind == "setting" { name_text(&e.name_before) } else { source_text(&e.before) }}</td>
-                                <td>{if e.kind == "rename" || e.kind == "setting" { name_text(&e.name_asked) } else { source_text(&e.requested) }}</td>
-                                <td>{if e.kind == "rename" || e.kind == "setting" { name_text(&e.name_after) } else { source_text(&e.after) }}</td>
+                                <td>{if e.kind == "rename" || e.kind == "setting" || e.kind == "multicast" { name_text(&e.name_before) } else { source_text(&e.before) }}</td>
+                                <td>{if e.kind == "rename" || e.kind == "setting" || e.kind == "multicast" { name_text(&e.name_asked) } else { source_text(&e.requested) }}</td>
+                                <td>{if e.kind == "rename" || e.kind == "setting" || e.kind == "multicast" { name_text(&e.name_after) } else { source_text(&e.after) }}</td>
                                 <td>{e.message.clone()}</td>
                             </tr>
                         }
@@ -1513,6 +1714,7 @@ fn DeviceCard(dev: Device) -> impl IntoView {
         .map_or(0, |c| c.rx.iter().filter(|r| r.source.is_some()).count());
     let name = dev.name.clone();
     let name_attr = dev.name.clone();
+    let flows_name = dev.name.clone();
     view! {
         <li class="device" data-testid="device" data-name=name_attr>
             <details open=is_open on:toggle=toggle>
@@ -1567,10 +1769,11 @@ fn DeviceCard(dev: Device) -> impl IntoView {
                     </table>
                     <h3>"Transmit"</h3>
                     <ol class="tx" data-testid="tx-list">
-                        {c.tx.into_iter().map(|t| view! {
+                        {c.tx.clone().into_iter().map(|t| view! {
                             <li data-testid="tx-channel" value=t.channel>{t.label}</li>
                         }).collect_view()}
                     </ol>
+                    <TxFlowsBox device=flows_name.clone() tx=c.tx.iter().map(|t| (t.channel, t.label.clone())).collect()/>
                 })}
             </details>
         </li>
