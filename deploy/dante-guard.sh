@@ -42,7 +42,7 @@ trap 'rm -f "$tmp"' EXIT
 sed "s/@IFACE@/$DC_IFACE/g" "$src/dante-guard.nft" > "$tmp"
 nft -c -f "$tmp"
 install -m 0644 "$tmp" /etc/dcontroller/dante-guard.nft
-printf '# Dante NIC answers ARP only for its own address and announces only it.\nnet.ipv4.conf.%s.arp_ignore = 1\nnet.ipv4.conf.%s.arp_announce = 2\n' \
+printf '# Dante NIC answers ARP only for its own address and announces only it.\n# Slash keys: an interface name may hold a dot (a VLAN, enp2s0.70).\nnet/ipv4/conf/%s/arp_ignore = 1\nnet/ipv4/conf/%s/arp_announce = 2\n' \
     "$DC_IFACE" "$DC_IFACE" > /etc/sysctl.d/60-dante-guard.conf
 sysctl -q -p /etc/sysctl.d/60-dante-guard.conf
 install -m 0644 "$src/dante-guard.service" /etc/systemd/system/dante-guard.service
