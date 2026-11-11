@@ -31,11 +31,15 @@ pub fn free_slot(listed: &Flows) -> u16 {
         .unwrap_or(u16::MAX)
 }
 
-/// The TX flow slots to show for `dev`'s list: 0 (unknown) when the device
-/// echoes its flow count there instead of its slots.
+/// The TX flow slots to show for `dev`'s list: 0 (unknown, the page shows
+/// the count alone) for one of dstack's devices from before v0.6.84, which
+/// echoed its flow count there (dstack#190: its limit is 32).
 pub fn slots(dev: &dstack::discover::Device, listed: &Flows) -> u16 {
-    let _ = dev;
-    listed.slots
+    if dev.states_flow_slots() {
+        listed.slots
+    } else {
+        0
+    }
 }
 
 /// Checks a create before anything is sent: 1 to 8 channels, each from 1,
