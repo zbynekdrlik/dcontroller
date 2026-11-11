@@ -1,9 +1,8 @@
 import { test, expect, type ConsoleMessage, type Page } from "@playwright/test";
 
 // TX flows on dstack's own device (global-setup.ts), never a site device.
-// It lists its unicast flows over ARC 2.8.9 like hardware; it makes no
-// multicast flow (dstack answers no create), so a create must come back as
-// not changed, read from the device and logged.
+// It lists, creates and deletes TX flows over ARC 2.8.9 like an UltimoX2
+// (dstack v0.6.91).
 const DEVICE = "dc-e2e-device";
 
 // Status entries (a subscription stopped or receives again) arrive with device reads at any time: leave them out.
@@ -34,7 +33,7 @@ test.describe("TX flows", () => {
     page.on("pageerror", (e) => msgs.push(`pageerror: ${e.message}`));
   });
 
-  test("a transmitter's flows are listed with their receiver, and a multicast create is confirmed and logged", async ({
+  test("a transmitter's flows are listed with their receiver; a multicast flow is created, listed and deleted, each confirmed and logged", async ({
     page,
   }) => {
     test.setTimeout(90_000);
@@ -95,15 +94,47 @@ test.describe("TX flows", () => {
     await dialog.locator('[data-testid="multicast-channel"][data-channel="2"] input').check();
     await expect(dialog.getByTestId("multicast-question")).toContainText(`Create a multicast flow on ${DEVICE} with `);
     await dialog.getByTestId("multicast-create").click();
-    await expect(page.getByTestId("change-result")).toHaveText(/^Not changed: device: /, { timeout: 20_000 });
+    await expect(page.getByTestId("change-result")).toHaveText(/^Done: done, read back from the device: slot 3 multicast 1,2 -> 239\.255\.\d+\.\d+:4321$/, {
+      timeout: 20_000,
+    });
     await expect(dialog).toHaveCount(0);
     const after = await changes(page);
     expect(after.length).toBe(before.length + 1);
-    expect(after[0]).toMatchObject({ kind: "multicast", rx_device: DEVICE, name_asked: "1,2", ok: false });
+    expect(after[0]).toMatchObject({ kind: "multicast", rx_device: DEVICE, name_asked: "1,2", ok: true });
 
-    // The Changes tab lists it.
+    // Listed back as a multicast flow to its group, with a Delete button.
+    const mc = card.locator('[data-testid="flow-row"][data-kind="multicast"]');
+    await expect(mc).toHaveCount(1, { timeout: 15_000 });
+    await expect(mc.getByTestId("flow-channels")).toHaveText("Mix L (1), Mix R (2)");
+    await expect(mc.getByTestId("flow-to")).toHaveText(/^239\.255\.\d+\.\d+:4321$/);
+    await expect(card.getByTestId("flows-count")).toHaveText("3 of 32 TX flows");
+
+    // Delete: cancel sends nothing; confirmed, it is gone from the device's list.
+    const del = page.getByTestId("flow-delete-dialog");
+    await mc.getByTestId("flow-delete").click();
+    await expect(del.getByTestId("flow-delete-question")).toHaveText(
+      /^Delete multicast flow slot 3 on dc-e2e-device \(Mix L \(1\), Mix R \(2\) to 239\.255\.\d+\.\d+:4321\)\? Receivers subscribed to it stop receiving\.$/,
+    );
+    const beforeDelete = await changes(page);
+    await del.getByTestId("flow-delete-cancel").click();
+    await expect(del).toHaveCount(0);
+    expect(await changes(page)).toEqual(beforeDelete);
+    await mc.getByTestId("flow-delete").click();
+    await del.getByTestId("flow-delete-confirm").click();
+    await expect(page.getByTestId("change-result")).toHaveText(/^Done: done, gone from the device's list: slot 3 multicast 1,2 -> /, {
+      timeout: 20_000,
+    });
+    await expect(mc).toHaveCount(0, { timeout: 15_000 });
+    await expect(card.getByTestId("flows-count")).toHaveText("2 of 32 TX flows");
+    const deleted = await changes(page);
+    expect(deleted.length).toBe(beforeDelete.length + 1);
+    expect(deleted[0]).toMatchObject({ kind: "multicast", what: "delete", rx_device: DEVICE, rx_channel: 3, name_after: "gone", ok: true });
+
+    // The Changes tab lists both.
     await page.getByTestId("tab-changes").click();
-    await expect(page.locator('[data-testid="change-row"]:not([data-kind="status"])').first()).toContainText(`new multicast flow @ ${DEVICE}`);
+    const logRows = page.locator('[data-testid="change-row"]:not([data-kind="status"])');
+    await expect(logRows.first()).toContainText(`delete multicast flow slot 3 @ ${DEVICE}`);
+    await expect(logRows.nth(1)).toContainText(`new multicast flow @ ${DEVICE}`);
 
     expect((await subscribe(page, null)).ok).toBe(true);
     expect(msgs).toEqual([]);
