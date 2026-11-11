@@ -62,7 +62,7 @@ test.describe("subscription changes", () => {
 
     // The changes tab lists it: who, which channel, before and after.
     await page.getByTestId("tab-changes").click();
-    const row = page.getByTestId("change-row").first();
+    const row = page.locator('[data-testid="change-row"]:not([data-kind="status"])').first();
     await expect(row).toContainText("local");
     await expect(row).toContainText(`Stage R @ ${DEVICE}`);
     await expect(row).toContainText(`Mix R @ ${DEVICE}`);
@@ -127,6 +127,10 @@ test.describe("subscription changes", () => {
       st.state === "error" ? "1 failing" : "1 not resolved",
     );
     await expect(page.locator('[data-testid="sub-problem"]')).toHaveCount(1);
+    // The receiver's row header counts it: red for an error, amber otherwise.
+    const badge = page.locator(`[data-testid="rx-device"][data-name="${DEVICE}"] [data-testid="rx-trouble"]`);
+    await expect(badge).toHaveText("1");
+    await expect(badge).toHaveClass(st.state === "error" ? /\berr\b/ : /\bwarn\b/);
     await expect(problem).toBeHidden();
     // A click opens the details: which channel, from where, what the device says.
     await summary.click();
@@ -150,6 +154,7 @@ test.describe("subscription changes", () => {
     await ask(null);
     await expect(box).toHaveCount(0, { timeout: 30_000 });
     expect((await stageR(page)).source).toBeNull();
+    await expect(badge).toHaveCount(0);
     expect(console_msgs).toEqual([]);
   });
 });

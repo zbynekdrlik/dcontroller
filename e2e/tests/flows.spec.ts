@@ -6,7 +6,13 @@ import { test, expect, type ConsoleMessage, type Page } from "@playwright/test";
 // not changed, read from the device and logged.
 const DEVICE = "dc-e2e-device";
 
-const changes = (page: Page) => page.evaluate(() => fetch("/api/changes").then((r) => r.json()));
+// Status entries (a subscription stopped or receives again) arrive with device reads at any time: leave them out.
+const changes = (page: Page) =>
+  page.evaluate(() =>
+    fetch("/api/changes")
+      .then((r) => r.json())
+      .then((l: { kind: string }[]) => l.filter((e) => e.kind !== "status")),
+  );
 const subscribe = (page: Page, source: { channel: string; device: string } | null) =>
   page.evaluate(
     (body) =>
@@ -81,7 +87,7 @@ test.describe("TX flows", () => {
 
     // The Changes tab lists it.
     await page.getByTestId("tab-changes").click();
-    await expect(page.getByTestId("change-row").first()).toContainText(`new multicast flow @ ${DEVICE}`);
+    await expect(page.locator('[data-testid="change-row"]:not([data-kind="status"])').first()).toContainText(`new multicast flow @ ${DEVICE}`);
 
     expect((await subscribe(page, null)).ok).toBe(true);
     expect(msgs).toEqual([]);

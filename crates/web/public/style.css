@@ -208,6 +208,10 @@ tr.rxdev th, tr.rxdev td { border-top: 1px solid var(--border); }
 td.cell { min-width: 1.7rem; height: 1.7rem; text-align: center; color: var(--bg); font-weight: 700; }
 td.cell.ok { background: var(--ok); }
 td.cell.warn { background: var(--warn); }
+td.cell.err { background: var(--bad); }
+.badge { display: inline-block; min-width: 1.1rem; margin-left: 0.4rem; padding: 0 0.3rem; border-radius: 0.6rem; font-size: 0.75rem; font-weight: 700; text-align: center; color: var(--bg); }
+.badge.err { background: var(--bad); }
+.badge.warn { background: var(--warn); }
 td.cell.pick { cursor: pointer; }
 td.cell.pick:hover { outline: 2px solid var(--accent); outline-offset: -2px; }
 .lvl { display: inline-block; vertical-align: middle; width: 3rem; height: 0.35rem; margin-left: 0.5rem; background: var(--surface-3); border-radius: 999px; overflow: hidden; }

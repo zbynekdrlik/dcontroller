@@ -54,7 +54,7 @@ test.describe("renames", () => {
     expect((await labels(page)).rx[2]).toBe("Guest Mic");
 
     await page.getByTestId("tab-changes").click();
-    const row = page.getByTestId("change-row").first();
+    const row = page.locator('[data-testid="change-row"]:not([data-kind="status"])').first();
     await expect(row).toContainText(`rename RX 3 @ ${DEVICE}`);
     await expect(row).toContainText("Spare 3");
     await expect(row).toContainText("Guest Mic");
