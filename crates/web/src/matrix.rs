@@ -126,6 +126,15 @@ pub fn cell<'a>(
     }
 }
 
+/// What RX channel `r` takes, as `(TX device lower case, TX channel
+/// number)` from the grid, when its source is a transmitter in it.
+pub fn source_of(grid: &Grid, r: &RxChannel) -> Option<(String, u16)> {
+    let s = r.source.as_ref()?;
+    let t = grid.tx.iter().find(|t| same(&t.device, &s.device))?;
+    let i = t.channels.iter().position(|c| same(c, &s.channel))?;
+    Some((t.device.to_ascii_lowercase(), t.numbers[i]))
+}
+
 /// The RX channels (as `label @ device`) whose subscription names TX
 /// channel `tx_channel` of `tx_device` (`None`: any of its channels): what
 /// a rename of that channel or device leaves unresolved.
@@ -418,6 +427,18 @@ mod tests {
             ..Devices::default()
         };
         assert_eq!(trouble(&d, &r), (1, 1));
+    }
+
+    #[test]
+    fn an_rx_channel_s_source_is_found_in_the_grid_case_aside() {
+        let g = Grid::of(&site());
+        let r = rx("Vox", Some(("MIX R", "Desk")), "receiving");
+        assert_eq!(source_of(&g, &r), Some(("desk".into(), 2)));
+        assert_eq!(
+            source_of(&g, &rx("Vox", Some(("Nowhere", "desk")), "x")),
+            None
+        );
+        assert_eq!(source_of(&g, &rx("Vox", None, "")), None);
     }
 
     #[test]

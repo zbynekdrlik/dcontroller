@@ -481,17 +481,33 @@ async fn fetch_levels(names: &[String]) -> Result<Vec<MeterReport>, String> {
 /// A live level bar in a matrix header: `device`'s TX (`tx`) or RX
 /// channel `channel`, or for a folded device its loudest. Vertical in a
 /// TX channel's column, horizontal elsewhere.
-fn level_bar(device: &str, tx: bool, channel: Option<u16>, vertical: bool) -> impl IntoView {
+fn level_bar(
+    device: &str,
+    tx: bool,
+    channel: Option<u16>,
+    vertical: bool,
+    sources: Vec<(String, u16)>,
+) -> impl IntoView {
     let Levels(lv) = expect_context::<Levels>();
     let key = device.to_ascii_lowercase();
+    // An RX bar of a receiver that sends no meters shows its sources' level.
+    let from_source = {
+        let key = key.clone();
+        let sources = sources.clone();
+        move || !tx && !sources.is_empty() && lv.with(|m| mtr::own_rx(m.get(&key)).is_none())
+    };
     let now = move || {
         lv.with(|m| {
-            m.get(&key).and_then(|r| {
-                let levels = if tx { &r.tx } else { &r.rx };
-                mtr::pick(levels, channel).cloned()
-            })
+            if tx {
+                return m.get(&key).and_then(|r| mtr::pick(&r.tx, channel).cloned());
+            }
+            match mtr::own_rx(m.get(&key)) {
+                Some(rx) => mtr::pick(rx, channel).cloned(),
+                None => mtr::source_level(m, &sources),
+            }
         })
     };
+    let src2 = from_source.clone();
     let now2 = now.clone();
     let now3 = now.clone();
     let style = move || {
@@ -505,11 +521,28 @@ fn level_bar(device: &str, tx: bool, channel: Option<u16>, vertical: bool) -> im
     let title = move || {
         now2().map_or_else(
             || "no level".to_owned(),
-            |l| format!("{} {}", l.label, mtr::text(&l)),
+            |l| {
+                if src2() {
+                    format!(
+                        "{} at the source (this device sends no meters)",
+                        mtr::text(&l)
+                    )
+                } else {
+                    format!("{} {}", l.label, mtr::text(&l))
+                }
+            },
         )
     };
+    let class = {
+        let from_source = from_source.clone();
+        move || match (vertical, from_source()) {
+            (true, _) => "lvl v",
+            (false, true) => "lvl src",
+            (false, false) => "lvl",
+        }
+    };
     view! {
-        <span class=if vertical { "lvl v" } else { "lvl" } data-testid="lvl"
+        <span class=class data-testid="lvl" data-source=move || from_source().then_some("1")
             data-dir=if tx { "tx" } else { "rx" } title=title>
             <span class=move || now3().map_or("meter none", |l| mtr::class(&l)) style=style></span>
         </span>
@@ -1413,7 +1446,7 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
             let name = t.device.clone();
             let label = t.device.clone();
             let name_attr = t.device.clone();
-            let bar = (!open).then(|| level_bar(&t.device, true, None, false));
+            let bar = (!open).then(|| level_bar(&t.device, true, None, false, Vec::new()));
             view! {
                 <th class=if open { "txdev open" } else { "txdev" } colspan=span
                     data-testid="tx-device" data-name=name_attr
@@ -1436,7 +1469,7 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
                         title="Rename this TX channel"
                         on:click=move |_| ctl.renaming.set(Some(ask.clone()))>
                         <span>{t.channels[c].clone()}</span>
-                        {level_bar(&t.device, true, Some(t.numbers[c]), true)}
+                        {level_bar(&t.device, true, Some(t.numbers[c]), true, Vec::new())}
                     </th>
                 }
                 .into_any()
@@ -1450,7 +1483,12 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
         let name = r.device.clone();
         let label = r.device.clone();
         let name_attr = r.device.clone();
-        let bar = (!open).then(|| level_bar(&r.device, false, None, false));
+        let srcs: Vec<(String, u16)> = r
+            .channels
+            .iter()
+            .filter_map(|rc| matrix::source_of(&grid, rc))
+            .collect();
+        let bar = (!open).then(|| level_bar(&r.device, false, None, false, srcs));
         // The receiver's subscriptions that do not receive from a device on
         // the network: red when Dante reports an error, amber otherwise.
         let badge = match matrix::trouble(d, r) {
@@ -1529,7 +1567,7 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
                                     move |_| ctl.renaming.set(Some(ask.clone()))
                                 }>
                                 <span>{rc.label.clone()}</span>
-                                {level_bar(&r.device, false, Some(rc.channel), false)}
+                                {level_bar(&r.device, false, Some(rc.channel), false, matrix::source_of(&grid, rc).into_iter().collect())}
                             </th>
                             {cells}
                         </tr>
