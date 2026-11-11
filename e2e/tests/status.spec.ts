@@ -32,14 +32,31 @@ const stageL = (page: Page, since: number) =>
 
 test("a subscription that stops and receives again shows in Changes with its time", async ({ page }) => {
   // A device is read every 30 s: the stop and the recovery take a read each.
-  test.setTimeout(180_000);
+  test.setTimeout(270_000);
   const msgs: string[] = [];
   page.on("console", (m: ConsoleMessage) => {
     if (m.type() === "error" || m.type() === "warning") msgs.push(`${m.type()}: ${m.text()}`);
   });
   page.on("pageerror", (e) => msgs.push(`pageerror: ${e.message}`));
   await page.goto("/#changes");
+  // Start from Stage L receiving, as the server last read it: a spec before
+  // this one (a latency change) can leave it briefly down, and a stop or a
+  // recovery from that must not count here.
+  const stageLState = () =>
+    page.evaluate(
+      (dev) =>
+        fetch("/api/devices")
+          .then((r) => r.json())
+          .then(
+            (d: { devices: { name: string; channels?: { rx: { label: string; state?: string }[] } }[] }) =>
+              d.devices.find((x) => x.name === dev)?.channels?.rx.find((r) => r.label === "Stage L")?.state,
+          ),
+      DEVICE,
+    );
+  await expect.poll(stageLState, { timeout: 75_000, intervals: [2_000] }).toBe("connected");
   const since = Math.floor(Date.now() / 1000);
+  const stops = async () => (await stageL(page, since)).filter((e) => e.message.startsWith("stopped receiving"));
+  const recoveries = async () => (await stageL(page, since)).filter((e) => e.message === "receiving again");
 
   // Keep its flow ended until a device read sees Stage L down (it comes
   // back by itself within 30 s, a read is due every 30 s).
@@ -47,18 +64,19 @@ test("a subscription that stops and receives again shows in Changes with its tim
     .poll(
       async () => {
         for (const f of liveTx()) ctl("tx-end", String(f));
-        return (await stageL(page, since)).length;
+        return (await stops()).length;
       },
-      { timeout: 90_000, intervals: [3_000] },
+      { timeout: 100_000, intervals: [3_000] },
     )
     .toBe(1);
-  const [stop] = await stageL(page, since);
+  const [stop] = await stops();
   expect(stop.ok).toBe(false);
   expect(stop.message).toMatch(/^stopped receiving: /);
 
   // Left alone, it receives again; the next read logs that.
-  await expect.poll(async () => (await stageL(page, since)).length, { timeout: 75_000 }).toBe(2);
-  const [back] = await stageL(page, since);
+  await expect.poll(async () => (await recoveries()).length, { timeout: 75_000 }).toBe(1);
+  const [back] = await recoveries();
+  expect(back.at).toBeGreaterThanOrEqual(stop.at);
   expect(back).toMatchObject({ ok: true, message: "receiving again" });
 
   // The Changes tab lists both, the stop as an error row.
