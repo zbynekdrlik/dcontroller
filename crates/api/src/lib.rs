@@ -236,6 +236,8 @@ pub struct TxFlows {
     pub flows: Vec<TxFlow>,
     /// Records the device listed that did not read.
     pub unread: usize,
+    /// How many TX flows the device has room for.
+    pub slots: u16,
 }
 
 /// One TX flow.

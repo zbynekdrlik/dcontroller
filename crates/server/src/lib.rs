@@ -47,6 +47,21 @@ pub struct Config {
     /// The latency history (SQLite), recorded for every receiver.
     #[serde(default = "default_history_db")]
     pub history_db: PathBuf,
+    /// Further Dante devices on this PC, by the unix user each runs as
+    /// (presenter's dlink device: `presenter`): the Dante NIC guard lets them
+    /// send on the Dante interface and opens the device ports
+    /// (dstack docs/two-networks.md section 3). Read by the installer.
+    #[serde(default)]
+    pub guard_users: Vec<String>,
+}
+
+/// A unix user name the guard accepts: a letter or `_`, then letters,
+/// digits, `_` or `-`, at most 32.
+pub fn valid_user(name: &str) -> bool {
+    let mut c = name.chars();
+    name.len() <= 32
+        && c.next().is_some_and(|f| f.is_ascii_lowercase() || f == '_')
+        && c.all(|x| x.is_ascii_lowercase() || x.is_ascii_digit() || x == '_' || x == '-')
 }
 
 fn default_history_db() -> PathBuf {
@@ -65,6 +80,9 @@ impl Config {
     /// Parses a config file's text.
     pub fn parse(text: &str) -> anyhow::Result<Self> {
         let cfg: Self = toml::from_str(text)?;
+        if let Some(bad) = cfg.guard_users.iter().find(|u| !valid_user(u)) {
+            anyhow::bail!("guard_users: {bad:?} is not a unix user name");
+        }
         if !cfg.bind.ip().is_loopback() && !cfg.allow_remote {
             anyhow::bail!(
                 "bind {} is not loopback; the server has no login of its own and must sit behind \

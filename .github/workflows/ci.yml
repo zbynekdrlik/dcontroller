@@ -266,6 +266,46 @@ jobs:
           sudo DC_IFACE=dante1 DC_GUARD_SKIP_ROUTING=1 "$rel/dante-guard.sh"
           if answer 9999; then echo "unsolicited unicast accepted on the Dante NIC"; exit 1; fi
           answer 5353
+      - name: Dante NIC guard admits a listed Dante device user
+        run: |
+          # Another Dante device on the PC (presenter's dlink) runs as its own
+          # user: listed in guard_users it sends on the Dante NIC and gets the
+          # device ports; anyone else still cannot (dstack two-networks.md §3).
+          set -euo pipefail
+          dir=$(mktemp -d)
+          tar -xzf "${{ steps.bundle.outputs.path }}" -C "$dir"
+          rel=$(echo "$dir"/dcontroller-*)
+          sudo useradd --system --no-create-home --shell /usr/sbin/nologin dlinktest
+          out() {  # out <user>: a datagram from the Dante address to a device
+            sudo -u "$1" python3 -I -c 'import socket;s=socket.socket(2,2);s.bind(("10.98.7.2",0));s.sendto(b"x",("10.98.7.9",9))'
+          }
+          arc() {  # arc: a device's unicast to this PC's ARC port 4440 arrives
+            sudo python3 -I - <<'PY'
+          import socket, subprocess
+          r = socket.socket(2, 2)
+          r.bind(("10.98.7.2", 4440))
+          r.settimeout(2)
+          send = 'import socket;s=socket.socket(2,2);s.bind(("10.98.7.9",9999));s.sendto(b"x",("10.98.7.2",4440))'
+          subprocess.run(["ip", "netns", "exec", "dante1ns", "python3", "-I", "-c", send], check=True)
+          r.recv(16)
+          PY
+          }
+          sudo systemctl reset-failed dante-guard.service
+          sudo DC_IFACE=dante1 DC_GUARD_SKIP_ROUTING=1 "$rel/dante-guard.sh"
+          if out dlinktest; then echo "an unlisted user sent on the Dante NIC"; exit 1; fi
+          if arc; then echo "device port open with no device user listed"; exit 1; fi
+          if sudo DC_IFACE=dante1 DC_GUARD_USERS="no-such-user" DC_GUARD_SKIP_ROUTING=1 "$rel/dante-guard.sh"; then echo "a missing user accepted"; exit 1; fi
+          sudo DC_IFACE=dante1 DC_GUARD_USERS="dlinktest" DC_GUARD_SKIP_ROUTING=1 "$rel/dante-guard.sh"
+          out dlinktest
+          out dcontroller
+          if out nobody; then echo "foreign user sent with a device user listed"; exit 1; fi
+          arc
+          # The installer reads the list from the config.
+          cfg=$(mktemp)
+          printf 'web_dir = "/tmp"\nguard_users = ["dlinktest"]\n' > "$cfg"
+          test "$("$rel/dcontroller" --guard-users "$cfg")" = "dlinktest"
+          printf 'web_dir = "/tmp"\nguard_users = ["bad user"]\n' > "$cfg"
+          if "$rel/dcontroller" --guard-users "$cfg"; then echo "a bad user name accepted"; exit 1; fi
       - name: Dante NIC guard runs on a VLAN interface
         run: |
           set -euo pipefail

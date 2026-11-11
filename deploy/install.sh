@@ -133,6 +133,7 @@ if systemctl is-enabled -q dante-guard.service 2>/dev/null && [ -x "$src/dante-g
         echo "dante-guard is enabled but $cfg names no dante_interface; rules not refreshed" >&2
         exit 1
     fi
-    DC_IFACE="$iface" DC_GUARD_SKIP_ROUTING=1 "$src/dante-guard.sh" \
+    guard_users=$("$src/dcontroller" --guard-users "$cfg")
+    DC_IFACE="$iface" DC_GUARD_USERS="$guard_users" DC_GUARD_SKIP_ROUTING=1 "$src/dante-guard.sh" \
         || { echo "dante-guard rules not refreshed" >&2; exit 1; }
 fi
