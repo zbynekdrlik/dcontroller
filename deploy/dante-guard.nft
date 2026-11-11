@@ -3,12 +3,16 @@
 # Follows dstack docs/two-networks.md section 3 (Linux).
 # Out: only to the Dante subnet @NET@ and Dante's multicast groups (mDNS,
 # Dante 224.0.0.231/.233, PTP, IGMP, audio 239.255/16); within that, the
-# dcontroller service user, IGMP, PTP and, on a DHCP leg, the DHCP client.
+# dcontroller service user, the further Dante device users listed
+# (guard_users, e.g. presenter's dlink), IGMP, PTP and, on a DHCP leg, the
+# DHCP client.
 # In: replies, DHCP (on a DHCP leg), PTP, mDNS (also answers sent unicast from 5353 to the
 # ephemeral port discovery asks from; conntrack does not tie them to the
 # multicast query), UDP multicast/broadcast, and meter frames
 # to dcontroller's meter ports (devices send them from another source port
-# than the subscription went to; crates/server/src/meters.rs PORTS).
+# than the subscription went to; crates/server/src/meters.rs PORTS), and,
+# with a device user listed, the dstack device ports (ARC 4440+k, flows
+# 4455+k, info 8700/8702/8708, CMC 8800+k, audio 30000+/30100+).
 # Everything else (other services, IPv6) is dropped on this interface only.
 table inet dante_guard
 delete table inet dante_guard
@@ -19,7 +23,7 @@ table inet dante_guard {
 		meta nfproto ipv6 counter drop
 		ip daddr != { @NET@, 224.0.0.2, 224.0.0.22, 224.0.0.231, 224.0.0.233, 224.0.0.251, 224.0.1.129-224.0.1.132, 239.255.0.0/16, 255.255.255.255 } counter drop
 		ip protocol igmp accept
-		meta skuid "dcontroller" accept
+		meta skuid { @USERS@ } accept
 		udp sport 68 udp dport 67 accept # dhcp
 		udp sport { 319, 320 } udp dport { 319, 320 } accept
 		limit rate 6/minute log prefix "dante-guard out drop: "
@@ -36,6 +40,7 @@ table inet dante_guard {
 		udp sport 5353 accept
 		meta pkttype { broadcast, multicast } meta l4proto udp accept
 		udp dport 8810-8825 accept
+		udp dport { 4440-4469, 8700, 8702, 8708, 8800-8814, 30000-30199 } accept # devices
 		counter drop
 	}
 }

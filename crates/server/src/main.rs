@@ -25,6 +25,14 @@ fn main() -> anyhow::Result<()> {
         println!("{}", cfg.bind);
         return Ok(());
     }
+    // `--guard-users <path>`: the config's further Dante device users, one
+    // line, space-separated; the installer passes them to dante-guard.sh.
+    if first.as_deref() == Some(std::ffi::OsStr::new("--guard-users")) {
+        let path = config_path(args.next())?;
+        let cfg = Config::load(&path)?;
+        println!("{}", cfg.guard_users.join(" "));
+        return Ok(());
+    }
     serve(config_path(first)?)
 }
 
