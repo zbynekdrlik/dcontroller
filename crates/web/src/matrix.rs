@@ -35,15 +35,18 @@ pub enum Cell {
     Empty,
     /// `n` subscriptions, all receiving.
     Ok(usize),
-    /// `n` subscriptions, `bad` of them not receiving.
+    /// `n` subscriptions, `bad` of them not receiving, none failing.
     Warn { n: usize, bad: usize },
+    /// `n` subscriptions, `bad` of them not receiving, at least one of
+    /// those an error Dante reports (such as no free flow): the alarm.
+    Err { n: usize, bad: usize },
 }
 
 impl Cell {
     pub fn count(self) -> usize {
         match self {
             Cell::Empty => 0,
-            Cell::Ok(n) | Cell::Warn { n, .. } => n,
+            Cell::Ok(n) | Cell::Warn { n, .. } | Cell::Err { n, .. } => n,
         }
     }
 
@@ -53,6 +56,7 @@ impl Cell {
             Cell::Empty => "cell",
             Cell::Ok(_) => "cell ok",
             Cell::Warn { .. } => "cell warn",
+            Cell::Err { .. } => "cell err",
         }
     }
 }
@@ -97,7 +101,7 @@ pub fn cell<'a>(
     tx_device: &str,
     tx_channel: Option<&str>,
 ) -> Cell {
-    let (mut n, mut bad) = (0, 0);
+    let (mut n, mut bad, mut failing) = (0, 0, 0);
     for r in rx {
         let Some(s) = &r.source else { continue };
         if !same(&s.device, tx_device) {
@@ -110,11 +114,15 @@ pub fn cell<'a>(
         if !r.receiving() {
             bad += 1;
         }
+        if r.state.as_deref() == Some("error") {
+            failing += 1;
+        }
     }
-    match (n, bad) {
-        (0, _) => Cell::Empty,
-        (n, 0) => Cell::Ok(n),
-        (n, bad) => Cell::Warn { n, bad },
+    match (n, bad, failing) {
+        (0, _, _) => Cell::Empty,
+        (n, 0, _) => Cell::Ok(n),
+        (n, bad, 0) => Cell::Warn { n, bad },
+        (n, bad, _) => Cell::Err { n, bad },
     }
 }
 
@@ -186,6 +194,24 @@ impl Kind {
             Kind::Offline => "problem off",
         }
     }
+}
+
+/// A receiver's count for its row header: (failing, unresolved) among its
+/// subscriptions; a source that is off the network counts in neither.
+pub fn trouble(d: &Devices, rx: &Rx) -> (usize, usize) {
+    let online = |name: &str| d.devices.iter().any(|x| same(&x.name, name));
+    rx.channels
+        .iter()
+        .filter(|r| r.source.is_some() && !r.receiving())
+        .fold((0, 0), |(f, u), r| {
+            if r.state.as_deref() == Some("error") {
+                (f + 1, u)
+            } else if r.source.as_ref().is_some_and(|s| online(&s.device)) {
+                (f, u + 1)
+            } else {
+                (f, u)
+            }
+        })
 }
 
 /// The one-line count of [`problems`]: (failing, unresolved, offline).
@@ -356,6 +382,41 @@ mod tests {
         assert_eq!(c.count(), 2);
         assert_eq!(c.class(), "cell warn");
         assert_eq!(cell(&g.rx[0].channels, "nobody", None), Cell::Empty);
+    }
+
+    #[test]
+    fn a_failing_subscription_makes_the_cross_point_red() {
+        let mut f = rx("Vox", Some(("Mix L", "desk")), "No more flows (Tx)");
+        f.state = Some("error".into());
+        let ok = rx("Vox 2", Some(("Mix R", "desk")), "receiving");
+        let c = cell(&[f.clone(), ok.clone()], "desk", None);
+        assert_eq!(c, Cell::Err { n: 2, bad: 1 });
+        assert_eq!(c.class(), "cell err");
+        assert_eq!(c.count(), 2);
+        // Only a not-yet-resolved one stays amber.
+        let pending = rx("Vox 3", Some(("Mix L", "desk")), "Unresolved");
+        assert_eq!(cell(&[pending, ok], "desk", None).class(), "cell warn");
+    }
+
+    #[test]
+    fn a_receiver_header_counts_failing_and_unresolved_but_not_offline_sources() {
+        let mut f = rx("A", Some(("Mix L", "desk")), "No more flows (Tx)");
+        f.state = Some("error".into());
+        let r = Rx {
+            device: "stage".into(),
+            channels: vec![
+                f,
+                rx("B", Some(("Nowhere", "desk")), "Unresolved"),
+                rx("C", Some(("Mic", "switched-off")), "Unresolved"),
+                rx("D", Some(("Mix R", "desk")), "receiving"),
+                rx("E", None, ""),
+            ],
+        };
+        let d = Devices {
+            devices: vec![device("desk", &["Mix L", "Mix R"], vec![])],
+            ..Devices::default()
+        };
+        assert_eq!(trouble(&d, &r), (1, 1));
     }
 
     #[test]

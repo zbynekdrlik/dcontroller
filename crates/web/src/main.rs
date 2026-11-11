@@ -1357,6 +1357,15 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
         let label = r.device.clone();
         let name_attr = r.device.clone();
         let bar = (!open).then(|| level_bar(&r.device, false, None, false));
+        // The receiver's subscriptions that do not receive from a device on
+        // the network: red when Dante reports an error, amber otherwise.
+        let badge = match matrix::trouble(d, r) {
+            (0, 0) => None,
+            (f, u) => Some(view! {
+                <span class={if f > 0 { "badge err" } else { "badge warn" }} data-testid="rx-trouble"
+                    title=format!("{f} failing, {u} not resolved")>{(f + u).to_string()}</span>
+            }),
+        };
         let cells = cols
             .iter()
             .map(|&(i, c)| {
@@ -1380,6 +1389,7 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
                 <th class=if open { "rxname open" } else { "rxname" } data-testid="rx-device" data-name=name_attr
                     on:click=move |_| flip(rx_open, &name)>
                     <span>{label}</span>
+                    {badge}
                     {bar}
                 </th>
                 {cells}
