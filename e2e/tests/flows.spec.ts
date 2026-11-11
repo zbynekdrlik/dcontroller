@@ -60,6 +60,21 @@ test.describe("TX flows", () => {
     const rows = card.locator('[data-testid="flow-row"][data-kind="unicast"]');
     await expect(rows.getByTestId("flow-channels")).toHaveText(["Mix L (1)", "Mix R (2)"]);
     await expect(rows.getByTestId("flow-to")).toHaveText([DEVICE, DEVICE]);
+    // A unicast flow is the receiver's: no Delete on it, and the server
+    // refuses one before sending anything.
+    await expect(card.getByTestId("flow-delete")).toHaveCount(0);
+    const logged = await changes(page);
+    const refused = await page.evaluate(
+      (body) =>
+        fetch("/api/multicast/delete", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }).then((r) => r.json()),
+      { device: DEVICE, slot: 1 },
+    );
+    expect(refused).toMatchObject({ ok: false, message: "slot 1 is a unicast flow: remove the receiver's subscription instead" });
+    expect(await changes(page)).toEqual(logged);
     // It stays open across the device poll's rebuilds.
     await page.waitForResponse((r) => r.url().endsWith("/api/devices"));
     await page.waitForTimeout(300);

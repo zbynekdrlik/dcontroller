@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use dcontroller_api::{
     ChangeEntry, ChangeResult, ChannelLevel, Device, Devices, Info, MeterReport, MulticastCreate,
-    Rename, RenameTarget, RxChannel, SettingChange, Settings, Source, SubscriptionChange, TxFlows,
+    MulticastDelete, Rename, RenameTarget, RxChannel, SettingChange, Settings, Source,
+    SubscriptionChange, TxFlows,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -58,6 +59,7 @@ fn App() -> impl IntoView {
         renaming: RwSignal::new(None),
         setting: RwSignal::new(None),
         multicast: RwSignal::new(None),
+        mc_delete: RwSignal::new(None),
         flows: RwSignal::new(BTreeMap::new()),
         busy: RwSignal::new(false),
         result: RwSignal::new(None),
@@ -290,6 +292,7 @@ fn App() -> impl IntoView {
         <RenameDialog/>
         <SettingDialog/>
         <MulticastDialog/>
+        <MulticastDeleteDialog/>
         <ResultLine/>
     }
 }
@@ -632,6 +635,10 @@ fn change_target(e: &ChangeEntry) -> String {
         ("rename", "tx") => format!("rename TX {} @ {}", e.rx_channel, e.rx_device),
         ("rename", _) => format!("rename RX {} @ {}", e.rx_channel, e.rx_device),
         ("setting", w) => format!("{} @ {}", w.replace('_', " "), e.rx_device),
+        ("multicast", "delete") => format!(
+            "delete multicast flow slot {} @ {}",
+            e.rx_channel, e.rx_device
+        ),
         ("multicast", _) => format!("new multicast flow @ {}", e.rx_device),
         ("status", _) => format!(
             "{} @ {} \u{2190} {}",
@@ -677,6 +684,8 @@ struct Ctl {
     setting: RwSignal<Option<settings::Ask>>,
     /// A new multicast flow waiting in its dialog.
     multicast: RwSignal<Option<McAsk>>,
+    /// A multicast flow delete waiting in its confirm dialog.
+    mc_delete: RwSignal<Option<McDelete>>,
     /// The devices whose TX flows are open, with their last list (kept
     /// across the device poll's rebuilds).
     flows: RwSignal<BTreeMap<String, Option<Result<TxFlows, String>>>>,
@@ -1051,13 +1060,24 @@ fn TxFlowsBox(device: String, tx: Vec<(u16, String)>) -> impl IntoView {
                     view! {
                         <p class={if full { "subs warn" } else { "subs" }} data-testid="flows-count">{count}</p>
                         <table class="grid" data-testid="flows-table">
-                            <thead><tr><th>"Slot"</th><th>"Kind"</th><th>"Channels"</th><th>"To"</th></tr></thead>
+                            <thead><tr><th>"Slot"</th><th>"Kind"</th><th>"Channels"</th><th>"To"</th><th></th></tr></thead>
                             <tbody>{all.into_iter().map(|r| view! {
                                 <tr data-testid="flow-row" data-kind=if r.multicast { "multicast" } else { "unicast" }>
                                     <td>{r.slot}</td>
                                     <td>{if r.multicast { "multicast" } else { "unicast" }}</td>
-                                    <td data-testid="flow-channels">{r.channels}</td>
-                                    <td data-testid="flow-to">{r.to}</td>
+                                    <td data-testid="flow-channels">{r.channels.clone()}</td>
+                                    <td data-testid="flow-to">{r.to.clone()}</td>
+                                    <td>{r.multicast.then(|| {
+                                        let ask = McDelete {
+                                            device: f.device.clone(),
+                                            slot: r.slot,
+                                            text: flows::delete_question(&f.device, &r),
+                                        };
+                                        view! {
+                                            <button data-testid="flow-delete"
+                                                on:click=move |_| ctl.mc_delete.set(Some(ask.clone()))>"Delete"</button>
+                                        }
+                                    })}</td>
                                 </tr>
                             }).collect_view()}</tbody>
                         </table>
@@ -1081,6 +1101,73 @@ struct McAsk {
     device: String,
     tx: Vec<(u16, String)>,
     chosen: Vec<u16>,
+}
+
+/// A multicast flow delete the operator asked for.
+#[derive(Clone, Debug, PartialEq)]
+struct McDelete {
+    device: String,
+    slot: u16,
+    text: String,
+}
+
+#[component]
+fn MulticastDeleteDialog() -> impl IntoView {
+    let ctl = expect_context::<Ctl>();
+    let confirm = move |_| {
+        let Some(a) = ctl.mc_delete.get_untracked() else {
+            return;
+        };
+        ctl.busy.set(true);
+        spawn_local(async move {
+            let req = MulticastDelete {
+                device: a.device.clone(),
+                slot: a.slot,
+            };
+            let r = post_change("/api/multicast/delete", &req)
+                .await
+                .unwrap_or_else(|e| ChangeResult {
+                    ok: false,
+                    message: e,
+                    channel: None,
+                });
+            ctl.result.set(Some(r));
+            load_flows(ctl, a.device.clone());
+            ctl.busy.set(false);
+            ctl.mc_delete.set(None);
+        });
+    };
+    move || {
+        ctl.mc_delete.get().map(|a| {
+            let busy = ctl.busy.get();
+            view! {
+                <div class="modal-back">
+                    <div class="modal" role="dialog" data-testid="flow-delete-dialog">
+                        <p class="warn" data-testid="flow-delete-question">{a.text.clone()}</p>
+                        <div class="buttons">
+                            <button data-testid="flow-delete-cancel" disabled=busy
+                                on:click=move |_| ctl.mc_delete.set(None)>"Cancel"</button>
+                            <button class="primary" data-testid="flow-delete-confirm" disabled=busy
+                                on:click=confirm>{if busy { "Sending…" } else { "Delete" }}</button>
+                        </div>
+                    </div>
+                </div>
+            }
+        })
+    }
+}
+
+async fn post_change<T: serde::Serialize>(url: &str, req: &T) -> Result<ChangeResult, String> {
+    let res = gloo_net::http::Request::post(url)
+        .json(req)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.ok() {
+        return Err(format!("server answered {}", res.status()));
+    }
+    res.json::<ChangeResult>().await.map_err(|e| e.to_string())
 }
 
 async fn send_multicast(req: &MulticastCreate) -> Result<ChangeResult, String> {

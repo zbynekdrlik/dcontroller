@@ -42,6 +42,19 @@ pub fn slots(dev: &dstack::discover::Device, listed: &Flows) -> u16 {
     }
 }
 
+/// The flow a delete of `slot` would remove: refused before sending when
+/// the slot holds no flow or a unicast one (a receiver's own flow is the
+/// receiver's to drop, by removing its subscription).
+pub fn check_delete(listed: &Flows, slot: u16) -> Result<&flows::TxFlow, String> {
+    match listed.flows.iter().find(|f| f.local_id == slot) {
+        None => Err(format!("no TX flow in slot {slot}")),
+        Some(f) if !f.multicast() => Err(format!(
+            "slot {slot} is a unicast flow: remove the receiver's subscription instead"
+        )),
+        Some(f) => Ok(f),
+    }
+}
+
 /// Checks a create before anything is sent: 1 to 8 channels, each from 1,
 /// none twice, each one the device transmits (`tx` its TX channel numbers).
 pub fn validate(req: &api::MulticastCreate, tx: &[u16]) -> Result<(), String> {
@@ -187,6 +200,22 @@ mod tests {
             2
         );
         assert_eq!(slots(&dev(&[("model", "_0000000100000005")]), &listed), 2);
+    }
+
+    #[test]
+    fn only_a_listed_multicast_flow_can_be_deleted() {
+        let listed = Flows {
+            flows: vec![flow(1, &[1], false), flow(3, &[1, 2], true)],
+            unread: 0,
+            slots: 4,
+        };
+        assert_eq!(check_delete(&listed, 3).unwrap().local_id, 3);
+        assert!(check_delete(&listed, 1).unwrap_err().contains("unicast"));
+        assert!(
+            check_delete(&listed, 2)
+                .unwrap_err()
+                .contains("no TX flow in slot 2")
+        );
     }
 
     #[test]
