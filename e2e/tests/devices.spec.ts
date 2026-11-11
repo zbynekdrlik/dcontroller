@@ -14,6 +14,32 @@ test.describe("devices", () => {
     page.on("pageerror", (e) => console_msgs.push(`pageerror: ${e.message}`));
   });
 
+  test("devices sort newest first, each saying when it joined the network", async ({ page }) => {
+    await page.goto("/#devices");
+    const card = page.locator(`[data-testid="device"][data-name="${DEVICE}"]`);
+    await expect(card.getByTestId("device-counts")).toHaveText("4 TX · 4 RX", { timeout: 30_000 });
+    // Found in discovery's first sweep: it was there when dcontroller started.
+    await expect(card.getByTestId("device-joined")).toHaveText(/^on the network when dcontroller started \(/);
+    const api = await page.evaluate(() => fetch("/api/devices").then((r) => r.json()));
+    type D = { name: string; seen_at: number };
+    const names = (l: D[]) => l.map((d) => d.name);
+    const shown = () => page.locator('[data-testid="device"]').evaluateAll((l) => l.map((e) => (e as HTMLElement).dataset.name));
+    expect(api.devices.every((d: D) => d.seen_at >= api.started_at)).toBe(true);
+    // By name first (the server's order), newest first on a click.
+    await expect(page.getByTestId("sort-name")).toHaveClass(/\bon\b/);
+    expect(await shown()).toEqual(names(api.devices));
+    await page.getByTestId("sort-newest").click();
+    await expect(page.getByTestId("sort-newest")).toHaveClass(/\bon\b/);
+    const newest = [...api.devices].sort(
+      (a: D, b: D) => b.seen_at - a.seen_at || a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
+    );
+    expect(await shown()).toEqual(names(newest));
+    // The choice survives the device poll's rebuild.
+    await page.waitForResponse((r) => r.url().endsWith("/api/devices"));
+    await expect(page.getByTestId("sort-newest")).toHaveClass(/\bon\b/);
+    expect(console_msgs).toEqual([]);
+  });
+
   test("lists the discovered Dante device with its channels and subscription", async ({ page }) => {
     await page.goto("/#devices");
     const card = page.locator(`[data-testid="device"][data-name="${DEVICE}"]`);

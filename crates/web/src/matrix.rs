@@ -295,6 +295,7 @@ mod tests {
 
     fn site() -> Devices {
         Devices {
+            started_at: 0,
             enabled: true,
             interface: Some("eth1".into()),
             error: None,

@@ -14,12 +14,20 @@ pub struct Devices {
     pub error: Option<String>,
     /// The devices, sorted by name (case aside).
     pub devices: Vec<Device>,
+    /// When this discovery started (unix seconds): a device seen within
+    /// its first sweep was already on the network then.
+    #[serde(default)]
+    pub started_at: u64,
 }
 
 /// One Dante device: what its mDNS records say, and its last ARC read.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Device {
     pub name: String,
+    /// When discovery first listed it (unix seconds), kept while it stays
+    /// listed: how a just-connected device is found.
+    #[serde(default)]
+    pub seen_at: u64,
     /// Its ARC address, `ip:port`.
     pub address: String,
     /// mDNS `mf`.
@@ -458,8 +466,10 @@ mod tests {
             enabled: true,
             interface: Some("eth1".into()),
             error: None,
+            started_at: 1_700_000_000,
             devices: vec![Device {
                 name: "stage-box".into(),
+                seen_at: 1_700_000_100,
                 address: "10.0.0.5:4440".into(),
                 manufacturer: Some("Yamaha".into()),
                 model: Some("Rio".into()),
