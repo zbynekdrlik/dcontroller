@@ -181,6 +181,21 @@ async fn multicast(
         })
 }
 
+async fn multicast_delete(
+    State(s): State<Shared>,
+    headers: axum::http::HeaderMap,
+    axum::Json(req): axum::Json<dcontroller_api::MulticastDelete>,
+) -> Result<axum::Json<dcontroller_api::ChangeResult>, StatusCode> {
+    let who = user(&headers);
+    tokio::task::spawn_blocking(move || s.changes.multicast_delete(&s.dante, &who, &req))
+        .await
+        .map(axum::Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "multicast delete: task failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
 async fn tx_flows(
     State(s): State<Shared>,
     axum::extract::Path(device): axum::extract::Path<String>,
@@ -344,6 +359,10 @@ pub fn app(web_dir: &Path, shared: Shared) -> Router {
         .route("/api/setting", axum::routing::post(setting))
         .route("/api/changes", get(changes))
         .route("/api/multicast", axum::routing::post(multicast))
+        .route(
+            "/api/multicast/delete",
+            axum::routing::post(multicast_delete),
+        )
         .route("/api/flows/{device}", get(tx_flows))
         .route("/api/history/{device}", get(history_report))
         .route("/api/overview", get(overview))

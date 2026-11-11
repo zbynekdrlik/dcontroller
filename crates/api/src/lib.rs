@@ -263,6 +263,14 @@ pub struct MulticastCreate {
     pub channels: Vec<u16>,
 }
 
+/// `POST /api/multicast/delete`: delete the multicast flow in media-local
+/// slot `slot` of `device`. Sent only after the user confirmed it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MulticastDelete {
+    pub device: String,
+    pub slot: u16,
+}
+
 /// One logged change (`GET /api/changes`, newest first): a subscription
 /// change, or a rename (`kind` `rename`, the names in `name_*`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

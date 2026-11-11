@@ -94,6 +94,14 @@ pub fn count_text(n: usize, slots: u16, unread: usize) -> (String, bool) {
     (t, full)
 }
 
+/// The confirmation question for deleting multicast flow `r` of `device`.
+pub fn delete_question(device: &str, r: &Row) -> String {
+    format!(
+        "Delete multicast flow slot {} on {device} ({} to {})? Receivers subscribed to it stop receiving.",
+        r.slot, r.channels, r.to
+    )
+}
+
 /// The confirmation question for a new multicast flow.
 pub fn question(device: &str, chosen: &[u16], tx: &[(u16, String)]) -> String {
     let ch = chosen
@@ -175,6 +183,20 @@ mod tests {
         assert!(count_text(1, 2, 1).1);
         assert_eq!(count_text(1, 0, 0), ("1 TX flow".to_string(), false));
         assert_eq!(count_text(3, 0, 1).0, "3 TX flows (1 not readable)");
+    }
+
+    #[test]
+    fn the_delete_question_names_slot_channels_group_and_the_effect() {
+        let r = Row {
+            slot: 3,
+            multicast: true,
+            channels: "HAND 1 (1), PETA (2)".into(),
+            to: "239.255.1.2:4321".into(),
+        };
+        assert_eq!(
+            delete_question("mics", &r),
+            "Delete multicast flow slot 3 on mics (HAND 1 (1), PETA (2) to 239.255.1.2:4321)? Receivers subscribed to it stop receiving."
+        );
     }
 
     #[test]

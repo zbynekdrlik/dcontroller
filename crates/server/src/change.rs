@@ -552,6 +552,99 @@ impl Changes {
     }
 }
 
+impl Changes {
+    /// Runs one confirmed delete of a multicast flow by `user`: lists the
+    /// device's TX flows, refuses a missing or unicast slot, deletes, lists
+    /// again to confirm the slot is gone, logs it.
+    pub fn multicast_delete(
+        &self,
+        dante: &Shared,
+        user: &str,
+        req: &api::MulticastDelete,
+    ) -> api::ChangeResult {
+        use dstack::arc::flows;
+        let _one = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        info!(%user, device = %req.device, slot = req.slot, "multicast delete: asked");
+        let fail = |message: String| api::ChangeResult {
+            ok: false,
+            message,
+            channel: None,
+        };
+        let target = dante::State::target(
+            &dante.read().unwrap_or_else(|e| e.into_inner()),
+            &req.device,
+        );
+        let Some((ip, device)) = target else {
+            let m = format!(
+                "{} is not listed (discovery off or device gone)",
+                req.device
+            );
+            warn!(%user, device = %req.device, message = %m, "multicast delete: refused before sending");
+            return fail(m);
+        };
+        let seq = AtomicU16::new(1);
+        let requests = Requests::default();
+        let stop = AtomicBool::new(false);
+        let mut udp = match Udp::open(ip, device.arc, &seq, REPLY_TIMEOUT, &requests, &stop) {
+            Ok(u) => u,
+            Err(e) => return fail(format!("socket: {e}")),
+        };
+        let before = match flows::list_tx_flows(&mut udp) {
+            Ok(f) => f,
+            Err(e) => return fail(format!("list before: {e}")),
+        };
+        let flow = match crate::flows::check_delete(&before, req.slot) {
+            Ok(f) => crate::flows::text(f),
+            Err(m) => {
+                warn!(%user, device = %device.name, slot = req.slot, message = %m, "multicast delete: refused before sending");
+                return fail(m);
+            }
+        };
+        let mut entry = api::ChangeEntry {
+            at: now(),
+            user: user.to_owned(),
+            kind: "multicast".into(),
+            what: "delete".into(),
+            rx_device: device.name.clone(),
+            rx_channel: req.slot,
+            name_before: Some(flow.clone()),
+            ..api::ChangeEntry::default()
+        };
+        info!(device = %device.name, %flow, "multicast delete: sending");
+        let result = match flows::delete_multicast(&mut udp, req.slot) {
+            Err(e) => fail(format!("device: {e}")),
+            Ok(()) => match flows::list_tx_flows(&mut udp) {
+                Err(e) => fail(format!(
+                    "the device accepted, but the list back failed: {e}"
+                )),
+                Ok(after) if after.flows.iter().any(|f| f.local_id == req.slot) => {
+                    entry.name_after = Some(flow.clone());
+                    fail(format!(
+                        "the device accepted, but slot {} is still listed",
+                        req.slot
+                    ))
+                }
+                Ok(_) => {
+                    entry.name_after = Some("gone".into());
+                    api::ChangeResult {
+                        ok: true,
+                        message: format!("done, gone from the device's list: {flow}"),
+                        channel: None,
+                    }
+                }
+            },
+        };
+        entry.ok = result.ok;
+        entry.message = result.message.clone();
+        info!(%user, device = %entry.rx_device, slot = req.slot, before = ?entry.name_before,
+            after = ?entry.name_after, ok = entry.ok, message = %entry.message, "multicast delete: done");
+        if let Err(e) = self.append(&entry) {
+            warn!(error = %e, "changes log: entry not written (it is in the journal above)");
+        }
+        result
+    }
+}
+
 /// How long a sample-rate or encoding write waits to read its value back.
 const WRITE_WAIT: Duration = Duration::from_secs(5);
 /// How often an encoding write reads the device's channels again.
