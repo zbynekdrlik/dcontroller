@@ -20,7 +20,7 @@ use dstack::discover::{Change, Device, Discovery};
 use dstack::info::client::{
     self as info_client, Board, ClockStatus, NetInterface, Product, SampleRate,
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// How often a listed device is read again.
 pub const REFRESH: Duration = Duration::from_secs(30);
@@ -35,6 +35,8 @@ pub struct State {
     enabled: bool,
     /// When this discovery started (unix seconds).
     started_at: u64,
+    /// The Dante interface's netmask, once known.
+    netmask: Option<Ipv4Addr>,
     /// Our address on the Dante interface while discovery runs.
     ip: Option<Ipv4Addr>,
     interface: Option<String>,
@@ -241,6 +243,7 @@ impl State {
         State {
             enabled: false,
             started_at: unix_now(),
+            netmask: None,
             ip: None,
             interface,
             error,
@@ -253,6 +256,7 @@ impl State {
         State {
             enabled: true,
             started_at: unix_now(),
+            netmask: None,
             ip: Some(ip),
             interface: Some(interface),
             error: None,
@@ -263,7 +267,18 @@ impl State {
     /// The Dante interface's netmask: a device whose ARC address is
     /// outside its subnet is not listed.
     pub fn set_netmask(&mut self, mask: Ipv4Addr) {
-        let _ = mask;
+        self.netmask = Some(mask);
+    }
+
+    /// Whether `ip` is in the Dante interface's subnet (always, until the
+    /// netmask is known).
+    fn in_subnet(&self, ip: Ipv4Addr) -> bool {
+        match (self.ip, self.netmask) {
+            (Some(ours), Some(mask)) => {
+                u32::from(ours) & u32::from(mask) == u32::from(ip) & u32::from(mask)
+            }
+            _ => true,
+        }
     }
 
     /// Applies one discovery change now. A new or changed device is due
@@ -278,6 +293,16 @@ impl State {
         match change {
             Change::Added(device) | Change::Changed(device) => {
                 let key = device.name.to_ascii_lowercase();
+                if !self.in_subnet(*device.arc.ip()) {
+                    // Seen through an mDNS reflector from another subnet:
+                    // not reachable over the Dante leg.
+                    if self.devices.remove(&key).is_some() {
+                        info!(device = %device.name, arc = %device.arc, "dante: device left the Dante subnet, not listed");
+                    } else {
+                        debug!(device = %device.name, arc = %device.arc, "dante: device outside the Dante subnet, not listed");
+                    }
+                    return;
+                }
                 match self.devices.get_mut(&key) {
                     Some(e) => {
                         e.device = device;
@@ -800,6 +825,18 @@ pub fn interface_ipv4(iface: &str) -> Result<Ipv4Addr, String> {
         .ok_or_else(|| format!("interface {iface} has no IPv4 address"))
 }
 
+/// The IPv4 netmask of `iface`'s address `ip`.
+pub fn interface_netmask(iface: &str, ip: Ipv4Addr) -> Option<Ipv4Addr> {
+    if_addrs::get_if_addrs()
+        .ok()?
+        .into_iter()
+        .filter(|a| a.name == iface)
+        .find_map(|a| match a.addr {
+            if_addrs::IfAddr::V4(v4) if v4.ip == ip => Some(v4.netmask),
+            _ => None,
+        })
+}
+
 /// Starts discovery and the reads on `iface` in a thread of their own, and
 /// returns the shared state. The thread waits for the interface's IPv4
 /// (a USB NIC may come up after the service), restarts discovery when that
@@ -853,7 +890,17 @@ fn supervise(iface: &str, state: &Shared, stop: &Arc<AtomicBool>, sink: &ChangeS
             }
         };
         info!(interface = %iface, %ip, "dante: discovery started");
-        *write(state) = State::on(iface.to_owned(), ip);
+        let mut on = State::on(iface.to_owned(), ip);
+        match interface_netmask(iface, ip) {
+            Some(mask) => {
+                info!(interface = %iface, %ip, %mask, "dante: devices listed from this subnet only");
+                on.set_netmask(mask);
+            }
+            None => {
+                warn!(interface = %iface, %ip, "dante: no netmask read, devices from any subnet listed")
+            }
+        }
+        *write(state) = on;
         let ended = run(iface, ip, discovery, changes, state, stop, sink);
         if let Some(why) = ended {
             off(why);
@@ -1740,6 +1787,10 @@ mod tests {
         let e = interface_ipv4("no-such-iface0").unwrap_err();
         assert!(e.contains("no-such-iface0"), "{e}");
         assert!(interface_ipv4("lo").unwrap().is_loopback());
+        assert_eq!(
+            interface_netmask("lo", Ipv4Addr::LOCALHOST),
+            Some(Ipv4Addr::new(255, 0, 0, 0))
+        );
     }
 
     #[test]
