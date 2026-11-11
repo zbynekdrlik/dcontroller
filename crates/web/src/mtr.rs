@@ -62,6 +62,12 @@ pub fn pick(levels: &[ChannelLevel], channel: Option<u16>) -> Option<&ChannelLev
     }
 }
 
+/// The device sends no meter frames: its watch ran and gave up waiting
+/// (`error` set, no frame), not merely just started.
+pub fn no_meters(r: Option<&MeterReport>) -> bool {
+    r.is_some_and(|r| r.frames == 0 && r.error.is_some())
+}
+
 /// A receiver's own RX levels, or `None` when it sends no meter frames
 /// (no report, no frame, or no RX levels in them).
 pub fn own_rx(r: Option<&MeterReport>) -> Option<&[ChannelLevel]> {
@@ -126,6 +132,13 @@ mod tests {
             "desk".to_string(),
             report("desk", 9, vec![], vec![lvl(1, Some(-12.0))]),
         );
+        // A watch that only started is no verdict yet; one that gave up is.
+        assert!(!no_meters(m.get("repraciky")));
+        let mut gave_up = m["repraciky"].clone();
+        gave_up.error = Some("no meter frames from repraciky for 5 s".into());
+        assert!(no_meters(Some(&gave_up)));
+        assert!(!no_meters(m.get("desk")));
+        assert!(!no_meters(None));
         // No frames from the speakers: their own RX is unknown.
         assert!(own_rx(m.get("repraciky")).is_none());
         assert!(own_rx(None).is_none());
