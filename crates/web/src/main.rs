@@ -478,6 +478,20 @@ async fn fetch_levels(names: &[String]) -> Result<Vec<MeterReport>, String> {
         .map_err(|e| e.to_string())
 }
 
+/// "no meters" next to a device in the matrix when it sends no meter
+/// frames: its bars show no level of its own, which is not silence.
+#[component]
+fn NoMeters(device: String) -> impl IntoView {
+    let Levels(lv) = expect_context::<Levels>();
+    let key = device.to_ascii_lowercase();
+    move || {
+        lv.with(|m| mtr::no_meters(m.get(&key))).then(|| view! {
+            <span class="chip nometer" data-testid="no-meters"
+                title="This device sends no meters: its bars show no level of its own (a receiver's show its source's, hatched). Silence is not shown here.">"no meters"</span>
+        })
+    }
+}
+
 /// A live level bar in a matrix header: `device`'s TX (`tx`) or RX
 /// channel `channel`, or for a folded device its loudest. Vertical in a
 /// TX channel's column, horizontal elsewhere.
@@ -1452,6 +1466,7 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
                     data-testid="tx-device" data-name=name_attr
                     on:click=move |_| flip(tx_open, &name)>
                     <span>{label}</span>
+                    <NoMeters device=t.device.clone()/>
                     {bar}
                 </th>
             }
@@ -1521,6 +1536,7 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
                 <th class=if open { "rxname open" } else { "rxname" } data-testid="rx-device" data-name=name_attr
                     on:click=move |_| flip(rx_open, &name)>
                     <span>{label}</span>
+                    <NoMeters device=r.device.clone()/>
                     {badge}
                     {bar}
                 </th>
