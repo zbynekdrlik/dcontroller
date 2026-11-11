@@ -48,6 +48,42 @@ test.describe("routing matrix", () => {
     expect(console_msgs).toEqual([]);
   });
 
+  test("the hovered cross-point lights its row and column up to both names", async ({ page }) => {
+    await page.goto("/#routing");
+    const matrix = page.getByTestId("matrix");
+    await expect(matrix.locator(`[data-testid="cell"][data-rx="${DEVICE}"][data-tx="${DEVICE}"]`)).toHaveText("1", {
+      timeout: 30_000,
+    });
+    await matrix.locator(`[data-testid="rx-device"][data-name="${DEVICE}"]`).click();
+    await matrix.locator(`[data-testid="tx-device"][data-name="${DEVICE}"]`).click();
+    const lit = (loc: ReturnType<typeof matrix.locator>) => loc.evaluate((e) => getComputedStyle(e).backgroundImage !== "none");
+    const rxHead = matrix.locator(`[data-testid="rx-channel-head"][data-name="${DEVICE}/Stage R"]`);
+    const txHead = matrix.locator(`[data-testid="tx-channel-head"][data-name="${DEVICE}/Talkback"]`);
+    const otherRx = matrix.locator(`[data-testid="rx-channel-head"][data-name="${DEVICE}/Stage L"]`);
+    const rowCell = matrix.locator(`[data-testid="cell"][data-rx="${DEVICE}/Stage R"][data-tx="${DEVICE}/Mix L"]`);
+    const colCell = matrix.locator(`[data-testid="cell"][data-rx="${DEVICE}/Spare 3"][data-tx="${DEVICE}/Talkback"]`);
+    const away = matrix.locator(`[data-testid="cell"][data-rx="${DEVICE}/Spare 3"][data-tx="${DEVICE}/Mix L"]`);
+    expect(await lit(rxHead)).toBe(false);
+
+    await matrix.locator(`[data-testid="cell"][data-rx="${DEVICE}/Stage R"][data-tx="${DEVICE}/Talkback"]`).hover();
+    await expect.poll(() => lit(rxHead)).toBe(true);
+    expect(await lit(txHead)).toBe(true);
+    expect(await lit(rowCell)).toBe(true);
+    expect(await lit(colCell)).toBe(true);
+    expect(await lit(otherRx)).toBe(false);
+    expect(await lit(away)).toBe(false);
+    // The device headers of that row and column light too.
+    expect(await lit(matrix.locator(`[data-testid="rx-device"][data-name="${DEVICE}"]`))).toBe(true);
+    expect(await lit(matrix.locator(`[data-testid="tx-device"][data-name="${DEVICE}"]`))).toBe(true);
+
+    // It stays on the hovered cell across a refresh, and goes when the mouse leaves.
+    await page.waitForResponse((r) => r.url().endsWith("/api/devices"));
+    expect(await lit(rxHead)).toBe(true);
+    await page.getByTestId("status").hover();
+    await expect.poll(() => lit(rxHead)).toBe(false);
+    expect(console_msgs).toEqual([]);
+  });
+
   test("headers carry live levels: the loudest channel folded, each channel open", async ({ page }) => {
     // dstack's device answers a meter subscription with silence (-126 dBFS).
     await page.goto("/#routing");

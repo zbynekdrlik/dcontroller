@@ -126,6 +126,47 @@ pub fn cell<'a>(
     }
 }
 
+/// A CSS attribute value in double quotes.
+fn quoted(v: &str) -> String {
+    format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// The CSS that lights the hovered cross-point's row and column, with the
+/// names on both axes: the cells sharing its `data-rx` or `data-tx`, and the
+/// RX and TX headers of that channel and of its device. `rx`/`tx` are the
+/// cell's `data-rx`/`data-tx` (`device` or `device/channel`).
+pub fn crosshair(rx: &str, tx: &str) -> String {
+    let dev = |k: &str| k.split_once('/').map_or(k, |(d, _)| d).to_owned();
+    let mut sel = vec![
+        format!("table.matrix td.cell[data-rx={}]", quoted(rx)),
+        format!("table.matrix td.cell[data-tx={}]", quoted(tx)),
+        format!(
+            "table.matrix th[data-testid=\"rx-device\"][data-name={}]",
+            quoted(&dev(rx))
+        ),
+        format!(
+            "table.matrix th[data-testid=\"tx-device\"][data-name={}]",
+            quoted(&dev(tx))
+        ),
+    ];
+    if rx.contains('/') {
+        sel.push(format!(
+            "table.matrix th[data-testid=\"rx-channel-head\"][data-name={}]",
+            quoted(rx)
+        ));
+    }
+    if tx.contains('/') {
+        sel.push(format!(
+            "table.matrix th[data-testid=\"tx-channel-head\"][data-name={}]",
+            quoted(tx)
+        ));
+    }
+    format!(
+        "{} {{ background-image: linear-gradient(var(--hl), var(--hl)); }}",
+        sel.join(", ")
+    )
+}
+
 /// What RX channel `r` takes, as `(TX device lower case, TX channel
 /// number)` from the grid, when its source is a transmitter in it.
 pub fn source_of(grid: &Grid, r: &RxChannel) -> Option<(String, u16)> {
@@ -439,6 +480,22 @@ mod tests {
             None
         );
         assert_eq!(source_of(&g, &rx("Vox", None, "")), None);
+    }
+
+    #[test]
+    fn the_crosshair_lights_row_column_and_both_names() {
+        let c = crosshair("band/Hand1 Mic", "mics/HAND 1 01");
+        assert!(c.contains(r#"td.cell[data-rx="band/Hand1 Mic"]"#), "{c}");
+        assert!(c.contains(r#"td.cell[data-tx="mics/HAND 1 01"]"#));
+        assert!(c.contains(r#"th[data-testid="rx-device"][data-name="band"]"#));
+        assert!(c.contains(r#"th[data-testid="tx-device"][data-name="mics"]"#));
+        assert!(c.contains(r#"th[data-testid="rx-channel-head"][data-name="band/Hand1 Mic"]"#));
+        assert!(c.contains(r#"th[data-testid="tx-channel-head"][data-name="mics/HAND 1 01"]"#));
+        assert!(c.ends_with("{ background-image: linear-gradient(var(--hl), var(--hl)); }"));
+        // Device level: no channel headers; a quote in a name stays inside the value.
+        let d = crosshair("st\"age", "desk");
+        assert!(!d.contains("channel-head"));
+        assert!(d.contains(r#"[data-rx="st\"age"]"#), "{d}");
     }
 
     #[test]
