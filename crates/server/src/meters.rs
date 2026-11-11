@@ -193,7 +193,7 @@ impl Watches {
             },
         );
         drop(map);
-        info!(device = %device.name, port, "meters: watch started");
+        info!(device = %device.name, port, at = %meter_at(&device), cmc_record = device.cmc.is_some(), "meters: watch started");
         let me = Arc::clone(self);
         let report = view(&data.lock().unwrap_or_else(|e| e.into_inner()));
         std::thread::Builder::new()
@@ -285,9 +285,13 @@ impl Watches {
     }
 }
 
-/// Where a meter subscription goes: the device's CMC port.
+/// Where a meter subscription goes: the device's CMC port from its
+/// `_netaudio-cmc` record (each device on one PC has its own, 8800+k);
+/// the IP's 8800 only when no record was read.
 pub fn meter_at(device: &Device) -> SocketAddrV4 {
-    SocketAddrV4::new(*device.arc.ip(), cmc::PORT)
+    device
+        .cmc
+        .unwrap_or_else(|| SocketAddrV4::new(*device.arc.ip(), cmc::PORT))
 }
 
 #[cfg(test)]
