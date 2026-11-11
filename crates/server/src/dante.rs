@@ -6,7 +6,7 @@
 //! listed, when its records change, and every [`REFRESH`] after its last
 //! read. The HTTP side only reads the shared [`State`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, RwLock};
@@ -58,10 +58,72 @@ struct Entry {
     /// When dcontroller itself last changed the device: a read begun
     /// before that is dropped (it would log our change back as foreign).
     own_at: Option<Instant>,
+    /// RX channels whose subscription stopped receiving (logged), so its
+    /// recovery is logged too.
+    down: BTreeSet<u16>,
+    /// Status changes a read outside the periodic loop found (after our own
+    /// change), logged with the next periodic read.
+    pending_status: Vec<api::ChangeEntry>,
 }
 
 /// Who a change seen on the network is logged as.
 pub const OUTSIDE: &str = "outside dcontroller";
+
+/// The changes-log kind of a subscription that stopped or started
+/// receiving again.
+pub const STATUS: &str = "status";
+/// Who a status change is logged as: the device reported it.
+pub const DEVICE_STATUS: &str = "device status";
+
+/// The subscriptions of `device` that stopped receiving between two reads,
+/// and those that receive again after a logged stop (`down` keeps which
+/// stopped). A new or removed subscription, or a first read, is no status
+/// change; a subscription that never received (pending since it was made)
+/// logs nothing until it has received once.
+pub fn status_changes(
+    device: &str,
+    before: Option<&api::Channels>,
+    after: &api::Channels,
+    down: &mut BTreeSet<u16>,
+    unix: u64,
+) -> Vec<api::ChangeEntry> {
+    let mut out = Vec::new();
+    let Some(old) = before else {
+        return out;
+    };
+    for new in &after.rx {
+        let was = old.rx.iter().find(|r| r.channel == new.channel);
+        let same = was.is_some_and(|w| w.source.is_some() && w.source == new.source);
+        let Some(was) = was.filter(|_| same) else {
+            down.remove(&new.channel);
+            continue;
+        };
+        let entry = |ok: bool, message: String| api::ChangeEntry {
+            at: unix,
+            user: DEVICE_STATUS.into(),
+            kind: STATUS.into(),
+            what: "rx".into(),
+            rx_device: device.to_owned(),
+            rx_channel: new.channel,
+            rx_label: new.label.clone(),
+            before: was.source.clone(),
+            after: new.source.clone(),
+            name_before: was.status.clone(),
+            name_after: new.status.clone(),
+            ok,
+            message,
+            ..api::ChangeEntry::default()
+        };
+        if was.receiving() && !new.receiving() {
+            down.insert(new.channel);
+            let why = new.status.clone().unwrap_or_else(|| "no status".into());
+            out.push(entry(false, format!("stopped receiving: {why}")));
+        } else if !was.receiving() && new.receiving() && down.remove(&new.channel) {
+            out.push(entry(true, "receiving again".into()));
+        }
+    }
+    out
+}
 
 /// Where changes seen on the network go (the changes log).
 pub type ChangeSink = Arc<dyn Fn(&[api::ChangeEntry]) + Send + Sync>;
@@ -208,6 +270,8 @@ impl State {
                                 clock: None,
                                 network: None,
                                 own_at: None,
+                                down: BTreeSet::new(),
+                                pending_status: Vec::new(),
                                 read_at: None,
                                 error: None,
                                 due: None,
@@ -241,7 +305,13 @@ impl State {
         now: Instant,
         unix: u64,
     ) {
-        let _ = self.record_read(device, result, now, now, unix);
+        let found = self.record_read(device, result, now, now, unix);
+        // Our own change's read: only its status changes are kept, for the
+        // next periodic read to log.
+        if let Some(e) = self.devices.get_mut(&device.name.to_ascii_lowercase()) {
+            e.pending_status
+                .extend(found.into_iter().filter(|c| c.kind == STATUS));
+        }
     }
 
     /// Marks that dcontroller itself is changing `device` now: a read begun
@@ -308,6 +378,14 @@ impl State {
                     (&r.channels, r.settings.as_ref()),
                     unix,
                 );
+                found.append(&mut e.pending_status);
+                found.extend(status_changes(
+                    &device.name,
+                    e.channels.as_ref(),
+                    &r.channels,
+                    &mut e.down,
+                    unix,
+                ));
                 e.channels = Some(r.channels);
                 // A device that does not answer the settings read keeps what it last said.
                 if r.settings.is_some() {
@@ -909,6 +987,106 @@ mod tests {
             clock: None,
             network: None,
         }
+    }
+
+    fn rxs(state: &str, status: &str, source: Option<&str>) -> api::Channels {
+        api::Channels {
+            tx: vec![],
+            rx: vec![api::RxChannel {
+                channel: 2,
+                label: "Vox".into(),
+                source: source.map(|d| api::Source {
+                    channel: "Mic".into(),
+                    device: d.into(),
+                }),
+                status: Some(status.into()),
+                state: Some(state.into()),
+            }],
+        }
+    }
+
+    #[test]
+    fn a_subscription_that_stops_and_recovers_is_logged_both_ways() {
+        let mut down = BTreeSet::new();
+        let ok = rxs("connected", "Subscribed (multicast)", Some("mics"));
+        let err = rxs("error", "No more flows (Tx)", Some("mics"));
+        // A first read is no change.
+        assert!(status_changes("band", None, &ok, &mut down, 1).is_empty());
+        let stop = status_changes("band", Some(&ok), &err, &mut down, 10);
+        assert_eq!(stop.len(), 1);
+        let s = &stop[0];
+        assert_eq!(
+            (s.kind.as_str(), s.user.as_str(), s.rx_channel, s.ok, s.at),
+            (STATUS, DEVICE_STATUS, 2, false, 10)
+        );
+        assert_eq!(s.message, "stopped receiving: No more flows (Tx)");
+        assert_eq!(s.name_after.as_deref(), Some("No more flows (Tx)"));
+        assert_eq!(s.after.as_ref().map(|x| x.device.as_str()), Some("mics"));
+        // Still down: nothing new.
+        assert!(status_changes("band", Some(&err), &err, &mut down, 20).is_empty());
+        let back = status_changes("band", Some(&err), &ok, &mut down, 30);
+        assert_eq!(back.len(), 1);
+        assert_eq!(
+            (back[0].ok, back[0].message.as_str()),
+            (true, "receiving again")
+        );
+        assert!(down.is_empty());
+    }
+
+    #[test]
+    fn a_new_subscription_coming_up_or_a_changed_source_is_no_status_change() {
+        let mut down = BTreeSet::new();
+        let pending = rxs("pending", "Unresolved", Some("mics"));
+        let ok = rxs("connected", "Subscribed", Some("mics"));
+        // Made pending, then receiving: it never stopped.
+        assert!(status_changes("band", Some(&pending), &ok, &mut down, 1).is_empty());
+        // Another source (a subscription change, logged as such elsewhere).
+        let other = rxs("pending", "Unresolved", Some("desk"));
+        assert!(status_changes("band", Some(&ok), &other, &mut down, 2).is_empty());
+        // Unsubscribed: nothing either, and a stop is forgotten.
+        down.insert(2);
+        let none = rxs("none", "", None);
+        assert!(status_changes("band", Some(&other), &none, &mut down, 3).is_empty());
+        assert!(down.is_empty());
+    }
+
+    #[test]
+    fn our_own_change_read_keeps_its_status_changes_for_the_next_periodic_read() {
+        let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
+        let d = dev("band", 7);
+        s.apply(Change::Added(d.clone()));
+        let at = |c: api::Channels| Read {
+            channels: c,
+            settings: None,
+            info: None,
+            clock: None,
+            network: None,
+        };
+        let now = Instant::now();
+        s.record(
+            &d,
+            Ok(at(rxs("connected", "Subscribed", Some("mics")))),
+            now,
+            1,
+        );
+        // dcontroller's own change re-reads the device: the stop is kept...
+        s.record(
+            &d,
+            Ok(at(rxs("pending", "Unresolved", Some("mics")))),
+            now,
+            2,
+        );
+        // ...and logged with the next periodic read.
+        let later = now + Duration::from_secs(1);
+        let found = s.record_read(
+            &d,
+            Ok(at(rxs("pending", "Unresolved", Some("mics")))),
+            later,
+            later,
+            3,
+        );
+        assert_eq!(found.iter().filter(|c| c.kind == STATUS).count(), 1);
+        assert_eq!(found[0].message, "stopped receiving: Unresolved");
     }
 
     #[test]

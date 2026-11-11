@@ -5,7 +5,13 @@ import { test, expect, type ConsoleMessage, type Page } from "@playwright/test";
 // hardware does), runs one sample rate, and takes no encoding write.
 const DEVICE = "dc-e2e-device";
 
-const changes = (page: Page) => page.evaluate(() => fetch("/api/changes").then((r) => r.json()));
+// Status entries (a subscription stopped or receives again) arrive with device reads at any time: leave them out.
+const changes = (page: Page) =>
+  page.evaluate(() =>
+    fetch("/api/changes")
+      .then((r) => r.json())
+      .then((l: { kind: string }[]) => l.filter((e) => e.kind !== "status")),
+  );
 
 test.describe("settings", () => {
   let msgs: string[];
@@ -116,7 +122,7 @@ test.describe("settings", () => {
       ok: false,
     });
     await page.getByTestId("tab-changes").click();
-    const row = page.getByTestId("change-row").first();
+    const row = page.locator('[data-testid="change-row"]:not([data-kind="status"])').first();
     await expect(row).toContainText(`encoding @ ${DEVICE}`);
     await expect(row).toHaveClass(/err/);
     await page.getByTestId("tab-devices").click();

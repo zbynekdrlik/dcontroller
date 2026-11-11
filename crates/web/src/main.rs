@@ -633,6 +633,12 @@ fn change_target(e: &ChangeEntry) -> String {
         ("rename", _) => format!("rename RX {} @ {}", e.rx_channel, e.rx_device),
         ("setting", w) => format!("{} @ {}", w.replace('_', " "), e.rx_device),
         ("multicast", _) => format!("new multicast flow @ {}", e.rx_device),
+        ("status", _) => format!(
+            "{} @ {} \u{2190} {}",
+            e.rx_label,
+            e.rx_device,
+            source_text(&e.after)
+        ),
         _ => format!("{} @ {}", e.rx_label, e.rx_device),
     }
 }
@@ -1191,17 +1197,17 @@ fn ChangeLog() -> impl IntoView {
                     {v.into_iter().map(|e| {
                         let when = pages::time_text(e.at as i64);
                         view! {
-                            <tr data-testid="change-row" class=if !e.ok { "err" } else if e.user == "outside dcontroller" { "ext" } else { "" }>
+                            <tr data-testid="change-row" data-kind=e.kind.clone() class=if !e.ok { "err" } else if e.user == "outside dcontroller" { "ext" } else { "" }>
                                 <td>{when}</td>
-                                <td>{if e.user == "outside dcontroller" {
-                                    view! { <span class="chip info">"outside dcontroller"</span> }.into_any()
+                                <td>{if e.user == "outside dcontroller" || e.user == "device status" {
+                                    view! { <span class="chip info">{e.user.clone()}</span> }.into_any()
                                 } else {
                                     e.user.clone().into_any()
                                 }}</td>
                                 <td>{change_target(&e)}</td>
-                                <td>{if e.kind == "rename" || e.kind == "setting" || e.kind == "multicast" { name_text(&e.name_before) } else { source_text(&e.before) }}</td>
-                                <td>{if e.kind == "rename" || e.kind == "setting" || e.kind == "multicast" { name_text(&e.name_asked) } else { source_text(&e.requested) }}</td>
-                                <td>{if e.kind == "rename" || e.kind == "setting" || e.kind == "multicast" { name_text(&e.name_after) } else { source_text(&e.after) }}</td>
+                                <td>{if matches!(e.kind.as_str(), "rename" | "setting" | "multicast" | "status") { name_text(&e.name_before) } else { source_text(&e.before) }}</td>
+                                <td>{if matches!(e.kind.as_str(), "rename" | "setting" | "multicast" | "status") { name_text(&e.name_asked) } else { source_text(&e.requested) }}</td>
+                                <td>{if matches!(e.kind.as_str(), "rename" | "setting" | "multicast" | "status") { name_text(&e.name_after) } else { source_text(&e.after) }}</td>
                                 <td>{e.message.clone()}</td>
                             </tr>
                         }
@@ -1820,6 +1826,24 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_status_entry_reads_as_receiver_and_source() {
+        let e = ChangeEntry {
+            kind: "status".into(),
+            rx_device: "band".into(),
+            rx_label: "Hand1 Mic".into(),
+            after: Some(Source {
+                channel: "HAND 1 01".into(),
+                device: "wireless-mics-01".into(),
+            }),
+            ..ChangeEntry::default()
+        };
+        assert_eq!(
+            change_target(&e),
+            "Hand1 Mic @ band \u{2190} HAND 1 01 @ wireless-mics-01"
+        );
+    }
 
     #[test]
     fn only_another_server_version_asks_for_a_reload() {

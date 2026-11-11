@@ -62,7 +62,7 @@ test.describe("subscription changes", () => {
 
     // The changes tab lists it: who, which channel, before and after.
     await page.getByTestId("tab-changes").click();
-    const row = page.getByTestId("change-row").first();
+    const row = page.locator('[data-testid="change-row"]:not([data-kind="status"])').first();
     await expect(row).toContainText("local");
     await expect(row).toContainText(`Stage R @ ${DEVICE}`);
     await expect(row).toContainText(`Mix R @ ${DEVICE}`);
