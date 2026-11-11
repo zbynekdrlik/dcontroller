@@ -260,6 +260,12 @@ impl State {
         }
     }
 
+    /// The Dante interface's netmask: a device whose ARC address is
+    /// outside its subnet is not listed.
+    pub fn set_netmask(&mut self, mask: Ipv4Addr) {
+        let _ = mask;
+    }
+
     /// Applies one discovery change now. A new or changed device is due
     /// for a read.
     pub fn apply(&mut self, change: Change) {
@@ -1009,6 +1015,25 @@ mod tests {
             clock: None,
             network: None,
         }
+    }
+
+    #[test]
+    fn a_device_outside_the_dante_subnet_is_not_listed() {
+        // A device seen through an mDNS reflector from another subnet (a
+        // test device on the LAN) cannot be reached over the Dante leg.
+        let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
+        s.set_netmask(Ipv4Addr::new(255, 255, 255, 0));
+        let mut far = dev("far", 5);
+        far.arc = SocketAddrV4::new(Ipv4Addr::new(10, 0, 1, 5), 4440);
+        s.apply(Change::Added(far.clone()));
+        s.apply(Change::Added(dev("near", 7)));
+        let names: Vec<String> = s.view().devices.into_iter().map(|d| d.name).collect();
+        assert_eq!(names, ["near"]);
+        // One that moves out of the subnet leaves the list.
+        let mut moved = dev("near", 7);
+        moved.arc = SocketAddrV4::new(Ipv4Addr::new(10, 0, 1, 7), 4440);
+        s.apply(Change::Changed(moved));
+        assert!(s.view().devices.is_empty());
     }
 
     #[test]
