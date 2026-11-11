@@ -33,7 +33,9 @@ test.describe("settings", () => {
     await card.getByTestId("change-latency").click();
     await expect(dialog.getByTestId("setting-title")).toHaveText(`Change the latency of ${DEVICE} (now 10.00 ms)`);
     // Dante Controller's choices within the device's range, plus its current one.
-    await expect(dialog.locator("option")).toHaveText(["0.25 ms", "0.50 ms", "1.00 ms", "2.00 ms", "5.00 ms", "10.00 ms"]);
+    // dstack v0.6.90 states its real minimum (its TX floor, 0.633 ms at
+    // 96 kHz fpp 32), so 0.25 and 0.50 ms are no longer offered.
+    await expect(dialog.locator("option")).toHaveText(["1.00 ms", "2.00 ms", "5.00 ms", "10.00 ms"]);
     await expect(dialog.getByTestId("setting-warning")).toContainText("may drop out briefly");
     await expect(dialog.getByTestId("setting-apply")).toBeDisabled();
 
@@ -59,7 +61,7 @@ test.describe("settings", () => {
     // Its config's 10 ms is no Dante Controller choice, so the dialog no
     // longer offers it now 5 ms is in effect.
     await card.getByTestId("change-latency").click();
-    await expect(dialog.locator("option")).toHaveText(["0.25 ms", "0.50 ms", "1.00 ms", "2.00 ms", "5.00 ms"]);
+    await expect(dialog.locator("option")).toHaveText(["1.00 ms", "2.00 ms", "5.00 ms"]);
     await dialog.getByTestId("setting-cancel").click();
     // Cleanup through the API: back to the config's latency, so the other
     // tests see the device as it was.
