@@ -193,7 +193,7 @@ impl Watches {
             },
         );
         drop(map);
-        info!(device = %device.name, port, "meters: watch started");
+        info!(device = %device.name, port, at = %meter_at(&device), cmc_record = device.cmc.is_some(), "meters: watch started");
         let me = Arc::clone(self);
         let report = view(&data.lock().unwrap_or_else(|e| e.into_inner()));
         std::thread::Builder::new()
@@ -219,7 +219,7 @@ impl Watches {
         device: &Device,
         data: &Mutex<Watched>,
     ) {
-        let at = SocketAddrV4::new(*device.arc.ip(), cmc::PORT);
+        let at = meter_at(device);
         let set_error = |e: String| {
             warn!(device = %device.name, error = %e, "meters: no subscription");
             data.lock().unwrap_or_else(|e| e.into_inner()).error = Some(e);
@@ -283,6 +283,15 @@ impl Watches {
         let frames = data.lock().unwrap_or_else(|e| e.into_inner()).frames;
         info!(device = %device.name, frames, "meters: watch ended (nobody asked for {}s)", IDLE.as_secs());
     }
+}
+
+/// Where a meter subscription goes: the device's CMC port from its
+/// `_netaudio-cmc` record (each device on one PC has its own, 8800+k);
+/// the IP's 8800 only when no record was read.
+pub fn meter_at(device: &Device) -> SocketAddrV4 {
+    device
+        .cmc
+        .unwrap_or_else(|| SocketAddrV4::new(*device.arc.ip(), cmc::PORT))
 }
 
 #[cfg(test)]
@@ -369,6 +378,24 @@ mod tests {
         // The guard opens the same range.
         let guard = include_str!("../../../deploy/dante-guard.nft");
         assert!(guard.contains("udp dport 8810-8825 accept"));
+    }
+
+    #[test]
+    fn meters_go_to_the_device_cmc_port_and_8800_without_a_record() {
+        let at = |cmc: Option<&str>| Device {
+            name: "dsend".into(),
+            arc: "10.0.0.30:4442".parse().unwrap(),
+            dbc: None,
+            cmc: cmc.map(|c| c.parse().unwrap()),
+            device_id: None,
+            txt: Default::default(),
+        };
+        // The third device on a PC: its own CMC port, not the first one's.
+        assert_eq!(
+            meter_at(&at(Some("10.0.0.30:8802"))),
+            "10.0.0.30:8802".parse().unwrap()
+        );
+        assert_eq!(meter_at(&at(None)), "10.0.0.30:8800".parse().unwrap());
     }
 
     #[test]

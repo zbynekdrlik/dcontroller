@@ -443,6 +443,7 @@ mod tests {
             name: name.into(),
             arc: std::net::SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, last), 4440),
             dbc: None,
+            cmc: None,
             device_id: id.map(|i| [i; 8]),
             txt: BTreeMap::new(),
         }
