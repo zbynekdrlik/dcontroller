@@ -75,6 +75,25 @@ pub fn rows(flows: &[TxFlow], tx: &[(u16, String)], d: &Devices) -> Vec<Row> {
         .collect()
 }
 
+/// "flows N/max" as the page writes it, and whether every slot is taken
+/// (the next unicast receiver gets "No more flows"). A device that states
+/// no slot count gets the count alone.
+pub fn count_text(n: usize, slots: u16, unread: usize) -> (String, bool) {
+    let mut t = if slots == 0 {
+        format!("{n} TX flow{}", if n == 1 { "" } else { "s" })
+    } else {
+        format!("{n} of {slots} TX flows")
+    };
+    if unread > 0 {
+        t.push_str(&format!(" ({unread} not readable)"));
+    }
+    let full = slots > 0 && n + unread >= usize::from(slots);
+    if full {
+        t.push_str(": all taken");
+    }
+    (t, full)
+}
+
 /// The confirmation question for a new multicast flow.
 pub fn question(device: &str, chosen: &[u16], tx: &[(u16, String)]) -> String {
     let ch = chosen
@@ -144,6 +163,18 @@ mod tests {
         assert_eq!(r[1].to, "239.255.1.2:4321");
         assert_eq!(r[1].channels, "HAND 1 (1), PETA (2)");
         assert!(r[1].multicast);
+    }
+
+    #[test]
+    fn the_count_reads_n_of_max_and_flags_a_full_transmitter() {
+        assert_eq!(count_text(1, 2, 0), ("1 of 2 TX flows".to_string(), false));
+        assert_eq!(
+            count_text(2, 2, 0),
+            ("2 of 2 TX flows: all taken".to_string(), true)
+        );
+        assert!(count_text(1, 2, 1).1);
+        assert_eq!(count_text(1, 0, 0), ("1 TX flow".to_string(), false));
+        assert_eq!(count_text(3, 0, 1).0, "3 TX flows (1 not readable)");
     }
 
     #[test]

@@ -1047,10 +1047,9 @@ fn TxFlowsBox(device: String, tx: Vec<(u16, String)>) -> impl IntoView {
                         Some(Ok(d)) => flows::rows(&f.flows, &tx, d),
                         _ => flows::rows(&f.flows, &tx, &Devices::default()),
                     });
-                    let n = all.len();
+                    let (count, full) = flows::count_text(all.len(), f.slots, f.unread);
                     view! {
-                        <p class="subs" data-testid="flows-count">{format!("{n} TX flow{}", if n == 1 { "" } else { "s" })}
-                            {(f.unread > 0).then(|| format!(" ({} not readable)", f.unread))}</p>
+                        <p class={if full { "subs warn" } else { "subs" }} data-testid="flows-count">{count}</p>
                         <table class="grid" data-testid="flows-table">
                             <thead><tr><th>"Slot"</th><th>"Kind"</th><th>"Channels"</th><th>"To"</th></tr></thead>
                             <tbody>{all.into_iter().map(|r| view! {

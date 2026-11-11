@@ -95,11 +95,12 @@ pub fn list(dante: &Shared, device: &str) -> Result<api::TxFlows, String> {
         .map_err(|e| format!("socket: {e}"))?;
     match flows::list_tx_flows(&mut udp) {
         Ok(f) => {
-            info!(device = %dev.name, flows = f.flows.len(), unread = f.unread, "flows: listed");
+            info!(device = %dev.name, flows = f.flows.len(), slots = f.slots, unread = f.unread, "flows: listed");
             Ok(api::TxFlows {
                 device: dev.name.clone(),
                 flows: f.flows.iter().map(to_api).collect(),
                 unread: f.unread,
+                slots: f.slots,
             })
         }
         Err(e) => {
@@ -140,6 +141,7 @@ mod tests {
                 flow(4, &[3], false),
             ],
             unread: 0,
+            slots: 4,
         };
         assert_eq!(free_slot(&held), 3);
     }

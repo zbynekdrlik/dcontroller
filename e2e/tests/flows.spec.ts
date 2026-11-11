@@ -55,7 +55,8 @@ test.describe("TX flows", () => {
     await card.getByTestId("device-name").click();
 
     await card.getByTestId("tx-flows").click();
-    await expect(card.getByTestId("flows-count")).toHaveText("2 TX flows", { timeout: 15_000 });
+    // dstack's device states 32 flow slots.
+    await expect(card.getByTestId("flows-count")).toHaveText("2 of 32 TX flows", { timeout: 15_000 });
     const rows = card.locator('[data-testid="flow-row"][data-kind="unicast"]');
     await expect(rows.getByTestId("flow-channels")).toHaveText(["Mix L (1)", "Mix R (2)"]);
     await expect(rows.getByTestId("flow-to")).toHaveText([DEVICE, DEVICE]);
