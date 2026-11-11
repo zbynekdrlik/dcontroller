@@ -31,6 +31,13 @@ pub fn free_slot(listed: &Flows) -> u16 {
         .unwrap_or(u16::MAX)
 }
 
+/// The TX flow slots to show for `dev`'s list: 0 (unknown) when the device
+/// echoes its flow count there instead of its slots.
+pub fn slots(dev: &dstack::discover::Device, listed: &Flows) -> u16 {
+    let _ = dev;
+    listed.slots
+}
+
 /// Checks a create before anything is sent: 1 to 8 channels, each from 1,
 /// none twice, each one the device transmits (`tx` its TX channel numbers).
 pub fn validate(req: &api::MulticastCreate, tx: &[u16]) -> Result<(), String> {
@@ -100,7 +107,7 @@ pub fn list(dante: &Shared, device: &str) -> Result<api::TxFlows, String> {
                 device: dev.name.clone(),
                 flows: f.flows.iter().map(to_api).collect(),
                 unread: f.unread,
-                slots: f.slots,
+                slots: slots(&dev, &f),
             })
         }
         Err(e) => {
@@ -144,6 +151,38 @@ mod tests {
             slots: 4,
         };
         assert_eq!(free_slot(&held), 3);
+    }
+
+    #[test]
+    fn an_old_dstack_device_s_echoed_count_is_no_slot_count() {
+        let dev = |txt: &[(&str, &str)]| dstack::discover::Device {
+            name: "band".into(),
+            arc: "10.0.0.30:4441".parse().unwrap(),
+            dbc: None,
+            cmc: None,
+            device_id: None,
+            txt: txt
+                .iter()
+                .map(|(k, v)| ((*k).into(), (*v).into()))
+                .collect(),
+        };
+        let listed = Flows {
+            flows: vec![flow(1, &[1], false), flow(2, &[2], false)],
+            unread: 0,
+            slots: 2,
+        };
+        let ours = dstack::announce::MODEL_ID;
+        // One of ours before dstack v0.6.84: its 2 is the flow count.
+        assert_eq!(slots(&dev(&[("model", ours)]), &listed), 0);
+        // Ours since then, and any other device: the real slots.
+        assert_eq!(
+            slots(
+                &dev(&[("model", ours), (dstack::announce::VERSION_KEY, "0.6.84")]),
+                &listed
+            ),
+            2
+        );
+        assert_eq!(slots(&dev(&[("model", "_0000000100000005")]), &listed), 2);
     }
 
     #[test]
