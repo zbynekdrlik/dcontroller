@@ -53,6 +53,7 @@ fn App() -> impl IntoView {
         rx: RwSignal::new(BTreeSet::new()),
         scroll: StoredValue::new((0, 0)),
         problems: StoredValue::new(false),
+        hover: RwSignal::new(String::new()),
     });
     let view_now = RwSignal::new(View::from_hash());
     let ctl = Ctl {
@@ -1363,6 +1364,8 @@ struct Expanded {
     scroll: StoredValue<(i32, i32)>,
     /// The subscriptions line above the matrix is open, kept across rebuilds.
     problems: StoredValue<bool>,
+    /// The hovered cross-point's row and column highlight (a CSS rule).
+    hover: RwSignal<String>,
 }
 
 fn flip(set: RwSignal<BTreeSet<String>>, name: &str) {
@@ -1431,6 +1434,7 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
         tx: tx_open,
         rx: rx_open,
         scroll,
+        hover,
         ..
     } = ex;
     let ctl = expect_context::<Ctl>();
@@ -1623,7 +1627,17 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
                 let el = event_target::<web_sys::HtmlElement>(&ev);
                 scroll.set_value((el.scroll_top(), el.scroll_left()));
             }>
-            <table class="matrix" data-testid="matrix">
+            <style data-testid="crosshair">{move || hover.get()}</style>
+            <table class="matrix" data-testid="matrix"
+                on:mouseover=move |ev| {
+                    let cell = ev
+                        .target()
+                        .and_then(|t| wasm_bindgen::JsCast::dyn_into::<web_sys::Element>(t).ok())
+                        .and_then(|e| e.closest("td.cell").ok().flatten());
+                    let css = cell.and_then(|c| Some(matrix::crosshair(&c.get_attribute("data-rx")?, &c.get_attribute("data-tx")?)));
+                    hover.set(css.unwrap_or_default());
+                }
+                on:mouseleave=move |_| hover.set(String::new())>
                 <thead>
                     <tr><th class="corner" rowspan="2">"RX ↓  TX →"</th>{head_devices}</tr>
                     <tr>{head_channels}</tr>
