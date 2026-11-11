@@ -16,6 +16,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 mod clock;
+mod devlist;
 mod flows;
 mod hist;
 mod lat;
@@ -46,6 +47,7 @@ fn App() -> impl IntoView {
     let devices = RwSignal::new(None::<Result<Devices, String>>);
     // The devices whose channels are open, kept across refreshes.
     provide_context(Open(RwSignal::new(BTreeSet::new())));
+    provide_context(NewestFirst(RwSignal::new(false)));
     provide_context(Expanded {
         tx: RwSignal::new(BTreeSet::new()),
         rx: RwSignal::new(BTreeSet::new()),
@@ -1594,13 +1596,42 @@ fn status_line(d: &Devices) -> String {
 #[component]
 fn DeviceList(d: Devices) -> impl IntoView {
     let line = status_line(&d);
+    let NewestFirst(newest) = expect_context::<NewestFirst>();
+    let start = pages::time_text(d.started_at as i64);
+    let list = move || {
+        devlist::order(&d, newest.get())
+            .into_iter()
+            .map(|dev| {
+                let joined = match devlist::joined(&dev, &d) {
+                    devlist::Joined::AtStart => {
+                        format!("on the network when dcontroller started ({start})")
+                    }
+                    devlist::Joined::At(t) => format!("joined {}", pages::time_text(t as i64)),
+                };
+                view! { <DeviceCard dev=dev joined=joined/> }
+            })
+            .collect_view()
+    };
+    let seg = move |on: bool, label: &'static str, id: &'static str| {
+        view! {
+            <button data-testid=id class=move || if newest.get() == on { "seg on" } else { "seg" }
+                on:click=move |_| newest.set(on)>{label}</button>
+        }
+    };
     view! {
         <p class="status" data-testid="status">{line}</p>
-        <ul class="devices">
-            {d.devices.into_iter().map(|dev| view! { <DeviceCard dev=dev/> }).collect_view()}
-        </ul>
+        <div class="seg-group" data-testid="device-sort">
+            {seg(false, "By name", "sort-name")}
+            {seg(true, "Newest first", "sort-newest")}
+        </div>
+        <ul class="devices">{list}</ul>
     }
 }
+
+/// The Devices page lists the devices newest first (else by name), kept
+/// across the device poll's rebuilds.
+#[derive(Clone, Copy)]
+struct NewestFirst(RwSignal<bool>);
 
 /// The names of the devices whose channels are open.
 #[derive(Clone, Copy)]
@@ -1787,7 +1818,7 @@ fn ClockView(d: Devices) -> impl IntoView {
 }
 
 #[component]
-fn DeviceCard(dev: Device) -> impl IntoView {
+fn DeviceCard(dev: Device, joined: String) -> impl IntoView {
     let Open(open) = expect_context::<Open>();
     let is_open = open.with_untracked(|o| o.contains(&dev.name));
     let key = dev.name.clone();
@@ -1829,6 +1860,7 @@ fn DeviceCard(dev: Device) -> impl IntoView {
                         <span class="subs" data-testid="device-settings">{l}</span>
                     })}
                     <span class="addr">{dev.address.clone()}</span>
+                    <span class="subs" data-testid="device-joined">{joined}</span>
                 </summary>
                 {Some({
                     let mut rows = settings_rows(&dev.settings.clone().unwrap_or_default(), dev.info.as_ref());
@@ -1942,6 +1974,7 @@ mod tests {
 
     fn devices(enabled: bool, error: Option<&str>, n: usize) -> Devices {
         Devices {
+            started_at: 0,
             enabled,
             interface: Some("eth1".into()),
             error: error.map(Into::into),

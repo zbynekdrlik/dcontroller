@@ -33,6 +33,8 @@ const INFO_WAIT: Duration = Duration::from_secs(1);
 #[derive(Debug, Default)]
 pub struct State {
     enabled: bool,
+    /// When this discovery started (unix seconds).
+    started_at: u64,
     /// Our address on the Dante interface while discovery runs.
     ip: Option<Ipv4Addr>,
     interface: Option<String>,
@@ -43,6 +45,8 @@ pub struct State {
 #[derive(Debug)]
 struct Entry {
     device: Device,
+    /// When discovery first listed it (unix seconds).
+    seen_at: u64,
     channels: Option<api::Channels>,
     settings: Option<api::Settings>,
     /// Read once per listing (again when its records change).
@@ -222,6 +226,12 @@ pub fn detect(
     out
 }
 
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 /// The state the HTTP side reads.
 pub type Shared = Arc<RwLock<State>>;
 
@@ -230,6 +240,7 @@ impl State {
     pub fn off(interface: Option<String>, error: Option<String>) -> Self {
         State {
             enabled: false,
+            started_at: unix_now(),
             ip: None,
             interface,
             error,
@@ -241,6 +252,7 @@ impl State {
     pub fn on(interface: String, ip: Ipv4Addr) -> Self {
         State {
             enabled: true,
+            started_at: unix_now(),
             ip: Some(ip),
             interface: Some(interface),
             error: None,
@@ -248,8 +260,15 @@ impl State {
         }
     }
 
-    /// Applies one discovery change. A new or changed device is due for a read.
+    /// Applies one discovery change now. A new or changed device is due
+    /// for a read.
     pub fn apply(&mut self, change: Change) {
+        self.apply_at(change, unix_now());
+    }
+
+    /// [`State::apply`] at unix second `unix`: a newly listed device is
+    /// seen from then on.
+    pub fn apply_at(&mut self, change: Change, unix: u64) {
         match change {
             Change::Added(device) | Change::Changed(device) => {
                 let key = device.name.to_ascii_lowercase();
@@ -264,6 +283,7 @@ impl State {
                             key,
                             Entry {
                                 device,
+                                seen_at: unix,
                                 channels: None,
                                 settings: None,
                                 info: None,
@@ -497,11 +517,13 @@ impl State {
             enabled: self.enabled,
             interface: self.interface.clone(),
             error: self.error.clone(),
+            started_at: self.started_at,
             devices: self
                 .devices
                 .values()
                 .map(|e| api::Device {
                     name: e.device.name.clone(),
+                    seen_at: e.seen_at,
                     address: e.device.arc.to_string(),
                     manufacturer: e
                         .info
@@ -987,6 +1009,21 @@ mod tests {
             clock: None,
             network: None,
         }
+    }
+
+    #[test]
+    fn a_device_is_seen_from_when_discovery_first_listed_it() {
+        let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
+        s.apply_at(Change::Added(dev("Card", 3)), 100);
+        let seen = |s: &State| s.view().devices[0].seen_at;
+        assert_eq!(seen(&s), 100);
+        // A changed record keeps it; gone and back starts again.
+        s.apply_at(Change::Changed(dev("Card", 4)), 200);
+        assert_eq!(seen(&s), 100);
+        s.apply_at(Change::Removed("Card".into()), 250);
+        s.apply_at(Change::Added(dev("Card", 4)), 300);
+        assert_eq!(seen(&s), 300);
+        assert!(s.view().started_at > 0);
     }
 
     fn rxs(state: &str, status: &str, source: Option<&str>) -> api::Channels {
