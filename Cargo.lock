@@ -178,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "buildver"
-version = "0.1.60"
+version = "0.1.61"
 
 [[package]]
 name = "bumpalo"
@@ -341,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "dcontroller"
-version = "0.1.60"
+version = "0.1.61"
 dependencies = [
  "anyhow",
  "axum",
@@ -364,7 +364,7 @@ dependencies = [
 
 [[package]]
 name = "dcontroller-api"
-version = "0.1.60"
+version = "0.1.61"
 dependencies = [
  "serde",
  "serde_json",
@@ -372,7 +372,7 @@ dependencies = [
 
 [[package]]
 name = "dcontroller-web"
-version = "0.1.60"
+version = "0.1.61"
 dependencies = [
  "buildver",
  "console_error_panic_hook",
@@ -426,8 +426,8 @@ checksum = "669a445ee724c5c69b1b06fe0b63e70a1c84bc9bb7d9696cd4f4e3ec45050408"
 
 [[package]]
 name = "dstack"
-version = "0.6.91"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.91#c6d6840be95ec410eca321248e49bbfca703ddac"
+version = "0.6.118"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.118#a6fe1509becfa3d1dc17b1b0c4a64711b6b9bde6"
 dependencies = [
  "dstack-audio-io",
  "dsync-ptp",
@@ -449,13 +449,13 @@ dependencies = [
 
 [[package]]
 name = "dstack-audio-io"
-version = "0.6.91"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.91#c6d6840be95ec410eca321248e49bbfca703ddac"
+version = "0.6.118"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.118#a6fe1509becfa3d1dc17b1b0c4a64711b6b9bde6"
 
 [[package]]
 name = "dsync-ptp"
-version = "1.30.1"
-source = "git+https://github.com/zbynekdrlik/dsync?tag=v1.30.1#0096a0aabb7a45fdc4ee274c61fc67c37372a9aa"
+version = "1.33.1"
+source = "git+https://github.com/zbynekdrlik/dsync?tag=v1.33.1#f45090fb0be4eb756441f9eed3ed0c10d6ffeb0e"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -1248,7 +1248,7 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 [[package]]
 name = "mdns-sd"
 version = "0.21.6"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.91#c6d6840be95ec410eca321248e49bbfca703ddac"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.118#a6fe1509becfa3d1dc17b1b0c4a64711b6b9bde6"
 dependencies = [
  "fastrand",
  "flume",
