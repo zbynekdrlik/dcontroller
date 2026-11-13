@@ -1,18 +1,20 @@
 import { test, expect, type ConsoleMessage } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
-import { root, routed, run } from "../env";
+import { root, routed } from "../env";
 
-// A change made outside dcontroller — here dstack's own device renamed by
-// its `card write` tool, as Dante Controller or a mixer would — shows in
-// Changes once the next read sees it.
+// A change made outside dcontroller (here a rename straight over ARC by the
+// `arc_rename` helper, through dstack, as Dante Controller or a mixer would)
+// shows in Changes once the next read sees it.
 const DEVICE = "dc-e2e-device";
-const card = (channel: number, label: string) =>
-  execFileSync(
-    resolve(root, "target/debug/dstack-dev"),
-    ["card", "write", routed.ip, DEVICE, resolve(run, "card-stop-flag-never-made")],
-    { input: JSON.stringify([{ type: "rx", channel, label }]) },
-  ).toString();
+const rename = (arc: string, channel: number, label: string) =>
+  execFileSync(resolve(root, "target/debug/examples/arc_rename"), [
+    routed.ip,
+    arc,
+    "rx",
+    String(channel),
+    label,
+  ]).toString();
 
 // The list reads Slovak time, whatever zone the browser is in.
 test.use({ timezoneId: "America/New_York" });
@@ -29,7 +31,9 @@ test("a channel renamed outside dcontroller shows in Changes", async ({ page }) 
   const card3 = page.locator(`[data-testid="device"][data-name="${DEVICE}"]`);
   await expect(card3.getByTestId("device-counts")).toHaveText("4 TX · 4 RX", { timeout: 30_000 });
 
-  card(3, "Ext 3");
+  const devices = await page.evaluate(() => fetch("/api/devices").then((r) => r.json()));
+  const arc = devices.devices.find((d: { name: string }) => d.name === DEVICE).address;
+  expect(rename(arc, 3, "Ext 3")).toBe("Ext 3\n");
   try {
     // The next read (within 30 s) sees it and logs it as made outside.
     await expect
@@ -50,7 +54,7 @@ test("a channel renamed outside dcontroller shows in Changes", async ({ page }) 
     await expect(row).toContainText(new Date(at * 1000).toLocaleString("sk-SK", { timeZone: "Europe/Bratislava" }));
     await expect(row).toContainText("Spare 3");
   } finally {
-    card(3, "Spare 3");
+    rename(arc, 3, "Spare 3");
     // The other tests see the device as it was: wait until a read has it back.
     await expect
       .poll(

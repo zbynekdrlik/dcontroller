@@ -1,5 +1,5 @@
 [Unit]
-Description=Dante NIC guard: only Dante traffic on the Dante interface
+Description=Dante NIC guard: dstack's generic Dante-leg filter on the Dante interface
 DefaultDependencies=no
 Before=network-pre.target
 Wants=network-pre.target
@@ -8,8 +8,10 @@ After=local-fs.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/sbin/nft -f /etc/dcontroller/dante-guard.nft
-ExecStop=/usr/sbin/nft delete table inet dante_guard
+# DANTE_LEG: the Dante interface, written by dante-guard.sh.
+EnvironmentFile=/etc/dstack/dante-leg.env
+ExecStart=/usr/sbin/nft -D dante_leg=${DANTE_LEG} -f /etc/dstack/dante-leg.nft
+ExecStop=-/usr/sbin/nft delete table inet dstack_dante_leg
 
 [Install]
 WantedBy=multi-user.target

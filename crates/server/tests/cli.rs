@@ -34,36 +34,3 @@ fn check_config_rejects_what_the_server_would_refuse() {
         assert!(out.stdout.is_empty());
     }
 }
-
-#[test]
-fn guard_users_lists_the_config_s_dante_device_users() {
-    let run = |text: &str| {
-        let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("config.toml");
-        std::fs::write(&p, text).unwrap();
-        Command::new(env!("CARGO_BIN_EXE_dcontroller"))
-            .arg("--guard-users")
-            .arg(&p)
-            .output()
-            .unwrap()
-    };
-    let out = run("web_dir = \"/opt/x\"\nguard_users = [\"presenter\", \"dlink_2\"]\n");
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(
-        String::from_utf8(out.stdout).unwrap(),
-        "presenter dlink_2\n"
-    );
-    // None listed: an empty line.
-    assert_eq!(
-        String::from_utf8(run("web_dir = \"/opt/x\"\n").stdout).unwrap(),
-        "\n"
-    );
-    for bad in ["bad user", "Root", "-x", "", "a\"b"] {
-        let out = run(&format!("web_dir = \"/opt/x\"\nguard_users = [{bad:?}]\n"));
-        assert!(!out.status.success(), "accepted {bad:?}");
-    }
-}
