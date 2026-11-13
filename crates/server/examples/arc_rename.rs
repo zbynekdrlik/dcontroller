@@ -25,8 +25,19 @@ fn main() -> anyhow::Result<()> {
     };
     let channel: u16 = channel.parse()?;
     let label = (label != "-").then_some(label.as_str());
-    let (seq, requests, stop) = (AtomicU16::new(1), Requests::default(), AtomicBool::new(false));
-    let mut udp = Udp::open(ip.parse()?, arc.parse()?, &seq, REPLY_TIMEOUT, &requests, &stop)?;
+    let (seq, requests, stop) = (
+        AtomicU16::new(1),
+        Requests::default(),
+        AtomicBool::new(false),
+    );
+    let mut udp = Udp::open(
+        ip.parse()?,
+        arc.parse()?,
+        &seq,
+        REPLY_TIMEOUT,
+        &requests,
+        &stop,
+    )?;
     control::rename_channel(&mut udp, dir, channel, label)?;
     let now = control::labels(&mut udp)?;
     let read = now
