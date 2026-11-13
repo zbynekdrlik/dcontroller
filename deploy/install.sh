@@ -89,6 +89,12 @@ if [ ! -f "$cfg" ]; then
     mv "$tmp" "$cfg"
     created_cfg=1
 fi
+# guard_users (0.1.60 and older) is gone: the generic Dante-leg filter names
+# no user (#84). The config refuses unknown keys, so the line goes.
+if grep -q '^guard_users *=' "$cfg"; then
+    sed -i '/^guard_users *=/d' "$cfg"
+    echo "config: removed guard_users (the generic Dante-leg filter names no user)"
+fi
 chown root:dcontroller "$cfg" && chmod 0640 "$cfg"
 # The new binary must accept the config; it also tells us where to probe.
 if ! bind=$("$src/dcontroller" --check-config "$cfg"); then
@@ -133,7 +139,6 @@ if systemctl is-enabled -q dante-guard.service 2>/dev/null && [ -x "$src/dante-g
         echo "dante-guard is enabled but $cfg names no dante_interface; rules not refreshed" >&2
         exit 1
     fi
-    guard_users=$("$src/dcontroller" --guard-users "$cfg")
-    DC_IFACE="$iface" DC_GUARD_USERS="$guard_users" DC_GUARD_SKIP_ROUTING=1 "$src/dante-guard.sh" \
+    DC_IFACE="$iface" DC_GUARD_SKIP_ROUTING=1 "$src/dante-guard.sh" \
         || { echo "dante-guard rules not refreshed" >&2; exit 1; }
 fi

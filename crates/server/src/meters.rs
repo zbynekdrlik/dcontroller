@@ -6,9 +6,9 @@
 //! renew the subscription (dstack renews it every 3 s; this is a backstop).
 //!
 //! Devices send their frames from another source port than the one the
-//! subscription went to, so the Dante NIC guard (`deploy/dante-guard.nft`)
-//! cannot see them as replies: each watch binds one port of [`PORTS`], and
-//! the guard opens exactly that range.
+//! subscription went to, so the Dante NIC guard (`deploy/dante-leg.nft`,
+//! dstack's generic filter) cannot see them as replies: each watch binds one
+//! port of [`PORTS`], inside the CMC ports the filter accepts (8800-8831).
 
 use std::collections::HashMap;
 use std::net::SocketAddrV4;
@@ -33,7 +33,7 @@ const TICK: Duration = Duration::from_millis(500);
 /// The controller name the device sees.
 pub const NAME: &str = "dcontroller";
 /// The local ports meter frames come to, one per watch (the guard opens
-/// this range: keep `deploy/dante-guard.nft` in step).
+/// this range: keep it inside `deploy/dante-leg.nft`'s `dante_udp` set).
 pub const PORTS: std::ops::RangeInclusive<u16> = 8810..=8825;
 
 /// The first port of [`PORTS`] no watch holds.
@@ -375,9 +375,21 @@ mod tests {
         assert_eq!(free_port([8811]), Some(8810));
         assert_eq!(free_port(PORTS), None);
         assert_eq!(PORTS.clone().count(), 16);
-        // The guard opens the same range.
-        let guard = include_str!("../../../deploy/dante-guard.nft");
-        assert!(guard.contains("udp dport 8810-8825 accept"));
+        // The generic Dante-leg filter accepts every port of the range.
+        let filter = include_str!("../../../deploy/dante-leg.nft");
+        let set = filter
+            .lines()
+            .skip_while(|l| !l.contains("set dante_udp"))
+            .find_map(|l| l.trim().strip_prefix("elements = {"))
+            .expect("the dante_udp set");
+        let accepted = |port: u16| {
+            set.trim_end_matches('}').split(',').any(|e| {
+                let (a, b) = e.trim().split_once('-').unwrap_or((e.trim(), e.trim()));
+                (a.parse::<u16>().unwrap()..=b.parse::<u16>().unwrap()).contains(&port)
+            })
+        };
+        assert!(PORTS.clone().all(accepted));
+        assert!(!accepted(9));
     }
 
     #[test]
