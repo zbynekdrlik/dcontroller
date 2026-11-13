@@ -201,7 +201,7 @@ jobs:
           sudo ip addr add 10.99.7.2/24 dev dante0
           sudo ip link set dante0 up
           # A box upgraded from 0.1.60: the old table and its file are there.
-          echo 'table inet dante_guard { chain out { type filter hook output priority filter; policy accept; } }' | sudo nft -f -
+          sudo nft add table inet dante_guard
           sudo install -d /etc/dcontroller && echo old | sudo tee /etc/dcontroller/dante-guard.nft >/dev/null
           # avahi: a config with a [server] section and no deny-interfaces.
           sudo install -d /etc/avahi
