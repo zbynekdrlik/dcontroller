@@ -5,6 +5,7 @@ pub mod dante;
 pub mod flows;
 pub mod history;
 pub mod latency;
+pub mod mdns;
 pub mod meters;
 
 use std::net::SocketAddr;
@@ -116,6 +117,7 @@ pub struct Shared {
     pub changes: std::sync::Arc<change::Changes>,
     pub history: std::sync::Arc<history::Store>,
     pub meters: std::sync::Arc<meters::Watches>,
+    pub mdns: std::sync::Arc<mdns::Watch>,
 }
 
 async fn devices(State(s): State<Shared>) -> axum::Json<dcontroller_api::Devices> {
@@ -319,6 +321,11 @@ async fn changes(
     })
 }
 
+/// `GET /api/mdns`: the mDNS senders on the Dante leg (the last minute).
+async fn mdns_report(State(s): State<Shared>) -> axum::Json<dcontroller_api::Mdns> {
+    axum::Json(s.mdns.view())
+}
+
 async fn healthz() -> axum::Json<Health> {
     axum::Json(Health {
         status: "ok".into(),
@@ -350,6 +357,7 @@ pub fn app(web_dir: &Path, shared: Shared) -> Router {
         .route("/api/overview", get(overview))
         .route("/api/meters/{device}", get(meter_report))
         .route("/api/levels", get(levels_report))
+        .route("/api/mdns", get(mdns_report))
         .route("/api", any(api_not_found))
         .route("/api/", any(api_not_found))
         .route("/api/{*rest}", any(api_not_found))

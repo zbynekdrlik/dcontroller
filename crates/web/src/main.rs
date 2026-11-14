@@ -8,9 +8,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Duration;
 
 use dcontroller_api::{
-    ChangeEntry, ChangeResult, ChannelLevel, Device, Devices, Info, MeterReport, MulticastCreate,
-    MulticastDelete, Rename, RenameTarget, RxChannel, SettingChange, Settings, Source,
-    SubscriptionChange, TxFlows,
+    ChangeEntry, ChangeResult, ChannelLevel, Device, Devices, Info, Mdns, MeterReport,
+    MulticastCreate, MulticastDelete, Rename, RenameTarget, RxChannel, SettingChange, Settings,
+    Source, SubscriptionChange, TxFlows,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -21,6 +21,7 @@ mod flows;
 mod hist;
 mod lat;
 mod matrix;
+mod mdns;
 mod mtr;
 mod net;
 mod pages;
@@ -211,6 +212,24 @@ fn App() -> impl IntoView {
     load();
     // The interval lives as long as the page.
     let _ = set_interval_with_handle(load, POLL);
+    // The mDNS meter, for the alarm on every page.
+    let md = MdnsNow(RwSignal::new(None));
+    provide_context(md);
+    let load_mdns = move || {
+        spawn_local(async move {
+            match fetch_mdns().await {
+                Ok(m) => {
+                    let new = Some(m);
+                    if md.0.with_untracked(|o| *o != new) {
+                        md.0.set(new);
+                    }
+                }
+                Err(e) => leptos::logging::log!("mdns: {e}"),
+            }
+        })
+    };
+    load_mdns();
+    let _ = set_interval_with_handle(load_mdns, POLL);
     // A tab open across a deploy keeps running the old app: when the
     // server answers another version, load the new one, once no dialog
     // or change is open.
@@ -266,6 +285,9 @@ fn App() -> impl IntoView {
         </aside>
         <main class="main">
             <header class="page-head"><h1>{move || view_now.get().title()}</h1></header>
+            {move || md.0.with(|m| m.as_ref().and_then(mdns::alarm)).map(|line| view! {
+                <p class="alarm" role="alert" data-testid="mdns-alarm">{line}</p>
+            })}
             {move || match page.get() {
                 (_, 0) => view! { <p class="status" data-testid="status">"Loading…"</p> }.into_any(),
                 (_, 1) => view! {
@@ -283,7 +305,7 @@ fn App() -> impl IntoView {
                         View::Changes => view! { <ChangeLog/> }.into_any(),
                         View::Meters => view! { <MeterView d=d/> }.into_any(),
                         View::Clock => view! { <ClockView d=d/> }.into_any(),
-                        View::Network => view! { <NetworkView d=d/> }.into_any(),
+                        View::Network => view! { <NetworkView d=d/><MdnsView/> }.into_any(),
                         View::Overview | View::Latency => ().into_any(),
                     },
                     _ => ().into_any(),
@@ -439,6 +461,21 @@ async fn fetch_meters(device: &str) -> Result<MeterReport, String> {
 
 /// How often an open page asks the server for its version.
 const VERSION_POLL: Duration = Duration::from_secs(15);
+
+async fn fetch_mdns() -> Result<Mdns, String> {
+    let res = gloo_net::http::Request::get("/api/mdns")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.ok() {
+        return Err(format!("server answered {}", res.status()));
+    }
+    res.json().await.map_err(|e| e.to_string())
+}
+
+/// The last mDNS meter read, for the alarm and the Network page.
+#[derive(Clone, Copy)]
+struct MdnsNow(RwSignal<Option<Mdns>>);
 
 async fn fetch_version() -> Result<String, String> {
     let res = gloo_net::http::Request::get("/api/version")
@@ -690,6 +727,7 @@ fn change_target(e: &ChangeEntry) -> String {
             e.rx_channel, e.rx_device
         ),
         ("multicast", _) => format!("new multicast flow @ {}", e.rx_device),
+        ("status", "mdns") => format!("mDNS sender {} ({})", e.rx_label, e.rx_device),
         ("status", _) => format!(
             "{} @ {} \u{2190} {}",
             e.rx_label,
@@ -1841,6 +1879,41 @@ fn NetworkView(d: Devices) -> impl IntoView {
     }
 }
 
+/// A sender's row: `warn` over the cap.
+fn row_class(per_s: f64, cap: f64) -> &'static str {
+    if per_s > cap { "warn" } else { "" }
+}
+
+/// The mDNS senders on the Dante leg: the last minute's loudest sources.
+#[component]
+fn MdnsView() -> impl IntoView {
+    let md = expect_context::<MdnsNow>();
+    move || {
+        let Some(m) = md.0.get() else {
+            return view! { <p class="status" data-testid="mdns-summary">"Reading the mDNS meter…"</p> }.into_any();
+        };
+        let (line, warn) = mdns::summary(&m);
+        let cap = m.cap_per_s as f64;
+        let top = m.minute.map(|x| x.top).unwrap_or_default();
+        view! {
+            <h2 class="sub">"mDNS senders"</h2>
+            <p class=if warn { "status error" } else { "status" } data-testid="mdns-summary">{line}</p>
+            <div class="clock-wrap"><table class="clock" data-testid="mdns-table">
+                <thead><tr><th>"Source"</th><th>"Devices at that address"</th><th>"Datagrams/s"</th></tr></thead>
+                <tbody>
+                    {top.into_iter().map(|s| view! {
+                        <tr class=row_class(s.per_s, cap) data-testid="mdns-row" data-source=s.source.clone()>
+                            <td>{s.source.clone()}</td>
+                            <td>{s.devices.join(", ")}</td>
+                            <td data-testid="mdns-rate">{format!("{}", s.per_s)}</td>
+                        </tr>
+                    }).collect_view()}
+                </tbody>
+            </table></div>
+        }.into_any()
+    }
+}
+
 /// The clock view: every device's PTP role and sync, as Dante Controller's
 /// Clock Status tab.
 #[component]
@@ -2012,6 +2085,21 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_mdns_alarm_entry_names_the_sender_and_its_devices() {
+        let e = ChangeEntry {
+            kind: "status".into(),
+            what: "mdns".into(),
+            rx_device: "mixer, this server".into(),
+            rx_label: "10.0.0.7".into(),
+            ..ChangeEntry::default()
+        };
+        assert_eq!(
+            change_target(&e),
+            "mDNS sender 10.0.0.7 (mixer, this server)"
+        );
+    }
 
     #[test]
     fn a_status_entry_reads_as_receiver_and_source() {

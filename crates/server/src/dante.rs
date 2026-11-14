@@ -489,6 +489,18 @@ impl State {
         self.ip
     }
 
+    /// The listed devices at `ip`, sorted by name (case aside).
+    pub fn names_at(&self, ip: Ipv4Addr) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .devices
+            .values()
+            .filter(|e| *e.device.arc.ip() == ip)
+            .map(|e| e.device.name.clone())
+            .collect();
+        out.sort_by_key(|n| n.to_ascii_lowercase());
+        out
+    }
+
     /// Our address and every listed device with RX channels (as last read):
     /// the receivers the recorder records.
     pub fn receivers(&self) -> Vec<(Ipv4Addr, Device)> {

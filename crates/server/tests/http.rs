@@ -16,6 +16,7 @@ fn off() -> dcontroller::Shared {
         changes: std::sync::Arc::new(dcontroller::change::Changes::new(log)),
         history: std::sync::Arc::new(dcontroller::history::Store::memory().unwrap()),
         meters: std::sync::Arc::default(),
+        mdns: std::sync::Arc::default(),
     }
 }
 

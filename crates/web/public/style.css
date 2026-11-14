@@ -259,3 +259,6 @@ button:disabled { opacity: 0.5; cursor: default; }
   z-index: 11; cursor: pointer; max-width: calc(100vw - 2rem); box-shadow: 0 12px 30px rgb(0 0 0 / 45%); font-weight: 500; }
 .result.ok { background: #0f3b2c; color: var(--ok); border: 1px solid #1f6b51; }
 .result.err { background: #42161a; color: var(--bad); border: 1px solid #7a2a30; }
+/* The mDNS flood alarm (#86): on every page while a source is over the cap. */
+.alarm { margin: 0 0 12px; padding: 10px 14px; border-radius: 8px; background: var(--bad-soft); color: var(--bad); border-left: 3px solid var(--bad); font-weight: 600; overflow-wrap: anywhere; }
+h2.sub { font-size: 1.05rem; margin: 20px 0 8px; }
