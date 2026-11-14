@@ -1,0 +1,10 @@
+# dcontroller #88: mDNS alarms to dstack's Claude session (relay/mdns_relay.py).
+# A user unit of the dcontroller account on the PC that holds the peer
+# channel; installed by deploy/dev1/install-relay.sh.
+[Unit]
+Description=dcontroller: send mDNS alarms to dstack over the peer channel
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/dcontroller/mdns-relay.env
+ExecStart=/usr/bin/python3 -I %h/.local/lib/dcontroller/mdns_relay.py

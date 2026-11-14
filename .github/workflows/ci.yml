@@ -57,6 +57,8 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo clippy -p dcontroller-web --target wasm32-unknown-unknown -- -D warnings
       - run: cargo test --workspace
+      - name: mDNS alarm relay tests (#88)
+        run: python3 -W error -m unittest discover -s relay -v
 
   e2e:
     runs-on: ubuntu-latest
