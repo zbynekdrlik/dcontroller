@@ -117,9 +117,9 @@ pub fn alarms(
                 r.source,
                 false,
                 format!("under {CAP_PER_S}/s"),
-                format!("{rate}/s"),
+                format!("{rate:.1}/s"),
                 format!(
-                    "an mDNS sender is over the cap: {} sends {rate}/s to the group (cap {CAP_PER_S}/s)",
+                    "an mDNS sender is over the cap: {} sends {rate:.1}/s to the group (cap {CAP_PER_S}/s)",
                     r.source
                 ),
             ));
@@ -136,12 +136,12 @@ pub fn alarms(
             .top
             .iter()
             .find(|r| r.source == source)
-            .map(|r| format!("{}/s", round(m.per_s(r.packets))))
+            .map(|r| format!("{:.1}/s", m.per_s(r.packets)))
             .unwrap_or_else(|| "quiet".into());
         out.push(entry(
             source,
             true,
-            format!("{was}/s"),
+            format!("{was:.1}/s"),
             now.clone(),
             format!("the mDNS sender {source} is back under the cap ({now}, cap {CAP_PER_S}/s)"),
         ));
