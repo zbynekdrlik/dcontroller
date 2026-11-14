@@ -85,7 +85,7 @@ mod tests {
             sender_text(&sender("10.0.0.7", &["mixer", "this server"], 80.5)),
             "10.0.0.7 (mixer, this server) 80.5/s"
         );
-        assert_eq!(sender_text(&sender("10.0.0.9", &[], 3.0)), "10.0.0.9 3/s");
+        assert_eq!(sender_text(&sender("10.0.0.9", &[], 3.0)), "10.0.0.9 3.0/s");
     }
 
     #[test]
@@ -99,7 +99,7 @@ mod tests {
             ]))
             .as_deref(),
             Some(
-                "mDNS flood on the Dante leg: 10.0.0.7 (mixer) 80.5/s, 10.0.0.9 60/s over the cap of 50/s"
+                "mDNS flood on the Dante leg: 10.0.0.7 (mixer) 80.5/s, 10.0.0.9 60.0/s over the cap of 50/s"
             )
         );
     }
