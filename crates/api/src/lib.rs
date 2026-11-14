@@ -555,3 +555,44 @@ mod tests {
         assert!(rx.receiving());
     }
 }
+
+/// `GET /api/mdns`: who sends how much mDNS on the Dante leg, as dstack's
+/// meter counts it on the server's own Dante address (dstack #289): one
+/// closed minute at a time.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Mdns {
+    /// The meter runs (discovery has our Dante address and the meter
+    /// opened there).
+    pub running: bool,
+    /// Why it does not run, when it does not.
+    pub error: Option<String>,
+    /// A source over this many datagrams a second (averaged over the
+    /// minute) is an alarm.
+    pub cap_per_s: u64,
+    /// The last closed minute; `None` before the first.
+    pub minute: Option<MdnsMinute>,
+}
+
+/// One closed minute of the mDNS meter.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MdnsMinute {
+    /// When the server read it (unix seconds).
+    pub at: u64,
+    /// Every datagram to the group that minute, a second.
+    pub per_s: f64,
+    /// The loudest sources (at most 5), loudest first.
+    pub top: Vec<MdnsSender>,
+    /// Every source over the cap, loudest first: the alarm.
+    pub over_cap: Vec<MdnsSender>,
+}
+
+/// One source of mDNS datagrams.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MdnsSender {
+    /// Its IPv4 address.
+    pub source: String,
+    /// The listed Dante devices at that address (the sender may be another
+    /// program on the same PC), sorted; `this server` for our own address.
+    pub devices: Vec<String>,
+    pub per_s: f64,
+}

@@ -51,7 +51,18 @@ async fn serve(path: PathBuf) -> anyhow::Result<()> {
         let changes = Arc::clone(&changes);
         Arc::new(move |found: &[dcontroller_api::ChangeEntry]| changes.log_detected(found))
     };
-    let dante = dcontroller::dante::start(cfg.dante_interface.clone(), Arc::clone(&stop), sink);
+    let dante = dcontroller::dante::start(
+        cfg.dante_interface.clone(),
+        Arc::clone(&stop),
+        Arc::clone(&sink),
+    );
+    let mdns = Arc::new(dcontroller::mdns::Watch::default());
+    dcontroller::mdns::start(
+        Arc::clone(&dante),
+        Arc::clone(&mdns),
+        sink,
+        Arc::clone(&stop),
+    );
     let history = Arc::new(
         dcontroller::history::Store::open(&cfg.history_db)
             .map_err(|e| anyhow::anyhow!("history {}: {e}", cfg.history_db.display()))?,
@@ -63,6 +74,7 @@ async fn serve(path: PathBuf) -> anyhow::Result<()> {
         changes,
         history,
         meters: Arc::default(),
+        mdns,
     };
     axum::serve(listener, app(&cfg.web_dir, shared))
         .with_graceful_shutdown(async {
