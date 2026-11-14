@@ -342,8 +342,8 @@ mod tests {
         assert_eq!(e.rx_label, "10.0.0.7");
         assert_eq!(e.rx_device, "mixer");
         assert_eq!(e.name_before.as_deref(), Some("under 50/s"));
-        assert_eq!(e.name_after.as_deref(), Some("80/s"));
-        assert!(e.message.contains("10.0.0.7 sends 80/s"), "{}", e.message);
+        assert_eq!(e.name_after.as_deref(), Some("80.0/s"));
+        assert!(e.message.contains("10.0.0.7 sends 80.0/s"), "{}", e.message);
         assert_eq!(e.at, 10);
 
         // The same minute again, or a further minute over the cap: nothing new.
@@ -354,8 +354,8 @@ mod tests {
         let end = alarms(&mut over, &calm, 20, &names);
         assert_eq!(end.len(), 1);
         assert!(end[0].ok);
-        assert_eq!(end[0].name_before.as_deref(), Some("70/s"));
-        assert_eq!(end[0].name_after.as_deref(), Some("4/s"));
+        assert_eq!(end[0].name_before.as_deref(), Some("70.0/s"));
+        assert_eq!(end[0].name_after.as_deref(), Some("4.0/s"));
         assert!(over.is_empty());
         assert!(alarms(&mut over, &calm, 21, &names).is_empty());
     }
