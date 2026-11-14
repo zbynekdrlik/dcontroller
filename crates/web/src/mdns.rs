@@ -11,7 +11,7 @@ pub fn sender_text(s: &MdnsSender) -> String {
     } else {
         format!("{} ({})", s.source, s.devices.join(", "))
     };
-    format!("{who} {}/s", s.per_s)
+    format!("{who} {:.1}/s", s.per_s)
 }
 
 /// The alarm line, while a source is over the cap.
@@ -33,7 +33,7 @@ pub fn summary(m: &Mdns) -> (String, bool) {
     match (&m.minute, m.running) {
         (Some(min), _) => (
             format!(
-                "mDNS on the Dante leg, last minute: {}/s from all senders · cap {}/s a sender",
+                "mDNS on the Dante leg, last minute: {:.1}/s from all senders · cap {}/s a sender",
                 min.per_s, m.cap_per_s
             ),
             !min.over_cap.is_empty(),
@@ -85,7 +85,7 @@ mod tests {
             sender_text(&sender("10.0.0.7", &["mixer", "this server"], 80.5)),
             "10.0.0.7 (mixer, this server) 80.5/s"
         );
-        assert_eq!(sender_text(&sender("10.0.0.9", &[], 3.0)), "10.0.0.9 3/s");
+        assert_eq!(sender_text(&sender("10.0.0.9", &[], 3.0)), "10.0.0.9 3.0/s");
     }
 
     #[test]
@@ -99,7 +99,7 @@ mod tests {
             ]))
             .as_deref(),
             Some(
-                "mDNS flood on the Dante leg: 10.0.0.7 (mixer) 80.5/s, 10.0.0.9 60/s over the cap of 50/s"
+                "mDNS flood on the Dante leg: 10.0.0.7 (mixer) 80.5/s, 10.0.0.9 60.0/s over the cap of 50/s"
             )
         );
     }

@@ -1905,7 +1905,7 @@ fn MdnsView() -> impl IntoView {
                         <tr class=row_class(s.per_s, cap) data-testid="mdns-row" data-source=s.source.clone()>
                             <td>{s.source.clone()}</td>
                             <td>{s.devices.join(", ")}</td>
-                            <td data-testid="mdns-rate">{format!("{}", s.per_s)}</td>
+                            <td data-testid="mdns-rate">{format!("{:.1}", s.per_s)}</td>
                         </tr>
                     }).collect_view()}
                 </tbody>
