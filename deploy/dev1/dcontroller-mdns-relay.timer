@@ -1,0 +1,11 @@
+# dcontroller #88: the relay looks every 30 s.
+[Unit]
+Description=dcontroller: look for mDNS alarms every 30 s
+
+[Timer]
+OnActiveSec=10s
+OnUnitActiveSec=30s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
