@@ -10,6 +10,7 @@
 # answering /api/version) restores the previous binary, web and unit and
 # restarts them; a failed FIRST install removes everything it created. The
 # script then exits non-zero.
+# Once the new version answers, the previous release's copies are removed.
 set -euo pipefail
 
 src=$(cd "$(dirname "$0")" && pwd)
@@ -129,6 +130,8 @@ healthy || false
 served=$(curl -fsS -m 2 "http://$bind/api/version")
 trap - ERR INT TERM HUP
 echo "dcontroller $served active"
+# The rollback needed the previous release only until the new one answered.
+rm -rf "$opt/dcontroller.old" "$opt/web.old" "$unit.old"
 
 # The Dante NIC guard, when installed: this release's rules (a new release
 # may open or close ports), for the config's interface. Routing is left as
