@@ -155,6 +155,10 @@ jobs:
           test "$(curl -fsS "$url/api/version")" = "$ver"
           test "$(systemctl show -p MainPID --value dcontroller)" != "$pid"
           test "$(sudo sha256sum /etc/dcontroller/config.toml)" = "$cfg_sum"
+          # A good install leaves no rollback copy behind (dstack#321, #91).
+          for old in /opt/dcontroller/dcontroller.old /opt/dcontroller/web.old /etc/systemd/system/dcontroller.service.old; do
+            if sudo test -e "$old"; then echo "left behind: $old"; exit 1; fi
+          done
 
           # Rollback 1: a binary that accepts the config but cannot serve.
           bad="$dir/bad-bin" && cp -r "$rel" "$bad"
