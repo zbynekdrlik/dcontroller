@@ -9,13 +9,20 @@
 #
 #   e2e/isolated.sh npx playwright test [args]
 #
-# Needs unprivileged user namespaces (Ubuntu 24.04 restricts them through
-# AppArmor: kernel.apparmor_restrict_unprivileged_userns=0, or a profile).
+# Needs unprivileged user namespaces. Ubuntu 24.04 restricts them through
+# AppArmor: CI lifts it (kernel.apparmor_restrict_unprivileged_userns=0);
+# on dev1 this account has its own unshare with an AppArmor profile
+# (airuleset#1337), used when present.
 set -euo pipefail
 
 if [ "${DC_E2E_NETNS:-}" != 1 ]; then
-    exec unshare --user --map-root-user --net env DC_E2E_NETNS=1 "$0" "$@"
+    u=/usr/local/lib/airuleset/userns/dcontroller/unshare
+    [ -x "$u" ] || u=unshare
+    exec "$u" --user --map-root-user --net --mount env DC_E2E_NETNS=1 "$0" "$@"
 fi
+# dstack reads an interface's MAC from /sys/class/net: a sysfs of this
+# namespace, not the host's.
+mount -t sysfs sysfs /sys
 ip link set lo up
 ip link add e2e0 type dummy
 ip link set e2e0 multicast on up
