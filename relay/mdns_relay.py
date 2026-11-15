@@ -4,7 +4,10 @@
 dcontroller's server logs a `status` change with `what` = `mdns` when an mDNS
 sender on the Dante leg goes over the cap and when it is back under (#86).
 The owner wants those alarms to reach dstack, which finds and fixes the
-cause. The peer channel (airuleset `peer_channel.py`) is unix sockets on
+cause. Since #93 the same goes for the meter's two other alarms
+(dstack v0.6.145): `mdns-browser`, a host that refreshes Dante records on the
+96 s cycle (dstack#319), and `network-floor`, a dstack peer below the
+network floor (dstack#321). The peer channel (airuleset `peer_channel.py`) is unix sockets on
 dev1, checked by account, and the server runs on another box, so this relay
 runs on dev1 as the `dcontroller` account, once every 30 s (a systemd user
 timer): it reads the server's `/api/changes`, takes the mDNS entries newer
@@ -36,16 +39,22 @@ SEND_TIMEOUT_S = 30
 log = logging.getLogger("mdns-relay")
 
 
+# The `what`s of the meter's alarms, and the dstack ticket each answers.
+WHATS = {"mdns": "dstack#286", "mdns-browser": "dstack#319", "network-floor": "dstack#321"}
+
+
 def key(e):
-    """An entry's identity within its second."""
-    return "%s|%s|%s" % (e["at"], e.get("rx_label", ""), bool(e.get("ok")))
+    """An entry's identity within its second (an `mdns` one keeps #88's)."""
+    k = "%s|%s|%s" % (e["at"], e.get("rx_label", ""), bool(e.get("ok")))
+    what = e.get("what")
+    return k if what == "mdns" else "%s|%s|%s" % (k, what, e.get("rx_device", ""))
 
 
 def pick(entries, cursor):
-    """The mDNS alarm entries after `cursor`, oldest first."""
+    """The meter's alarm entries after `cursor`, oldest first."""
     out = [
         e for e in entries
-        if e.get("kind") == "status" and e.get("what") == "mdns"
+        if e.get("kind") == "status" and e.get("what") in WHATS
         and (e["at"] > cursor["at"] or (e["at"] == cursor["at"] and key(e) not in cursor["sent"]))
     ]
     out.sort(key=lambda e: (e["at"], key(e)))
@@ -65,6 +74,17 @@ def stamp(at):
 
 def message(e):
     """The peer message for one entry."""
+    what = e.get("what")
+    if what != "mdns":
+        ticket = WHATS.get(what, "?")
+        if e.get("ok"):
+            return "Alarm ended (dcontroller #93, %s) at %s: %s. Before: %s." % (
+                ticket, stamp(e["at"]), e.get("message"), e.get("name_before"))
+        return (
+            "Alarm (dcontroller #93, %s) since %s: %s. Seen by dcontroller's mDNS meter on its "
+            "server's Dante address; one more message when it ends, no repeats while it lasts."
+            % (ticket, stamp(e["at"]), e.get("message"))
+        )
     source = e.get("rx_label", "?")
     devices = e.get("rx_device") or source
     devices = "none listed" if devices == source else devices

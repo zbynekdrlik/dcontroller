@@ -22,6 +22,18 @@ class Pick(unittest.TestCase):
         got = r.pick(es, {"at": 15, "sent": []})
         self.assertEqual([e["at"] for e in got], [20, 30])
 
+    def test_the_browser_and_floor_alarms_go_too_each_once_in_their_second(self):
+        flood = entry(50, "10.0.0.7")
+        browser = dict(entry(50, "10.0.0.7"), what="mdns-browser")
+        floor = dict(entry(50, "10.0.0.7"), what="network-floor", rx_device="PC-Studio")
+        other = dict(entry(50, "10.0.0.7"), what="rx")
+        got = r.pick([floor, other, browser, flood], {"at": 40, "sent": []})
+        self.assertEqual(len(got), 3)
+        c = {"at": 40, "sent": []}
+        for e in got:
+            c = r.advance(c, e)
+        self.assertEqual(r.pick([floor, browser, flood], c), [])
+
     def test_an_entry_in_the_cursor_s_second_goes_once(self):
         a, b = entry(50, "10.0.0.7"), entry(50, "10.0.0.9")
         c = r.advance({"at": 40, "sent": []}, a)
@@ -48,6 +60,21 @@ class Message(unittest.TestCase):
     def test_a_source_with_no_device_says_so(self):
         m = r.message(entry(1, source="10.0.0.9", devices="10.0.0.9"))
         self.assertIn("Dante devices at that address: none listed", m)
+
+
+    def test_a_browser_and_a_floor_alarm_carry_the_server_s_text_and_ticket(self):
+        b = dict(entry(1_700_000_000), what="mdns-browser",
+                 message="an mDNS host refreshes Dante records every 96.4 s: a program at 10.0.0.7 browses Dante")
+        m = r.message(b)
+        self.assertTrue(m.startswith("Alarm (dcontroller #93, dstack#319) since "), m)
+        self.assertIn("every 96.4 s: a program at 10.0.0.7 browses Dante", m)
+        self.assertIn("one more message when it ends", m)
+        f = dict(entry(1), what="network-floor", ok=True, name_before="0.6.20",
+                 message="the dstack peer PC-Studio at 10.0.0.7 is no longer below the network floor 0.6.58")
+        m = r.message(f)
+        self.assertTrue(m.startswith("Alarm ended (dcontroller #93, dstack#321) at "), m)
+        self.assertIn("PC-Studio at 10.0.0.7 is no longer below", m)
+        self.assertIn("Before: 0.6.20.", m)
 
 
 class Mcp(unittest.TestCase):

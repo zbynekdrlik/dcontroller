@@ -9,3 +9,4 @@
 *.key
 /e2e/.run
 .playwright-mcp/
+__pycache__/
