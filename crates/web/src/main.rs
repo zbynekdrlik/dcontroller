@@ -288,6 +288,12 @@ fn App() -> impl IntoView {
             {move || md.0.with(|m| m.as_ref().and_then(mdns::alarm)).map(|line| view! {
                 <p class="alarm" role="alert" data-testid="mdns-alarm">{line}</p>
             })}
+            {move || md.0.with(|m| m.as_ref().and_then(mdns::browser_alarm)).map(|line| view! {
+                <p class="alarm" role="alert" data-testid="browser-alarm">{line}</p>
+            })}
+            {move || md.0.with(|m| m.as_ref().and_then(mdns::floor_alarm)).map(|line| view! {
+                <p class="alarm" role="alert" data-testid="floor-alarm">{line}</p>
+            })}
             {move || match page.get() {
                 (_, 0) => view! { <p class="status" data-testid="status">"Loading…"</p> }.into_any(),
                 (_, 1) => view! {
@@ -728,6 +734,10 @@ fn change_target(e: &ChangeEntry) -> String {
         ),
         ("multicast", _) => format!("new multicast flow @ {}", e.rx_device),
         ("status", "mdns") => format!("mDNS sender {} ({})", e.rx_label, e.rx_device),
+        ("status", "mdns-browser") => {
+            format!("96 s browser {} ({})", e.rx_label, e.rx_device)
+        }
+        ("status", "network-floor") => format!("dstack {} at {}", e.rx_device, e.rx_label),
         ("status", _) => format!(
             "{} @ {} \u{2190} {}",
             e.rx_label,
@@ -1893,8 +1903,11 @@ fn MdnsView() -> impl IntoView {
             return view! { <p class="status" data-testid="mdns-summary">"Reading the mDNS meter…"</p> }.into_any();
         };
         let (line, warn) = mdns::summary(&m);
+        let (b_line, b_warn) = mdns::browser_summary(&m);
+        let (f_line, f_warn) = mdns::floor_summary(&m);
         let cap = m.cap_per_s as f64;
-        let top = m.minute.map(|x| x.top).unwrap_or_default();
+        let below = m.below_floor.clone();
+        let (top, browsers) = m.minute.map(|x| (x.top, x.browsers)).unwrap_or_default();
         view! {
             <h2 class="sub">"mDNS senders"</h2>
             <p class=if warn { "status error" } else { "status" } data-testid="mdns-summary">{line}</p>
@@ -1910,6 +1923,39 @@ fn MdnsView() -> impl IntoView {
                     }).collect_view()}
                 </tbody>
             </table></div>
+            <h2 class="sub">"96 s browsers"</h2>
+            <p class=if b_warn { "status error" } else { "status" } data-testid="browser-summary">{b_line}</p>
+            {(!browsers.is_empty()).then(|| view! {
+                <div class="clock-wrap"><table class="clock" data-testid="browser-table">
+                    <thead><tr><th>"Host"</th><th>"Devices at that address"</th><th>"Cycle, s"</th></tr></thead>
+                    <tbody>
+                        {browsers.into_iter().map(|b| view! {
+                            <tr class="warn" data-testid="browser-row" data-source=b.source.clone()>
+                                <td>{b.source.clone()}</td>
+                                <td>{b.devices.join(", ")}</td>
+                                <td data-testid="browser-period">{format!("{:.1}", b.period_s)}</td>
+                            </tr>
+                        }).collect_view()}
+                    </tbody>
+                </table></div>
+            })}
+            <h2 class="sub">"dstack network floor"</h2>
+            <p class=if f_warn { "status error" } else { "status" } data-testid="floor-summary">{f_line}</p>
+            {(!below.is_empty()).then(|| view! {
+                <div class="clock-wrap"><table class="clock" data-testid="floor-table">
+                    <thead><tr><th>"Device"</th><th>"Kind"</th><th>"Address"</th><th>"dstack"</th></tr></thead>
+                    <tbody>
+                        {below.into_iter().map(|b| view! {
+                            <tr class="warn" data-testid="floor-row" data-name=b.name.clone()>
+                                <td>{b.name.clone()}</td>
+                                <td>{b.kind.clone()}</td>
+                                <td>{b.address.clone().unwrap_or_else(|| "local".into())}</td>
+                                <td data-testid="floor-version">{b.version.clone()}</td>
+                            </tr>
+                        }).collect_view()}
+                    </tbody>
+                </table></div>
+            })}
         }.into_any()
     }
 }
@@ -2099,6 +2145,20 @@ mod tests {
             change_target(&e),
             "mDNS sender 10.0.0.7 (mixer, this server)"
         );
+    }
+
+    #[test]
+    fn the_browser_and_floor_alarm_entries_name_their_host() {
+        let mut e = ChangeEntry {
+            kind: "status".into(),
+            what: "mdns-browser".into(),
+            rx_device: "PC-Studio".into(),
+            rx_label: "10.0.0.7".into(),
+            ..ChangeEntry::default()
+        };
+        assert_eq!(change_target(&e), "96 s browser 10.0.0.7 (PC-Studio)");
+        e.what = "network-floor".into();
+        assert_eq!(change_target(&e), "dstack PC-Studio at 10.0.0.7");
     }
 
     #[test]

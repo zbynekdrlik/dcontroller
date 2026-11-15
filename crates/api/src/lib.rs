@@ -571,6 +571,38 @@ pub struct Mdns {
     pub cap_per_s: u64,
     /// The last closed minute; `None` before the first.
     pub minute: Option<MdnsMinute>,
+    /// The lowest dstack version allowed on the network (dstack #321).
+    pub floor: String,
+    /// The dstack peers below the floor the meter heard within the last
+    /// hour (dstack #321): an alarm while any is listed.
+    #[serde(default)]
+    pub below_floor: Vec<BelowFloor>,
+}
+
+/// A dstack binary below the network floor (dstack #321).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BelowFloor {
+    /// `peer` (a dstack device on the network) or `client` (a local client
+    /// of a device, e.g. dtray).
+    pub kind: String,
+    /// Its Dante name.
+    pub name: String,
+    /// The address its answer came from (a peer's).
+    pub address: Option<String>,
+    /// Its dstack version.
+    pub version: String,
+}
+
+/// A host that refreshes Dante records every ~96 s (dstack #319): a
+/// program there browses Dante, and every Dante host answers it at once.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MdnsBrowser {
+    /// Its IPv4 address.
+    pub source: String,
+    /// The listed Dante devices at that address, as for a sender.
+    pub devices: Vec<String>,
+    /// Its refresh cycle as measured, seconds (one decimal).
+    pub period_s: f64,
 }
 
 /// One closed minute of the mDNS meter.
@@ -584,6 +616,10 @@ pub struct MdnsMinute {
     pub top: Vec<MdnsSender>,
     /// Every source over the cap, loudest first: the alarm.
     pub over_cap: Vec<MdnsSender>,
+    /// The hosts refreshing Dante records on the 96 s cycle, by address:
+    /// an alarm while any is listed.
+    #[serde(default)]
+    pub browsers: Vec<MdnsBrowser>,
 }
 
 /// One source of mDNS datagrams.
