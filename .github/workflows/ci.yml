@@ -86,9 +86,13 @@ jobs:
       - name: Install Playwright
         working-directory: e2e
         run: npm ci && npx playwright install --with-deps chromium
+      # The suite runs in a network namespace of its own (#95): the runner
+      # allows unprivileged user namespaces once AppArmor's restriction is off.
+      - name: Allow user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: E2E
         working-directory: e2e
-        run: npx playwright test
+        run: ./isolated.sh npx playwright test
 
   package:
     runs-on: ubuntu-latest
