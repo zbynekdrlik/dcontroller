@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { copyFileSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { run, root, routed } from "./env";
 
@@ -14,11 +14,25 @@ export default async function globalSetup() {
     device,
     readFileSync(resolve(__dirname, "fixtures/device.toml"), "utf8") + `state_file = "${state}"\n`,
   );
+  // The device's local status endpoint (dtray's, on 127.0.0.1) takes a
+  // free port and logs it: a spec asks it as a local client (#97).
+  const portFile = resolve(run, "status_port");
+  rmSync(portFile, { force: true });
   const child: ChildProcess = spawn(
     bin,
     ["--config", device, "--ip", routed.ip, "--clock", "system", "--control", resolve(run, "control.sock")],
-    { stdio: ["ignore", "inherit", "inherit"] },
+    { stdio: ["ignore", "pipe", "pipe"] },
   );
+  for (const [from, to] of [
+    [child.stdout, process.stdout],
+    [child.stderr, process.stderr],
+  ] as const) {
+    from?.on("data", (chunk: Buffer) => {
+      to.write(chunk);
+      const port = /local status endpoint on 127\.0\.0\.1.*port=(\d+)/.exec(chunk.toString())?.[1];
+      if (port) writeFileSync(portFile, port);
+    });
+  }
   const failed = new Promise<never>((_, reject) => {
     child.once("error", reject);
     child.once("exit", (code) => reject(new Error(`dstack-dev exited with ${code}`)));

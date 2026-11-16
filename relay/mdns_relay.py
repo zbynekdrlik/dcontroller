@@ -43,28 +43,6 @@ log = logging.getLogger("mdns-relay")
 WHATS = {"mdns": "dstack#286", "mdns-browser": "dstack#319", "network-floor": "dstack#321"}
 
 
-# dstack#319: until dstack v0.6.146 (dcontroller #98) the meter also names
-# Dante hardware, whose Audinate firmware refreshes its cache every 96 s:
-# normal, so a browser alarm for a host with Audinate's OUI is muted here
-# (logged, not sent). #98 drops this with the pin.
-AUDINATE_OUI = "00:1d:c1"
-
-
-def macs_by_ip(devices):
-    """{ip: [mac]} of every port of every device in `/api/devices`."""
-    out = {}
-    for d in devices.get("devices", []):
-        for p in d.get("network") or []:
-            out.setdefault(p.get("ip"), []).append(p.get("mac", ""))
-    return out
-
-
-def muted(e, macs):
-    """A browser alarm for Dante hardware (dstack#319, until #98)."""
-    return e.get("what") == "mdns-browser" and any(
-        m.lower().startswith(AUDINATE_OUI) for m in macs.get(e.get("rx_label"), []))
-
-
 def key(e):
     """An entry's identity within its second (an `mdns` one keeps #88's)."""
     k = "%s|%s|%s" % (e["at"], e.get("rx_label", ""), bool(e.get("ok")))
@@ -168,13 +146,9 @@ def send(text, cmd):
     return ok, said
 
 
-def fetch(url, path="/api/changes"):
-    with urllib.request.urlopen(url + path, timeout=FETCH_TIMEOUT_S) as r:
+def fetch(url):
+    with urllib.request.urlopen(url + "/api/changes", timeout=FETCH_TIMEOUT_S) as r:
         return json.load(r)
-
-
-def fetch_devices(url):
-    return fetch(url, "/api/devices")
 
 
 def load(path):
@@ -194,7 +168,7 @@ def save(path, cursor):
     os.replace(tmp, path)
 
 
-def run(url, state, cmd, now, get=fetch, sender=send, get_devices=fetch_devices):
+def run(url, state, cmd, now, get=fetch, sender=send):
     """One pass. Exit code: 0 done or waiting for dstack, 1 an error."""
     cursor = load(state)
     if cursor is None:
@@ -206,21 +180,7 @@ def run(url, state, cmd, now, get=fetch, sender=send, get_devices=fetch_devices)
     except (OSError, ValueError) as e:
         log.error("changes not read from %s: %s", url, e)
         return 1
-    picked = pick(entries, cursor)
-    macs = {}
-    if any(e.get("what") == "mdns-browser" for e in picked):
-        try:
-            macs = macs_by_ip(get_devices(url))
-        except (OSError, ValueError) as e:
-            log.error("devices not read from %s: %s", url, e)
-            return 1
-    for e in picked:
-        if muted(e, macs):
-            cursor = advance(cursor, e)
-            save(state, cursor)
-            log.info("alarm %s muted (Dante hardware, dstack#319 until #98): source=%s devices=%s",
-                     "end" if e.get("ok") else "start", e.get("rx_label"), e.get("rx_device"))
-            continue
+    for e in pick(entries, cursor):
         ok, said = sender(message(e), cmd)
         if not ok:
             log.warning("alarm not delivered to %s, tried again next run: %s (source=%s at=%s)",

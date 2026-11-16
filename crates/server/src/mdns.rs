@@ -255,6 +255,16 @@ pub fn browser_alarms(
     out
 }
 
+/// How a binary below the floor is named: a peer by its Dante name, a
+/// local client announced by a device as `client of <device>` (dstack
+/// #323; a client a device lists without an address keeps its own name).
+fn shown(b: &Below) -> String {
+    match (b.kind, b.address) {
+        (dstack::network_floor::Kind::Client, Some(_)) => format!("client of {}", b.name),
+        _ => b.name.clone(),
+    }
+}
+
 /// A binary below the floor's identity: kind, name (case aside), address.
 type BelowKey = (String, String, Option<Ipv4Addr>);
 
@@ -292,11 +302,12 @@ pub fn floor_alarms(
     let mut out = Vec::new();
     for b in list {
         let version = b.version.to_string();
+        let name = shown(b);
         if let std::collections::btree_map::Entry::Vacant(slot) = known.entry(below_key(b)) {
-            slot.insert((b.name.clone(), version.clone()));
+            slot.insert((name.clone(), version.clone()));
             out.push(entry(
                 b.kind.word(),
-                &b.name,
+                &name,
                 b.address,
                 false,
                 format!("floor {floor}"),
@@ -305,7 +316,7 @@ pub fn floor_alarms(
                     "a dstack {} below the network floor: {}{} runs dstack {version} \
                      (floor {floor}): upgrade it (dstack #321)",
                     b.kind.word(),
-                    b.name,
+                    name,
                     at_addr(b.address)
                 ),
             ));
@@ -394,15 +405,16 @@ fn run(dante: &Shared, watch: &Watch, sink: &ChangeSink, stop: &AtomicBool) {
             && let Some(m) = meter.last()
             && seen.as_ref() != Some(&m)
         {
-            look(
-                dante,
-                watch,
-                sink,
-                &mut alarmed,
-                &m,
-                &meter.below_floor(),
-                our,
+            // Peers from the meter (kept an hour), local clients from the
+            // devices' records (dstack #323).
+            let mut below = meter.below_floor();
+            below.extend(
+                dante
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .old_clients(),
             );
+            look(dante, watch, sink, &mut alarmed, &m, &below, our);
             seen = Some(m);
         }
         for _ in 0..10 {
@@ -737,6 +749,28 @@ mod tests {
             "{}",
             start[2].message
         );
+
+        // A client a device announces (dstack #323) is named by that device.
+        let mut announced = old("PC-Studio", 7, 30);
+        announced.kind = dstack::network_floor::Kind::Client;
+        let both = vec![old("PC-Studio", 7, 20), announced];
+        let mut k2 = BTreeMap::new();
+        let start = floor_alarms(&mut k2, &both, 2);
+        assert_eq!(start.len(), 2);
+        assert_eq!(start[1].rx_device, "client of PC-Studio");
+        assert_eq!(start[1].rx_label, "10.0.0.7");
+        assert!(
+            start[1].message.starts_with(
+                "a dstack client below the network floor: client of PC-Studio at 10.0.0.7 runs dstack 0.6.30"
+            ),
+            "{}",
+            start[1].message
+        );
+        let end = floor_alarms(&mut k2, &both[..1], 3);
+        assert_eq!(end.len(), 1);
+        assert_eq!(end[0].rx_device, "client of PC-Studio");
+        assert!(end[0].ok);
+
         let b = below(&old("PC", 7, 20));
         assert_eq!(
             (b.kind.as_str(), b.address.as_deref(), b.version.as_str()),
