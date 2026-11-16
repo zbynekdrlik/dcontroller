@@ -4,8 +4,11 @@
 
 use dcontroller_api::{Device, Setting};
 
-/// Dante Controller's latency choices, µs.
-pub const LATENCIES_US: [u32; 6] = [150, 250, 500, 1000, 2000, 5000];
+/// Dante Controller's latency choices, µs: the hardware ones (0.15 to 5 ms)
+/// and the software ones (4 to 40 ms); a device gets those in its range.
+pub const LATENCIES_US: [u32; 11] = [
+    150, 250, 500, 1000, 2000, 4000, 5000, 6000, 10000, 20000, 40000,
+];
 /// The encodings Dante devices offer, bits.
 pub const ENCODINGS: [u32; 3] = [16, 24, 32];
 
@@ -119,6 +122,16 @@ pub fn asks(dev: &Device) -> Vec<Ask> {
     out
 }
 
+/// The dialog's note when latency `choice_us` is below `peak_us`, the
+/// largest packet lateness the device measured in the last hour.
+pub fn peak_note(choice_us: u32, peak_us: Option<u32>) -> Option<String> {
+    let peak = peak_us.filter(|p| choice_us < *p)?;
+    Some(format!(
+        "In the last hour packets reached this device up to {} late: below that its receivers drop audio.",
+        Kind::Latency.text(peak)
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +164,35 @@ mod tests {
         assert_eq!(a[0].options, vec![250, 333, 500, 1000, 2000]);
         assert_eq!(a[0].title(), "Change the latency of desk (now 0.33 ms)");
         assert_eq!(a[0].kind.setting(500), Setting::LatencyUs(500));
+    }
+
+    #[test]
+    fn a_software_device_range_offers_the_software_latencies() {
+        let d = dev(
+            Some(Settings {
+                latency_configured_us: Some(40000),
+                latency_min_us: Some(4000),
+                latency_max_us: Some(296000),
+                ..Settings::default()
+            }),
+            None,
+        );
+        let a = asks(&d);
+        assert_eq!(a[0].options, vec![4000, 5000, 6000, 10000, 20000, 40000]);
+        assert_eq!(a[0].kind.text(10000), "10.00 ms");
+    }
+
+    #[test]
+    fn a_latency_below_the_measured_peak_is_noted() {
+        assert_eq!(
+            peak_note(5000, Some(6114)).as_deref(),
+            Some(
+                "In the last hour packets reached this device up to 6.11 ms late: below that its receivers drop audio."
+            )
+        );
+        assert_eq!(peak_note(6114, Some(6114)), None);
+        assert_eq!(peak_note(10000, Some(6114)), None);
+        assert_eq!(peak_note(5000, None), None);
     }
 
     #[test]

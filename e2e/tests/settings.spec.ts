@@ -4,6 +4,7 @@ import { test, expect, type ConsoleMessage, type Page } from "@playwright/test";
 // a site device. It takes a latency write within its config's rules (as
 // hardware does), runs one sample rate, and takes no encoding write.
 const DEVICE = "dc-e2e-device";
+const OPTIONS = ["1.00 ms", "2.00 ms", "4.00 ms", "5.00 ms", "6.00 ms", "10.00 ms", "20.00 ms", "40.00 ms"];
 
 // Status entries (a subscription stopped or receives again) arrive with device reads at any time: leave them out.
 const changes = (page: Page) =>
@@ -35,7 +36,8 @@ test.describe("settings", () => {
     // Dante Controller's choices within the device's range, plus its current one.
     // dstack v0.6.90 states its real minimum (its TX floor, 0.633 ms at
     // 96 kHz fpp 32), so 0.25 and 0.50 ms are no longer offered.
-    await expect(dialog.locator("option")).toHaveText(["1.00 ms", "2.00 ms", "5.00 ms", "10.00 ms"]);
+    // Software latencies too (#101): 4 to 40 ms, within its range.
+    await expect(dialog.locator("option")).toHaveText(OPTIONS);
     await expect(dialog.getByTestId("setting-warning")).toContainText("may drop out briefly");
     await expect(dialog.getByTestId("setting-apply")).toBeDisabled();
 
@@ -58,10 +60,9 @@ test.describe("settings", () => {
       ok: true,
     });
 
-    // Its config's 10 ms is no Dante Controller choice, so the dialog no
-    // longer offers it now 5 ms is in effect.
+    // 10 ms is a choice of its own now (#101): still offered at 5 ms.
     await card.getByTestId("change-latency").click();
-    await expect(dialog.locator("option")).toHaveText(["1.00 ms", "2.00 ms", "5.00 ms"]);
+    await expect(dialog.locator("option")).toHaveText(OPTIONS);
     await dialog.getByTestId("setting-cancel").click();
     // Cleanup through the API: back to the config's latency, so the other
     // tests see the device as it was.

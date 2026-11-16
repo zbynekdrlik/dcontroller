@@ -60,7 +60,7 @@ pub fn time_text(unix: i64) -> String {
     )
 }
 
-async fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, String> {
+pub(crate) async fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, String> {
     let res = gloo_net::http::Request::get(url)
         .send()
         .await

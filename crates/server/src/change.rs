@@ -732,6 +732,31 @@ pub fn latency_outcome(asked_us: u32, r: &Result<control::Settings, WriteError>)
     }
 }
 
+/// After a latency write the device reads back: what its receive flows
+/// (latency of each, µs) say when some still run at another latency.
+pub fn flows_note(asked_us: u32, flows_us: &[u32]) -> Option<String> {
+    let mut other: Vec<u32> = flows_us
+        .iter()
+        .copied()
+        .filter(|l| *l != asked_us)
+        .collect();
+    if other.is_empty() {
+        return None;
+    }
+    let n = other.len();
+    other.sort_unstable();
+    other.dedup();
+    Some(format!(
+        "but {n} of its {} receive flows still run at {}",
+        flows_us.len(),
+        other
+            .iter()
+            .map(|l| setting_text(api::Setting::LatencyUs(*l)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
 /// The message for a sample-rate write's outcome: ok and text.
 pub fn rate_outcome(
     asked: u32,
@@ -813,7 +838,38 @@ impl Changes {
                         Ok(a) => ms(a),
                         Err(_) => control::settings(&mut udp).ok().as_ref().and_then(ms),
                     };
-                    let (ok, message) = latency_outcome(us, &r);
+                    let (mut ok, mut message) = latency_outcome(us, &r);
+                    if ok {
+                        // The device setting is not the latency its running
+                        // flows use: wait for them, and say when they keep
+                        // another one.
+                        let flows_us = |udp: &mut Udp<'_>| {
+                            control::rx_flows(udp).map(|f| {
+                                f.iter()
+                                    .filter(|f| !f.channels.is_empty())
+                                    .map(|f| f.latency_ns / 1000)
+                                    .collect::<Vec<u32>>()
+                            })
+                        };
+                        let end = Instant::now() + WRITE_WAIT;
+                        let mut note = None;
+                        loop {
+                            match flows_us(&mut udp) {
+                                Ok(f) => note = flows_note(us, &f),
+                                Err(e) => {
+                                    warn!(device = %device.name, error = %e, "setting: RX flows not read after the latency write");
+                                }
+                            }
+                            if note.is_none() || Instant::now() >= end {
+                                break;
+                            }
+                            std::thread::sleep(ENCODING_POLL);
+                        }
+                        if let Some(n) = note {
+                            ok = false;
+                            message = format!("{message}, {n}");
+                        }
+                    }
                     Ok((ms(&before), after, ok, message))
                 }
                 api::Setting::SampleRateHz(hz) => {
@@ -976,6 +1032,20 @@ mod tests {
         assert_eq!(setting_text(api::Setting::LatencyUs(250)), "0.25 ms");
         assert_eq!(setting_text(api::Setting::SampleRateHz(96000)), "96000 Hz");
         assert_eq!(setting_text(api::Setting::EncodingBits(32)), "32 bit");
+    }
+
+    #[test]
+    fn flows_still_at_another_latency_are_named() {
+        assert_eq!(
+            flows_note(5000, &[40000, 40000, 5000]).as_deref(),
+            Some("but 2 of its 3 receive flows still run at 40.00 ms")
+        );
+        assert_eq!(
+            flows_note(5000, &[40000, 20000]).as_deref(),
+            Some("but 2 of its 2 receive flows still run at 20.00 ms, 40.00 ms")
+        );
+        assert_eq!(flows_note(5000, &[5000, 5000]), None);
+        assert_eq!(flows_note(5000, &[]), None);
     }
 
     #[test]
