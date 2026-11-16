@@ -732,6 +732,13 @@ pub fn latency_outcome(asked_us: u32, r: &Result<control::Settings, WriteError>)
     }
 }
 
+/// After a latency write the device reads back: what its receive flows
+/// (latency of each, µs) say when some still run at another latency.
+pub fn flows_note(asked_us: u32, flows_us: &[u32]) -> Option<String> {
+    let _ = (asked_us, flows_us);
+    None
+}
+
 /// The message for a sample-rate write's outcome: ok and text.
 pub fn rate_outcome(
     asked: u32,
@@ -976,6 +983,20 @@ mod tests {
         assert_eq!(setting_text(api::Setting::LatencyUs(250)), "0.25 ms");
         assert_eq!(setting_text(api::Setting::SampleRateHz(96000)), "96000 Hz");
         assert_eq!(setting_text(api::Setting::EncodingBits(32)), "32 bit");
+    }
+
+    #[test]
+    fn flows_still_at_another_latency_are_named() {
+        assert_eq!(
+            flows_note(5000, &[40000, 40000, 5000]).as_deref(),
+            Some("but 2 of its 3 receive flows still run at 40.00 ms")
+        );
+        assert_eq!(
+            flows_note(5000, &[40000, 20000]).as_deref(),
+            Some("but 2 of its 2 receive flows still run at 20.00 ms, 40.00 ms")
+        );
+        assert_eq!(flows_note(5000, &[5000, 5000]), None);
+        assert_eq!(flows_note(5000, &[]), None);
     }
 
     #[test]
