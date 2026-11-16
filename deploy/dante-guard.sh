@@ -27,7 +27,8 @@ for f in dante-leg.nft dante-guard.service; do
     test -f "$src/$f" || { echo "missing $src/$f" >&2; exit 1; }
 done
 
-addr=$(ip -4 -o addr show dev "$DC_IFACE" | awk '{split($4, a, "/"); print a[1]; exit}')
+# No early exit in a pipe: under pipefail a writer cut off is SIGPIPE (141).
+addr=$(ip -4 -o addr show dev "$DC_IFACE" | awk '!done {split($4, a, "/"); print a[1]; done = 1}')
 [[ "$addr" =~ ^[0-9.]+$ ]] || { echo "no IPv4 address on $DC_IFACE" >&2; exit 1; }
 
 if [ "${DC_GUARD_SKIP_ROUTING:-0}" != 1 ]; then
@@ -65,7 +66,7 @@ rm -f /etc/dcontroller/dante-guard.nft
 # avahi must not announce this PC's services on the Dante leg.
 conf=/etc/avahi/avahi-daemon.conf
 if [ -f "$conf" ]; then
-    cur=$(sed -n 's/^deny-interfaces=//p' "$conf" | head -1)
+    cur=$(awk '!done && sub(/^deny-interfaces=/, "") {print; done = 1}' "$conf")
     if [[ ",$cur," != *",$DC_IFACE,"* ]]; then
         if grep -q '^deny-interfaces=' "$conf"; then
             sed -i "s/^deny-interfaces=.*/deny-interfaces=${cur:+$cur,}$DC_IFACE/" "$conf"

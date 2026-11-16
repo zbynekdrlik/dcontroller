@@ -226,7 +226,7 @@ jobs:
           if sudo nft list table inet dante_guard 2>/dev/null; then echo "the old per-box table is left"; exit 1; fi
           test ! -e /etc/dcontroller/dante-guard.nft
           sudo cmp "$rel/dante-leg.nft" /etc/dstack/dante-leg.nft
-          sudo nft list chain inet dstack_dante_leg in | grep -q 'iifname != "dante0" accept'
+          grep -q 'iifname != "dante0" accept' <<<"$(sudo nft list chain inet dstack_dante_leg in)"
           test "$(sysctl -n net.ipv4.conf.dante0.arp_ignore)" = 1
           test "$(grep -c '^deny-interfaces=dante0$' /etc/avahi/avahi-daemon.conf)" = 1
           # A deny list already there keeps its entries.
@@ -303,7 +303,7 @@ jobs:
           sudo DC_IFACE=dante1.70 DC_GUARD_SKIP_ROUTING=1 "$rel/dante-guard.sh"
           test "$(cat /proc/sys/net/ipv4/conf/dante1.70/arp_ignore)" = 1
           test "$(cat /proc/sys/net/ipv4/conf/dante1.70/arp_announce)" = 2
-          sudo nft list chain inet dstack_dante_leg in | grep -q 'iifname != "dante1.70" accept'
+          grep -q 'iifname != "dante1.70" accept' <<<"$(sudo nft list chain inet dstack_dante_leg in)"
       - uses: actions/upload-artifact@v4
         with:
           name: dcontroller-bundle
