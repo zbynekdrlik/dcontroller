@@ -4,8 +4,11 @@
 
 use dcontroller_api::{Device, Setting};
 
-/// Dante Controller's latency choices, µs.
-pub const LATENCIES_US: [u32; 6] = [150, 250, 500, 1000, 2000, 5000];
+/// Dante Controller's latency choices, µs: the hardware ones (0.15 to 5 ms)
+/// and the software ones (4 to 40 ms); a device gets those in its range.
+pub const LATENCIES_US: [u32; 11] = [
+    150, 250, 500, 1000, 2000, 4000, 5000, 6000, 10000, 20000, 40000,
+];
 /// The encodings Dante devices offer, bits.
 pub const ENCODINGS: [u32; 3] = [16, 24, 32];
 
@@ -122,8 +125,11 @@ pub fn asks(dev: &Device) -> Vec<Ask> {
 /// The dialog's note when latency `choice_us` is below `peak_us`, the
 /// largest packet lateness the device measured in the last hour.
 pub fn peak_note(choice_us: u32, peak_us: Option<u32>) -> Option<String> {
-    let _ = (choice_us, peak_us);
-    None
+    let peak = peak_us.filter(|p| choice_us < *p)?;
+    Some(format!(
+        "In the last hour packets reached this device up to {} late: below that its receivers drop audio.",
+        Kind::Latency.text(peak)
+    ))
 }
 
 #[cfg(test)]

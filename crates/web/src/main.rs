@@ -1023,9 +1023,27 @@ async fn send_setting(req: &SettingChange) -> Result<ChangeResult, String> {
 fn SettingDialog() -> impl IntoView {
     let ctl = expect_context::<Ctl>();
     let value = RwSignal::new(None::<u32>);
+    // The device's largest packet lateness in the last hour, for the
+    // latency dialog's note.
+    let peak = RwSignal::new(None::<u32>);
     Effect::new(move |_| {
+        peak.set(None);
         if let Some(a) = ctl.setting.get() {
             value.set(a.current);
+            if a.kind == settings::Kind::Latency {
+                spawn_local(async move {
+                    if let Ok(o) =
+                        pages::get_json::<dcontroller_api::Overview>("/api/overview").await
+                    {
+                        peak.set(
+                            o.receivers
+                                .iter()
+                                .find(|r| r.device.eq_ignore_ascii_case(&a.device))
+                                .map(|r| r.peak_us),
+                        );
+                    }
+                });
+            }
         }
     });
     let apply = move |_| {
@@ -1065,6 +1083,9 @@ fn SettingDialog() -> impl IntoView {
                             }).collect_view()}
                         </select>
                         <p class="warn" data-testid="setting-warning">{kind.warning()}</p>
+                        {move || value.get().filter(|_| kind == settings::Kind::Latency)
+                            .and_then(|v| settings::peak_note(v, peak.get()))
+                            .map(|n| view! { <p class="warn" data-testid="setting-peak">{n}</p> })}
                         <div class="buttons">
                             <button data-testid="setting-cancel" disabled=busy
                                 on:click=move |_| ctl.setting.set(None)>"Cancel"</button>
