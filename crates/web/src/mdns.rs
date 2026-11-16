@@ -55,9 +55,11 @@ pub fn browser_alarm(m: &Mdns) -> Option<String> {
 
 /// A binary below the floor as `name at address dstack version`.
 pub fn below_text(b: &BelowFloor) -> String {
-    match &b.address {
-        Some(a) => format!("{} at {a} (dstack {})", b.name, b.version),
-        None => format!("{} (local {}, dstack {})", b.name, b.kind, b.version),
+    match (b.kind.as_str(), &b.address) {
+        // A device announces a local client below the floor (dstack #323).
+        ("client", Some(a)) => format!("local client of {} at {a} (dstack {})", b.name, b.version),
+        (_, Some(a)) => format!("{} at {a} (dstack {})", b.name, b.version),
+        (_, None) => format!("{} (local {}, dstack {})", b.name, b.kind, b.version),
     }
 }
 
@@ -255,6 +257,11 @@ mod tests {
             )
         );
         assert!(floor_summary(&m).1);
+        m.below_floor[1].address = Some("10.0.0.7".into());
+        assert_eq!(
+            below_text(&m.below_floor[1]),
+            "local client of dtray at 10.0.0.7 (dstack 0.6.30)"
+        );
     }
 
     #[test]

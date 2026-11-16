@@ -1,13 +1,19 @@
 import { test, expect, type ConsoleMessage } from "@playwright/test";
 import { createSocket, type Socket } from "node:dgram";
-import { routed } from "../env";
+import { readFileSync } from "node:fs";
+import { connect } from "node:net";
+import { resolve } from "node:path";
+import { routed, run } from "../env";
 
 // dcontroller #93 (dstack v0.6.145): the server's mDNS meter names two more
 // things it relays as alarms. A dstack peer below the network floor
 // (dstack #321): an ARC record's TXT states `dstack_vers`; 0.6.20 is below
 // the floor 0.6.58, and the same peer answering with 0.6.145 is upgraded.
 // A host that refreshes Dante records on the 96 s cycle (dstack #319): a
-// Dante query from port 5353 every 96 s, three intervals in a row. This
+// Dante query from port 5353 every 96 s, three intervals in a row. A
+// local client below the floor (dstack #323, dcontroller #97): dtray 0.6.20
+// asks the test device's local endpoint, and the device announces it in
+// its ARC record (`dstack_old_client`). This
 // spec runs last (`u`): the browser's alarm lasts two more cycles after it.
 const PEER = "dc-e2e-old";
 const CYCLE_MS = 96_000;
@@ -40,6 +46,25 @@ function netaudioQuery(): Buffer {
   return Buffer.concat([head, name(["_netaudio-arc", "_udp", "local"]), Buffer.from([0, 12, 0, 1])]);
 }
 
+// The test device's answer to a status request from the local client
+// `name` at `version` (dtray's request on its local endpoint).
+function askAsClient(name: string, version: string): Promise<string> {
+  const port = Number(readFileSync(resolve(run, "status_port"), "utf8"));
+  return new Promise((res, rej) => {
+    const c = connect(port, "127.0.0.1", () => c.write(`status ${name} ${version}\n`));
+    let got = "";
+    c.on("data", (d) => {
+      got += d.toString();
+      if (got.includes("\n")) {
+        c.end();
+        res(got.trim());
+      }
+    });
+    c.on("error", rej);
+    c.setTimeout(5_000, () => rej(new Error("no answer from the local endpoint")));
+  });
+}
+
 async function socket(port: number): Promise<Socket> {
   const sock = createSocket({ type: "udp4", reuseAddr: true });
   await new Promise<void>((res) => sock.bind(port, routed.ip, () => res()));
@@ -48,7 +73,7 @@ async function socket(port: number): Promise<Socket> {
   return sock;
 }
 
-test("a dstack peer below the network floor and a 96 s Dante browser raise alarms, an upgrade ends one", async ({ page }) => {
+test("a dstack peer and a local client below the network floor and a 96 s Dante browser raise alarms, an upgrade ends one", async ({ page }) => {
   test.setTimeout(540_000);
   const msgs: string[] = [];
   page.on("console", (m: ConsoleMessage) => {
@@ -106,9 +131,23 @@ test("a dstack peer below the network floor and a 96 s Dante browser raise alarm
       .filter({ hasText: "no longer below the network floor" });
     await expect(ended.first()).toBeVisible({ timeout: 10_000 });
 
+    // A local client below the floor: the device announces it, the server
+    // names it by the device.
+    expect(await askAsClient("dtray", "0.6.20")).not.toMatch(/^error/);
+    await expect(floor).toBeVisible({ timeout: 90_000 });
+    await expect(floor).toContainText(`local client of dc-e2e-device at ${routed.ip} (dstack 0.6.20)`);
+    const api2 = await page.evaluate(() => fetch("/api/mdns").then((r) => r.json()));
+    expect(api2.below_floor).toContainEqual({ kind: "client", name: "dc-e2e-device", address: routed.ip, version: "0.6.20" });
+    await page.getByTestId("tab-changes").click();
+    const client = page
+      .locator('[data-testid="change-row"][data-kind="status"]')
+      .filter({ hasText: `dstack client of dc-e2e-device at ${routed.ip}` })
+      .filter({ hasText: "runs dstack 0.6.20" });
+    await expect(client.first()).toBeVisible({ timeout: 10_000 });
+    await expect(client.first()).toHaveClass(/err/);
+
     // The browser: named the minute after its fourth query (288 s).
     await page.getByTestId("tab-network").click();
-    await expect(page.getByTestId("floor-summary")).not.toHaveClass(/error/);
     const browser = page.getByTestId("browser-alarm");
     await expect(browser).toBeVisible({ timeout: 400_000 });
     await expect(browser).toContainText(`Dante browsed on a 96 s cycle by ${routed.ip} (`);

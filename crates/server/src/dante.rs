@@ -501,6 +501,18 @@ impl State {
         out
     }
 
+    /// The local dstack clients below the network floor that the listed
+    /// devices announce (`dstack_old_client`, dstack #323), each named by
+    /// its device at the device's ARC address. Peers below the floor come
+    /// from the mDNS meter, which keeps them an hour (`mdns`).
+    pub fn old_clients(&self) -> Vec<dstack::network_floor::Below> {
+        let devices: Vec<Device> = self.devices.values().map(|e| e.device.clone()).collect();
+        dstack::network_floor::below_of(&devices, dstack::network_floor::now_ns())
+            .into_iter()
+            .filter(|b| b.kind == dstack::network_floor::Kind::Client)
+            .collect()
+    }
+
     /// Our address and every listed device with RX channels (as last read):
     /// the receivers the recorder records.
     pub fn receivers(&self) -> Vec<(Ipv4Addr, Device)> {

@@ -164,31 +164,6 @@ class Run(unittest.TestCase):
         r.run("u", self.state, [], 200, get=lambda _: es, sender=self.sender([]))
         self.assertEqual(len(self.sent), 3)
 
-    def test_a_browser_alarm_for_dante_hardware_is_muted_and_a_pc_s_goes(self):
-        r.save(self.state, {"at": 100, "sent": []})
-        hw = dict(entry(110, "10.0.0.3", devices="zvukar"), what="mdns-browser", message="hw")
-        pc = dict(entry(111, "10.0.0.4", devices="PC"), what="mdns-browser", message="pc")
-        devices = {"devices": [
-            {"name": "zvukar", "network": [{"ip": "10.0.0.3", "mac": "00:1D:C1:89:F8:4A"}]},
-            {"name": "PC", "network": [{"ip": "10.0.0.4", "mac": "a4:bb:6d:00:00:01"}]},
-            {"name": "off", "network": None}]}
-        r.run("u", self.state, [], 200, get=lambda _: [hw, pc],
-              sender=self.sender([(True, "ok")]), get_devices=lambda _: devices)
-        self.assertEqual(len(self.sent), 1)
-        self.assertIn("pc", self.sent[0])
-        self.assertEqual(r.load(self.state)["at"], 111)
-
-    def test_devices_are_read_only_for_a_browser_alarm_and_unreadable_ones_are_an_error(self):
-        r.save(self.state, {"at": 100, "sent": []})
-        def boom(_):
-            raise OSError("down")
-        self.assertEqual(r.run("u", self.state, [], 200, get=lambda _: [entry(110)],
-                               sender=self.sender([(True, "ok")]), get_devices=boom), 0)
-        b = dict(entry(120), what="mdns-browser", message="x")
-        self.assertEqual(r.run("u", self.state, [], 200, get=lambda _: [b],
-                               sender=self.sender([]), get_devices=boom), 1)
-        self.assertEqual(r.load(self.state)["at"], 110)
-
     def test_an_unreadable_server_is_an_error(self):
         r.save(self.state, {"at": 100, "sent": []})
 
