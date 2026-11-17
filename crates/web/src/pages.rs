@@ -3,7 +3,7 @@
 //! zoom and is updated in place, never rebuilt by a poll.
 
 use super::*;
-use dcontroller_api::{History, Overview, ReceiverSummary};
+use dcontroller_api::{Bridge, History, Overview, ReceiverSummary};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
@@ -29,6 +29,8 @@ pub struct Hist {
     pub range: RwSignal<i64>,
     pub zoom: RwSignal<Option<(i64, i64)>>,
     pub data: RwSignal<Option<Result<History, String>>>,
+    /// The chosen device's bridge figures over the same range (#108).
+    pub bridge: RwSignal<Option<Bridge>>,
     pub overview: RwSignal<Option<Result<Overview, String>>>,
     pub reads: StoredValue<hist::HistReads>,
 }
@@ -94,8 +96,10 @@ pub fn load_history(h: Hist, poll: bool) {
         reads.start_at(js_sys::Date::now())
     };
     h.reads.set_value(reads);
+    let burl = url.replacen("/api/history/", "/api/bridge/", 1);
     spawn_local(async move {
         let r = get_json::<History>(&url).await;
+        let b = get_json::<Bridge>(&burl).await;
         // Only the newest read's answer shows (a range, zoom or device
         // chosen since makes this one stale).
         let mut reads = h.reads.get_value();
@@ -103,6 +107,7 @@ pub fn load_history(h: Hist, poll: bool) {
         h.reads.set_value(reads);
         if show {
             h.data.set(Some(r));
+            h.bridge.set(b.ok());
         }
     });
 }
@@ -273,6 +278,7 @@ pub fn OverviewPage() -> impl IntoView {
                             move |_| {
                                 h.zoom.set(None);
                                 h.data.set(None);
+                                h.bridge.set(None);
                                 h.device.set(Some(name.clone()));
                             }
                         };
@@ -310,6 +316,14 @@ pub fn OverviewPage() -> impl IntoView {
 pub fn LatencyPanel() -> impl IntoView {
     let h = expect_context::<Hist>();
     let chart_ref = NodeRef::<leptos::html::Div>::new();
+    let bridge_ref = NodeRef::<leptos::html::Div>::new();
+    // The bridge chart (#108), drawn on every new read of a bridge device.
+    Effect::new(move |_| {
+        let b = h.bridge.get();
+        if let (Some(el), Some(b)) = (bridge_ref.get(), b.filter(|b| !b.points.is_empty())) {
+            chart_latency(el.unchecked_ref(), &hist::bridge_chart_json(&b, 220));
+        }
+    });
     let wired = StoredValue::new(false);
     // Draw on every new read; wire the zoom events once.
     Effect::new(move |_| {
@@ -422,6 +436,7 @@ pub fn LatencyPanel() -> impl IntoView {
     let close = move |_| {
         h.device.set(None);
         h.data.set(None);
+        h.bridge.set(None);
         let _ = window().location().set_hash("#devices");
     };
     view! {
@@ -436,7 +451,84 @@ pub fn LatencyPanel() -> impl IntoView {
                     style=move || if h.data.get().is_some_and(|d| d.is_ok_and(|x| !x.flows.is_empty())) { "" } else { "display:none" }></div>
                 <p class="muted small hint">"A vertical line with a number: late packets at that time. Drag across the chart to zoom in; double-click to zoom out."</p>
                 {figures}
+                <div style=move || if h.bridge.get().is_some_and(|b| !b.points.is_empty()) { "" } else { "display:none" }
+                    data-testid="bridge-panel">
+                    <h3 class="sub">"ASIO bridge"</h3>
+                    <div class="chart" node_ref=bridge_ref data-testid="bridge-chart"></div>
+                    <p class="muted small hint">"Dante → ASIO = the device's latency + the to-ASIO target + the to-ASIO converter delay; ASIO → Dante = the from-ASIO target + its converter delay. A vertical line with a number: underruns (blocks played as silence) at that time."</p>
+                    {move || h.bridge.get().as_ref().and_then(hist::bridge_now).map(bridge_table)}
+                </div>
             </section>
+        </div>
+    }
+}
+
+/// The bridge's figures now, and its underruns in the range (#108).
+fn bridge_table(n: hist::BridgeNow) -> impl IntoView {
+    let p = &n.last;
+    let cause = |c: &str| match c {
+        "none" => "–".to_owned(),
+        "driver" => "driver callback late".to_owned(),
+        "bridge" => "bridge".to_owned(),
+        other => other.to_owned(),
+    };
+    let bins = p
+        .late_bins
+        .iter()
+        .zip(["0.25", "0.5", "0.75", "1.0", "1.25", "1.5", "1.75", "2.0+"])
+        .map(|(n, at)| format!("{at} ms: {n}"))
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let rows: Vec<(&'static str, &'static str, String, String)> = vec![
+        (
+            "bridge-to",
+            "Dante → ASIO",
+            hist::ms(p.dante_to_asio_us()),
+            format!(
+                "latency {} + target {} + converter {}",
+                hist::ms(p.latency_us),
+                hist::ms(p.to_asio_target_us),
+                hist::ms(p.to_asio_converter_delay_us)
+            ),
+        ),
+        (
+            "bridge-from",
+            "ASIO → Dante",
+            hist::ms(p.asio_to_dante_us()),
+            format!(
+                "target {} + converter {}",
+                hist::ms(p.from_asio_target_us),
+                hist::ms(p.from_asio_converter_delay_us)
+            ),
+        ),
+        (
+            "bridge-to-under",
+            "Underruns to ASIO",
+            n.to_asio_underruns.to_string(),
+            format!("latest cause: {}", cause(&p.to_asio_cause)),
+        ),
+        (
+            "bridge-from-under",
+            "Underruns to Dante",
+            n.from_asio_underruns.to_string(),
+            format!("latest cause: {}", cause(&p.from_asio_cause)),
+        ),
+        (
+            "bridge-late",
+            "Driver callbacks late",
+            p.late_callbacks.to_string(),
+            bins,
+        ),
+    ];
+    view! {
+        <div class="table-wrap">
+        <table class="grid" data-testid="bridge-table">
+            <tbody>
+                {rows.into_iter().map(|(id, k, v, d)| view! {
+                    <tr data-testid=id><th>{k}</th><td class="num">{v}</td><td class="muted">{d}</td></tr>
+                }).collect_view()}
+            </tbody>
+        </table>
         </div>
     }
 }

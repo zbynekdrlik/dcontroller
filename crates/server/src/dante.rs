@@ -526,6 +526,21 @@ impl State {
             .collect()
     }
 
+    /// Every listed device with its active latency (µs, when read): the
+    /// devices the bridge reader asks (`bridge`).
+    pub fn with_latency(&self) -> Vec<(Device, Option<u32>)> {
+        self.devices
+            .values()
+            .map(|e| {
+                let lat = e
+                    .settings
+                    .as_ref()
+                    .and_then(|s| s.latency_active_us.or(s.latency_configured_us));
+                (e.device.clone(), lat)
+            })
+            .collect()
+    }
+
     /// The Dante interface's name, when discovery runs on one.
     pub fn interface(&self) -> Option<String> {
         self.interface.clone().filter(|_| self.enabled)

@@ -74,6 +74,7 @@ fn App() -> impl IntoView {
         range: RwSignal::new(hist::DEFAULT_RANGE),
         zoom: RwSignal::new(None),
         data: RwSignal::new(None),
+        bridge: RwSignal::new(None),
         overview: RwSignal::new(None),
         reads: StoredValue::new(hist::HistReads::default()),
     };
@@ -91,6 +92,7 @@ fn App() -> impl IntoView {
                 if hst.device.get_untracked() != d {
                     hst.zoom.set(None);
                     hst.data.set(None);
+                    hst.bridge.set(None);
                     hst.device.set(d);
                 }
             }

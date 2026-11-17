@@ -1,5 +1,6 @@
 //! dcontroller server: serves the built PWA and a small JSON API.
 
+pub mod bridge;
 pub mod change;
 pub mod dante;
 pub mod flows;
@@ -240,6 +241,28 @@ async fn history_report(
         })
 }
 
+/// A bridge device's own figures over a range (dcontroller #108).
+async fn bridge_report(
+    State(s): State<Shared>,
+    axum::extract::Path(device): axum::extract::Path<String>,
+    axum::extract::Query(r): axum::extract::Query<Range>,
+) -> Result<axum::Json<dcontroller_api::Bridge>, StatusCode> {
+    let now = history::unix_now();
+    let to = r.to.unwrap_or(now);
+    let from = r.from.unwrap_or(to.saturating_sub(3600));
+    tokio::task::spawn_blocking(move || s.history.bridge(&device, from, to))
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "bridge: task failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .map(axum::Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "bridge: read failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
 async fn meter_report(
     State(s): State<Shared>,
     axum::extract::Path(device): axum::extract::Path<String>,
@@ -354,6 +377,7 @@ pub fn app(web_dir: &Path, shared: Shared) -> Router {
         )
         .route("/api/flows/{device}", get(tx_flows))
         .route("/api/history/{device}", get(history_report))
+        .route("/api/bridge/{device}", get(bridge_report))
         .route("/api/overview", get(overview))
         .route("/api/meters/{device}", get(meter_report))
         .route("/api/levels", get(levels_report))

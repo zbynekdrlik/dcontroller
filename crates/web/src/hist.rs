@@ -2,7 +2,7 @@
 //! flow's colour and label, the chart's data for `charts.js`, the overview
 //! sparklines and a receiver's health. Pure, so it is tested on the host.
 
-use dcontroller_api::{FlowHistory, History, ReceiverSummary};
+use dcontroller_api::{Bridge, BridgePoint, FlowHistory, History, ReceiverSummary};
 use serde::Serialize;
 
 /// The ranges offered: label and seconds.
@@ -313,6 +313,83 @@ pub fn chart_json(h: &History, height: u32) -> String {
     serde_json::to_string(&chart).unwrap_or_else(|_| "{}".into())
 }
 
+/// Per point, how much a counter grew since the point before: a restart
+/// (a new run, or a count that fell) counts its new value from zero.
+fn growth(points: &[BridgePoint], count: impl Fn(&BridgePoint) -> u64) -> Vec<u64> {
+    let mut out = Vec::with_capacity(points.len());
+    let mut prev: Option<&BridgePoint> = None;
+    for p in points {
+        out.push(match prev {
+            None => 0,
+            Some(q) if q.run_start_unix_ms != p.run_start_unix_ms || count(p) < count(q) => {
+                count(p)
+            }
+            Some(q) => count(p) - count(q),
+        });
+        prev = Some(p);
+    }
+    out
+}
+
+/// A bridge device's figures for the panel (dcontroller #108): the
+/// newest read, and the underruns within the range.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BridgeNow {
+    pub last: BridgePoint,
+    pub to_asio_underruns: u64,
+    pub from_asio_underruns: u64,
+}
+
+/// The newest read of `b` and its underruns over the range; `None` for a
+/// device that never answered.
+pub fn bridge_now(b: &Bridge) -> Option<BridgeNow> {
+    let last = b.points.last()?.clone();
+    Some(BridgeNow {
+        last,
+        to_asio_underruns: growth(&b.points, |p| p.to_asio_underruns).iter().sum(),
+        from_asio_underruns: growth(&b.points, |p| p.from_asio_underruns).iter().sum(),
+    })
+}
+
+/// The bridge chart's data in the latency chart's format: the two path
+/// totals in ms, each side's new underruns as its late marks.
+pub fn bridge_chart_json(b: &Bridge, height: u32) -> String {
+    let t: Vec<i64> = b.points.iter().map(|p| p.t).collect();
+    let line =
+        |label: &str, color: &str, us: &dyn Fn(&BridgePoint) -> u32, late: Vec<u64>| ChartSource {
+            label: label.to_owned(),
+            color: color.to_owned(),
+            values: b
+                .points
+                .iter()
+                .map(|p| Some(f64::from(us(p)) / 1000.0))
+                .collect(),
+            late,
+        };
+    let chart = Chart {
+        t: &t,
+        unit: "ms",
+        sources: vec![
+            line(
+                "Dante → ASIO",
+                chart_color(0),
+                &|p| p.dante_to_asio_us(),
+                growth(&b.points, |p| p.to_asio_underruns),
+            ),
+            line(
+                "ASIO → Dante",
+                chart_color(1),
+                &|p| p.asio_to_dante_us(),
+                growth(&b.points, |p| p.from_asio_underruns),
+            ),
+        ],
+        thresholds: Vec::new(),
+        floor: 0.0,
+        height,
+    };
+    serde_json::to_string(&chart).unwrap_or_else(|_| "{}".into())
+}
+
 /// An SVG path through `values` (per mille of the latency) in a `w`×`h`
 /// box, 0 at the bottom and at least `top` at the top; a gap breaks it.
 pub fn spark_path(values: &[Option<u32>], w: f64, h: f64, top: u32) -> String {
@@ -378,6 +455,49 @@ mod tests {
             late,
             ..FlowHistory::default()
         }
+    }
+
+    fn bp(t: i64, run: u64, to: u64, from: u64) -> BridgePoint {
+        BridgePoint {
+            t,
+            latency_us: 1000,
+            to_asio_target_us: 1000,
+            to_asio_converter_delay_us: 167,
+            from_asio_target_us: 1667,
+            from_asio_converter_delay_us: 167,
+            to_asio_underruns: to,
+            from_asio_underruns: from,
+            run_start_unix_ms: run,
+            ..BridgePoint::default()
+        }
+    }
+
+    #[test]
+    fn bridge_underruns_count_growth_in_range_across_a_restart() {
+        let b = Bridge {
+            points: vec![
+                bp(10, 1, 5, 0),
+                bp(20, 1, 7, 0),
+                bp(30, 2, 1, 2),
+                bp(40, 2, 1, 3),
+            ],
+            ..Bridge::default()
+        };
+        let n = bridge_now(&b).unwrap();
+        // 5 before the range; +2, then a restart with 1, then nothing new.
+        assert_eq!(n.to_asio_underruns, 3);
+        assert_eq!(n.from_asio_underruns, 3);
+        assert_eq!(n.last.t, 40);
+        assert!(bridge_now(&Bridge::default()).is_none());
+        let v: serde_json::Value = serde_json::from_str(&bridge_chart_json(&b, 200)).unwrap();
+        assert_eq!(v["unit"], "ms");
+        assert_eq!(v["t"], serde_json::json!([10, 20, 30, 40]));
+        assert_eq!(v["sources"][0]["label"], "Dante → ASIO");
+        assert_eq!(v["sources"][0]["values"][0], 2.167);
+        assert_eq!(v["sources"][0]["late"], serde_json::json!([0, 2, 1, 0]));
+        assert_eq!(v["sources"][1]["values"][0], 1.834);
+        assert_eq!(v["sources"][1]["late"], serde_json::json!([0, 0, 2, 1]));
+        assert_eq!(v["thresholds"], serde_json::json!([]));
     }
 
     #[test]

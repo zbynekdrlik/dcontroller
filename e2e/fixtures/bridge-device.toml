@@ -1,0 +1,12 @@
+# A real dstack Dante device that holds bridge figures, as a dasio bridge
+# instance does (#108): crates/server/examples/bridge_device.rs runs it on
+# the E2E namespace's second address. state_file is appended by
+# global-setup.ts.
+name = "dc-e2e-bridge"
+manufacturer = "dcontroller-e2e"
+model = "bridge-box"
+sample_rate = 48000
+encoding = 24
+latency_ns = 1000000
+rx = ["Bridge In L", "Bridge In R"]
+tx = ["Bridge Out L", "Bridge Out R"]
