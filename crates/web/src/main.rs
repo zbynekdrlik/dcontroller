@@ -70,7 +70,7 @@ fn App() -> impl IntoView {
     };
     provide_context(ctl);
     let hst = pages::Hist {
-        device: RwSignal::new(hash_device("#latency/")),
+        device: RwSignal::new(hash_device("#devices/")),
         range: RwSignal::new(hist::DEFAULT_RANGE),
         zoom: RwSignal::new(None),
         data: RwSignal::new(None),
@@ -86,9 +86,9 @@ fn App() -> impl IntoView {
             if view_now.get_untracked() != v {
                 view_now.set(v);
             }
-            if v == View::Latency {
-                let d = hash_device("#latency/");
-                if d.is_some() && hst.device.get_untracked() != d {
+            if v == View::Devices {
+                let d = hash_device("#devices/");
+                if hst.device.get_untracked() != d {
                     hst.zoom.set(None);
                     hst.data.set(None);
                     hst.device.set(d);
@@ -110,26 +110,29 @@ fn App() -> impl IntoView {
             hst.zoom.get(),
             view_now.get(),
         );
-        if v == View::Latency {
+        if v == View::Devices && hst.device.get().is_some() {
             pages::load_history(hst, false);
         }
     });
     let _ = set_interval_with_handle(
         move || {
-            if view_now.get_untracked() == View::Latency && hst.live() {
+            if view_now.get_untracked() == View::Devices
+                && hst.device.get_untracked().is_some()
+                && hst.live()
+            {
                 pages::load_history(hst, true);
             }
         },
         pages::HIST_POLL,
     );
     Effect::new(move |_| {
-        if matches!(view_now.get(), View::Overview | View::Latency) {
+        if matches!(view_now.get(), View::Overview | View::Devices) {
             pages::load_overview(hst);
         }
     });
     let _ = set_interval_with_handle(
         move || {
-            if matches!(view_now.get_untracked(), View::Overview | View::Latency) {
+            if matches!(view_now.get_untracked(), View::Overview | View::Devices) {
                 pages::load_overview(hst);
             }
         },
@@ -302,16 +305,23 @@ fn App() -> impl IntoView {
                     }}</p>
                 }.into_any(),
                 (View::Overview, _) => view! { <pages::OverviewPage/> }.into_any(),
-                (View::Latency, _) => view! { <pages::LatencyPage/> }.into_any(),
+                // The latency panel stays mounted across the device poll
+                // (its chart keeps its zoom); only the list is rebuilt.
+                (View::Devices, _) => view! {
+                    <pages::LatencyPanel/>
+                    {move || match devices.get() {
+                        Some(Ok(d)) => view! { <DeviceList d=d/> }.into_any(),
+                        _ => ().into_any(),
+                    }}
+                }.into_any(),
                 (v, _) => (move || match devices.get() {
                     Some(Ok(d)) => match v {
-                        View::Devices => view! { <DeviceList d=d/> }.into_any(),
                         View::Routing => view! { <Routing d=d/> }.into_any(),
                         View::Changes => view! { <ChangeLog/> }.into_any(),
                         View::Meters => view! { <MeterView d=d/> }.into_any(),
                         View::Clock => view! { <ClockView d=d/> }.into_any(),
                         View::Network => view! { <NetworkView d=d/><MdnsView/> }.into_any(),
-                        View::Overview | View::Latency => ().into_any(),
+                        View::Overview | View::Devices => ().into_any(),
                     },
                     _ => ().into_any(),
                 }).into_any(),
@@ -333,7 +343,6 @@ enum View {
     Overview,
     Routing,
     Devices,
-    Latency,
     Meters,
     Clock,
     Network,
@@ -342,11 +351,10 @@ enum View {
 
 impl View {
     /// The views in the sidebar's order.
-    const ALL: [View; 8] = [
+    const ALL: [View; 7] = [
         View::Overview,
         View::Routing,
         View::Devices,
-        View::Latency,
         View::Meters,
         View::Clock,
         View::Network,
@@ -358,7 +366,6 @@ impl View {
             View::Overview => "overview",
             View::Routing => "routing",
             View::Devices => "devices",
-            View::Latency => "latency",
             View::Meters => "meters",
             View::Clock => "clock",
             View::Network => "network",
@@ -371,7 +378,6 @@ impl View {
             View::Overview => "Overview",
             View::Routing => "Routing",
             View::Devices => "Devices",
-            View::Latency => "Latency",
             View::Meters => "Meters",
             View::Clock => "Clock",
             View::Network => "Network",
@@ -391,6 +397,12 @@ impl View {
             .next()
             .unwrap_or_default()
             .to_owned();
+        // Latency lives on the Devices page now (#106): an old link moves there.
+        if head == "latency" {
+            let rest = hash.trim_start_matches('#').trim_start_matches("latency");
+            let _ = window().location().replace(&format!("#devices{rest}"));
+            return View::Devices;
+        }
         View::ALL
             .into_iter()
             .find(|v| v.slug() == head)
@@ -406,7 +418,6 @@ fn icon(v: View) -> impl IntoView {
             "M4 4h4v4H4zM16 4h4v4h-4zM4 16h4v4H4zM16 16h4v4h-4zM8 6h8M6 8v8M18 8v8M8 18h8"
         }
         View::Devices => "M4 5h16v6H4zM4 13h16v6H4zM7 8h.01M7 16h.01",
-        View::Latency => "M3 12h4l3-8 4 16 3-8h4",
         View::Meters => "M5 20V10M10 20V4M15 20v-7M20 20V8",
         View::Clock => "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 7v5l3 3",
         View::Network => "M12 3v6M5 21v-4h14v4M12 9v8M5 13h14M5 13v4M19 13v4",
@@ -429,7 +440,7 @@ fn logo() -> impl IntoView {
     }
 }
 
-/// The device named in the hash after `prefix` (`#latency/<name>`).
+/// The device named in the hash after `prefix` (`#devices/<name>`).
 fn hash_device(prefix: &str) -> Option<String> {
     let hash = window().location().hash().unwrap_or_default();
     let name = hash.strip_prefix(prefix)?;
@@ -2055,6 +2066,40 @@ fn DeviceCard(dev: Device, joined: String) -> impl IntoView {
     let name = dev.name.clone();
     let name_attr = dev.name.clone();
     let flows_name = dev.name.clone();
+    // A receiver's latency (#106): its last hour as a chip; a click shows
+    // its latency on top of this page.
+    let latency = dev
+        .channels
+        .as_ref()
+        .is_some_and(|c| !c.rx.is_empty())
+        .then(|| {
+            let h = expect_context::<pages::Hist>();
+            let n = dev.name.clone();
+            let chip = {
+                let n = n.clone();
+                move || {
+                    let o = h.overview.get();
+                    let (class, text) = pages::summary_of(&o, &n)
+                        .map_or(("none", "latency not recorded yet".to_owned()), hist::health);
+                    let on = h.device.get().is_some_and(|d| hist::same_name(&d, &n));
+                    (format!("chip {class}{}", if on { " sel" } else { "" }), text)
+                }
+            };
+            let chip2 = chip.clone();
+            let show = move |ev: leptos::ev::MouseEvent| {
+                ev.prevent_default();
+                ev.stop_propagation();
+                let _ = window().location().set_hash(&format!(
+                    "#devices/{}",
+                    String::from(js_sys::encode_uri_component(&n))
+                ));
+                window().scroll_to_with_x_and_y(0.0, 0.0);
+            };
+            view! {
+                <button class=move || chip().0 data-testid="device-latency" title="Show this receiver's latency"
+                    on:click=show>{move || format!("latency: {}", chip2().1)}</button>
+            }
+        });
     view! {
         <li class="device" data-testid="device" data-name=name_attr>
             <details open=is_open on:toggle=toggle>
@@ -2068,6 +2113,7 @@ fn DeviceCard(dev: Device, joined: String) -> impl IntoView {
                     })}
                     <span class="addr">{dev.address.clone()}</span>
                     <span class="subs" data-testid="device-joined">{joined}</span>
+                    {latency}
                 </summary>
                 {Some({
                     let mut rows = settings_rows(&dev.settings.clone().unwrap_or_default(), dev.info.as_ref());

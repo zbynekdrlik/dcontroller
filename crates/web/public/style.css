@@ -262,3 +262,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 /* The mDNS flood alarm (#86): on every page while a source is over the cap. */
 .alarm { margin: 0 0 12px; padding: 10px 14px; border-radius: 8px; background: var(--bad-soft); color: var(--bad); border-left: 3px solid var(--bad); font-weight: 600; overflow-wrap: anywhere; }
 h2.sub { font-size: 1.05rem; margin: 20px 0 8px; }
+/* A device card's latency chip (#106): a button, the chosen one outlined. */
+button.chip { border: 0; font: inherit; font-size: 0.78rem; cursor: pointer; }
+.chip.none { background: var(--surface-2); color: var(--muted); }
+.chip.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
+[data-testid="lat-panel"] { margin-bottom: 1rem; }

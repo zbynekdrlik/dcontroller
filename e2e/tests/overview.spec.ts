@@ -38,8 +38,9 @@ test("the overview is the start page with health tiles and the receivers' last h
 
   // A receiver's name opens its latency history.
   await row.locator("a").click();
-  await expect(page).toHaveURL(new RegExp(`#latency/${DEVICE}$`));
-  await expect(page.getByTestId("tab-latency")).toHaveClass(/\bon\b/);
+  await expect(page).toHaveURL(new RegExp(`#devices/${DEVICE}$`));
+  await expect(page.getByTestId("tab-devices")).toHaveClass(/\bon\b/);
+  await expect(page.getByTestId("lat-title")).toHaveText(`Latency · ${DEVICE}`);
   await expect(page.getByTestId("lat-source").first()).toBeVisible({ timeout: 20_000 });
   expect(msgs).toEqual([]);
 });

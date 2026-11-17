@@ -115,7 +115,7 @@ pub fn load_overview(h: Hist) {
     });
 }
 
-fn summary_of<'a>(
+pub(crate) fn summary_of<'a>(
     o: &'a Option<Result<Overview, String>>,
     name: &str,
 ) -> Option<&'a ReceiverSummary> {
@@ -129,7 +129,7 @@ fn summary_of<'a>(
 
 /// A small sparkline of a receiver's last hour (typical peak as a share of
 /// the latency, the measure the chart draws).
-fn spark(r: Option<&ReceiverSummary>, class: &'static str) -> AnyView {
+pub(crate) fn spark(r: Option<&ReceiverSummary>, class: &'static str) -> AnyView {
     let path = r
         .map(|r| hist::spark_path(&r.spark, 120.0, 28.0, 1000))
         .unwrap_or_default();
@@ -231,7 +231,7 @@ pub fn OverviewPage() -> impl IntoView {
                     if failing > 0 { format!("{read} read · {failing} not answering") } else { format!("{read} read, all answering") },
                     if failing > 0 { "warn" } else { "ok" }, "#devices")}
                 {tile("tile-latency", "Receivers clean · 1 h", format!("{clean} / {}", recs.len()), lat_sub,
-                    lat_class, "#latency")}
+                    lat_class, "#devices")}
                 {tile("tile-subs", "Subscriptions", format!("{}", subs.len()),
                     if not_rx > 0 { format!("{not_rx} not receiving") } else { "all receiving".to_owned() },
                     if not_rx > 0 { "warn" } else { "ok" }, "#routing")}
@@ -266,7 +266,7 @@ pub fn OverviewPage() -> impl IntoView {
                 <tbody>
                     {list.into_iter().map(|r| {
                         let (class, text) = hist::health(&r);
-                        let href = format!("#latency/{}", String::from(js_sys::encode_uri_component(&r.device)));
+                        let href = format!("#devices/{}", String::from(js_sys::encode_uri_component(&r.device)));
                         let name = r.device.clone();
                         let pick = {
                             let name = name.clone();
@@ -307,8 +307,7 @@ pub fn OverviewPage() -> impl IntoView {
 /// The latency history of one receiver: a chart per range with zoom, and
 /// each flow's figures and distribution over it.
 #[component]
-pub fn LatencyPage() -> impl IntoView {
-    let ctl = expect_context::<Ctl>();
+pub fn LatencyPanel() -> impl IntoView {
     let h = expect_context::<Hist>();
     let chart_ref = NodeRef::<leptos::html::Div>::new();
     let wired = StoredValue::new(false);
@@ -345,51 +344,6 @@ pub fn LatencyPage() -> impl IntoView {
             chart_latency(el.unchecked_ref(), &hist::chart_json(&hd, 320));
         }
     });
-    let receivers = move || {
-        let names: Vec<String> = match ctl.devices.get() {
-            Some(Ok(d)) => d
-                .devices
-                .iter()
-                .filter(|x| x.channels.as_ref().is_some_and(|c| !c.rx.is_empty()))
-                .map(|x| x.name.clone())
-                .collect(),
-            _ => Vec::new(),
-        };
-        let o = h.overview.get();
-        names
-            .into_iter()
-            .map(|name| {
-                let s = summary_of(&o, &name).cloned();
-                let (class, text) = s
-                    .as_ref()
-                    .map_or(("none", "not recorded yet".to_owned()), hist::health);
-                let href = format!(
-                    "#latency/{}",
-                    String::from(js_sys::encode_uri_component(&name))
-                );
-                let on = {
-                    let n = name.clone();
-                    move || h.device.get().is_some_and(|d| hist::same_name(&d, &n))
-                };
-                let pick = {
-                    let n = name.clone();
-                    move |_| {
-                        h.zoom.set(None);
-                        h.data.set(None);
-                        h.device.set(Some(n.clone()));
-                    }
-                };
-                view! {
-                    <a href=href data-testid="lat-receiver" data-name=name.clone()
-                        class=move || if on() { "recv on" } else { "recv" } on:click=pick>
-                        <span class="recv-name">{name.clone()}</span>
-                        {spark(s.as_ref(), "spark small")}
-                        <span class=format!("chip {class}")>{text}</span>
-                    </a>
-                }
-            })
-            .collect_view()
-    };
     let ranges = move || {
         hist::RANGES
             .iter()
@@ -423,7 +377,7 @@ pub fn LatencyPage() -> impl IntoView {
     };
     let figures = move || {
         let Some(name) = h.device.get() else {
-            return view! { <p class="status">"Pick a receiver."</p> }.into_any();
+            return ().into_any();
         };
         match h.data.get() {
             None => view! { <p class="status" data-testid="lat-wait">"Reading the history…"</p> }.into_any(),
@@ -463,11 +417,21 @@ pub fn LatencyPage() -> impl IntoView {
             }
         }
     };
+    // The chosen device's receive latency, on top of the device list (#106);
+    // nothing until a device's latency is picked.
+    let close = move |_| {
+        h.device.set(None);
+        h.data.set(None);
+        let _ = window().location().set_hash("#devices");
+    };
     view! {
-        <div class="split">
-            <aside class="receivers" data-testid="lat-receivers">{receivers}</aside>
-            <section class="panel grow">
-                <header class="panel-head">{head}</header>
+        <div style=move || if h.device.get().is_some() { "" } else { "display:none" }>
+            <section class="panel grow" data-testid="lat-panel">
+                <header class="panel-head">
+                    <b data-testid="lat-title">{move || h.device.get().map(|d| format!("Latency · {d}")).unwrap_or_default()}</b>
+                    {head}
+                    <button class="chip info" data-testid="lat-close" on:click=close>"✕"</button>
+                </header>
                 <div class="chart" node_ref=chart_ref data-testid="lat-chart"
                     style=move || if h.data.get().is_some_and(|d| d.is_ok_and(|x| !x.flows.is_empty())) { "" } else { "display:none" }></div>
                 <p class="muted small hint">"A vertical line with a number: late packets at that time. Drag across the chart to zoom in; double-click to zoom out."</p>

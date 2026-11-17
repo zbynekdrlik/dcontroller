@@ -20,7 +20,7 @@ test.describe("latency history", () => {
     test.use({ timezoneId: "America/New_York" });
 
     test("the chart reads Slovak time in Slovak format", async ({ page }) => {
-      await page.goto("/#latency");
+      await page.goto("/#devices");
       // 15 January 2026, 12:00 UTC: 13:00 in Slovakia.
       const t0 = 1768478400;
       const got = await page.evaluate((t0) => {
@@ -55,7 +55,7 @@ test.describe("latency history", () => {
   });
 
   test("late packets are marks on the one chart, per the sources showing", async ({ page }) => {
-    await page.goto("/#latency");
+    await page.goto("/#devices");
     // The recorded device has none to rely on: the chart gets a known history.
     const box = page.locator("#late-test");
     await page.evaluate(() => {
@@ -94,13 +94,25 @@ test.describe("latency history", () => {
   });
 
   test("charts a receiver device to device: late packets as the verdict, the margin per source, ranges and zoom", async ({ page }) => {
+    // Latency lives on the Devices page (#106): no Latency menu item; an old
+    // link lands there; a receiver's card has a latency chip that shows it.
     await page.goto("/#latency");
-    await expect(page.getByTestId("tab-latency")).toHaveClass(/\bon\b/);
-    const pick = page.locator(`[data-testid="lat-receiver"][data-name="${DEVICE}"]`);
+    await expect(page).toHaveURL(/#devices$/);
+    await expect(page.getByTestId("tab-devices")).toHaveClass(/\bon\b/);
+    await expect(page.getByTestId("tab-latency")).toHaveCount(0);
+    await expect(page.getByTestId("lat-panel")).toBeHidden();
+    const card = page.locator(`[data-testid="device"][data-name="${DEVICE}"]`);
+    const pick = card.getByTestId("device-latency");
     await expect(pick).toBeVisible({ timeout: 30_000 });
     await pick.click();
-    await expect(page).toHaveURL(new RegExp(`#latency/${DEVICE}$`));
-    await expect(pick).toHaveClass(/\bon\b/);
+    await expect(page).toHaveURL(new RegExp(`#devices/${DEVICE}$`));
+    await expect(pick).toHaveClass(/\bsel\b/);
+    // The chip does not open or close the card.
+    await expect(card.locator("details")).not.toHaveAttribute("open", "");
+    await expect(page.getByTestId("lat-panel")).toBeVisible();
+    await expect(page.getByTestId("lat-title")).toHaveText(`Latency · ${DEVICE}`);
+    // The device list stays on the page under the panel.
+    await expect(card).toBeVisible();
 
     // The recorder's first samples (5 s listens) show up as one source device:
     // the device receives its own TX, so it is device to device with itself.
@@ -171,6 +183,11 @@ test.describe("latency history", () => {
     await page.reload();
     await expect(page.getByTestId("lat-source").first()).toBeVisible({ timeout: 20_000 });
     await expect(page.getByTestId("lat-chart").locator("canvas")).toBeVisible();
+    // ✕ hides the latency, the device list stays.
+    await page.getByTestId("lat-close").click();
+    await expect(page).toHaveURL(/#devices$/);
+    await expect(page.getByTestId("lat-panel")).toBeHidden();
+    await expect(page.locator(`[data-testid="device"][data-name="${DEVICE}"]`)).toBeVisible();
     expect(console_msgs).toEqual([]);
   });
 
