@@ -252,6 +252,8 @@ struct Threshold {
 struct Chart<'a> {
     t: &'a [i64],
     unit: &'static str,
+    /// The y axis's name.
+    axis: &'static str,
     sources: Vec<ChartSource>,
     thresholds: Vec<Threshold>,
     /// The y axis reaches at least the (smallest) latency.
@@ -305,6 +307,7 @@ pub fn chart_json(h: &History, height: u32) -> String {
     let chart = Chart {
         t: &h.t,
         unit: "ms",
+        axis: "typical peak, ms",
         floor: thresholds.first().map_or(0.0, |t| t.value * 1.05),
         sources,
         thresholds,
@@ -384,6 +387,7 @@ pub fn bridge_chart_json(b: &Bridge, height: u32) -> String {
             ),
         ],
         thresholds: Vec::new(),
+        axis: "path latency, ms",
         floor: 0.0,
         height,
     };
@@ -498,6 +502,7 @@ mod tests {
         assert_eq!(v["sources"][1]["values"][0], 1.834);
         assert_eq!(v["sources"][1]["late"], serde_json::json!([0, 0, 2, 1]));
         assert_eq!(v["thresholds"], serde_json::json!([]));
+        assert_eq!(v["axis"], "path latency, ms");
     }
 
     #[test]

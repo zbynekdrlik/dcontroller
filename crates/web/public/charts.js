@@ -167,7 +167,7 @@
       tzDate: (t) => uPlot.tzDate(new Date(t * 1000), ZONE),
       axes: [
         { ...axis, values: (u, splits, _, __, step) => splits.map((t) => tick(t, step)) },
-        { ...axis, label: "typical peak, ms", labelSize: 14, size: 52, values: (u, v) => v.map((x) => x.toFixed(2)) },
+        { ...axis, label: d.axis || "typical peak, ms", labelSize: 14, size: 52, values: (u, v) => v.map((x) => x.toFixed(2)) },
       ],
       series,
       hooks: { ...zoomHooks(el), draw: [(u) => drawLate(u, el, el._dcData), (u) => drawThresholds(u, el, el._dcData)] },

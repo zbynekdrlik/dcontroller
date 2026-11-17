@@ -45,6 +45,7 @@ test("a bridge device's figures show under its latency; a device without a bridg
   await expect(panel.getByTestId("bridge-late")).toContainText("0.25 ms: 40");
   await expect(panel.getByTestId("bridge-chart").locator("canvas")).toHaveCount(1);
   await expect(panel.getByTestId("bridge-chart").locator(".u-legend")).toContainText("Dante → ASIO");
+  expect(await panel.getByTestId("bridge-chart").evaluate((el) => (el as any)._dcData.axis)).toBe("path latency, ms");
 
   // Another device: no bridge part.
   await page.goto(`/#devices/${PLAIN}`);
