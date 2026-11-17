@@ -79,7 +79,7 @@ jobs:
         working-directory: crates/web
         run: trunk build
       - name: Build server
-        run: cargo build -p dcontroller -p dstack --bin dcontroller --bin dstack-dev --example arc_rename
+        run: cargo build -p dcontroller -p dstack --bin dcontroller --bin dstack-dev --example arc_rename --example bridge_device
       - uses: actions/setup-node@v4
         with:
           node-version: 20

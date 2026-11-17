@@ -61,7 +61,31 @@ const MIGRATIONS: &[&str] = &[
      DELETE FROM device WHERE id IN (SELECT id FROM dup);
      DROP TABLE dup;
      CREATE UNIQUE INDEX device_name_nocase ON device (name COLLATE NOCASE);",
+    // 4: a bridge device's own figures (dcontroller #108), one row per
+    // stored read, kept as long as the minutes.
+    "CREATE TABLE bridge (device INTEGER NOT NULL, t INTEGER NOT NULL, latency_us INTEGER NOT NULL,
+         to_target_us INTEGER NOT NULL, from_target_us INTEGER NOT NULL,
+         to_delay_us INTEGER NOT NULL, from_delay_us INTEGER NOT NULL,
+         to_underruns INTEGER NOT NULL, from_underruns INTEGER NOT NULL,
+         to_cause TEXT NOT NULL, from_cause TEXT NOT NULL, late_callbacks INTEGER NOT NULL,
+         late_bins TEXT NOT NULL, run_start_ms INTEGER NOT NULL,
+         PRIMARY KEY (device, t)) WITHOUT ROWID;
+     CREATE INDEX bridge_t ON bridge (t);",
 ];
+
+/// Every k-th of `rows` so at most `max` are left, the newest always kept.
+fn thin<T>(rows: Vec<T>, max: usize) -> Vec<T> {
+    let n = rows.len();
+    if n <= max || max == 0 {
+        return rows;
+    }
+    let k = n.div_ceil(max);
+    rows.into_iter()
+        .enumerate()
+        .filter(|(i, _)| (n - 1 - i).is_multiple_of(k))
+        .map(|(_, r)| r)
+        .collect()
+}
 
 /// `t` rounded up to a whole `unit`.
 fn ceil(t: i64, unit: i64) -> i64 {
@@ -248,6 +272,93 @@ impl Store {
         tx.commit().map_err(|e| e.to_string())
     }
 
+    /// Stores one read of a bridge device's figures (a second stored twice
+    /// keeps the later read).
+    pub fn add_bridge(&self, device: &str, p: &api::BridgePoint) -> Result<(), String> {
+        let db = self.conn();
+        let id = Self::device_id(&db, device).map_err(|e| e.to_string())?;
+        let bins = p
+            .late_bins
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        // SQLite integers are i64; counts past that would be a broken device.
+        let i = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
+        db.execute(
+            "INSERT OR REPLACE INTO bridge (device, t, latency_us, to_target_us, from_target_us,
+                 to_delay_us, from_delay_us, to_underruns, from_underruns, to_cause, from_cause,
+                 late_callbacks, late_bins, run_start_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                id,
+                p.t,
+                p.latency_us,
+                p.to_asio_target_us,
+                p.from_asio_target_us,
+                p.to_asio_converter_delay_us,
+                p.from_asio_converter_delay_us,
+                i(p.to_asio_underruns),
+                i(p.from_asio_underruns),
+                p.to_asio_cause,
+                p.from_asio_cause,
+                i(p.late_callbacks),
+                bins,
+                i(p.run_start_unix_ms),
+            ],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
+    /// `device`'s bridge figures from `from` to `to` (unix seconds), at most
+    /// [`api::HISTORY_POINTS`] of them, evenly thinned, oldest first.
+    pub fn bridge(&self, device: &str, from: i64, to: i64) -> Result<api::Bridge, String> {
+        let db = self.conn();
+        let mut q = db
+            .prepare_cached(
+                "SELECT b.t, b.latency_us, b.to_target_us, b.from_target_us, b.to_delay_us,
+                     b.from_delay_us, b.to_underruns, b.from_underruns, b.to_cause, b.from_cause,
+                     b.late_callbacks, b.late_bins, b.run_start_ms
+                 FROM bridge b JOIN device d ON d.id = b.device
+                 WHERE d.name = ?1 COLLATE NOCASE AND b.t >= ?2 AND b.t <= ?3 ORDER BY b.t",
+            )
+            .map_err(|e| e.to_string())?;
+        let u = |v: i64| u64::try_from(v).unwrap_or(0);
+        let rows: Vec<api::BridgePoint> = q
+            .query_map(params![device, from, to], |r| {
+                let bins: String = r.get(11)?;
+                Ok(api::BridgePoint {
+                    t: r.get(0)?,
+                    latency_us: r.get(1)?,
+                    to_asio_target_us: r.get(2)?,
+                    from_asio_target_us: r.get(3)?,
+                    to_asio_converter_delay_us: r.get(4)?,
+                    from_asio_converter_delay_us: r.get(5)?,
+                    to_asio_underruns: u(r.get(6)?),
+                    from_asio_underruns: u(r.get(7)?),
+                    to_asio_cause: r.get(8)?,
+                    from_asio_cause: r.get(9)?,
+                    late_callbacks: u(r.get(10)?),
+                    late_bins: bins
+                        .split(',')
+                        .filter(|b| !b.is_empty())
+                        .map(|b| b.parse().unwrap_or(0))
+                        .collect(),
+                    run_start_unix_ms: u(r.get(12)?),
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(api::Bridge {
+            device: device.to_owned(),
+            from,
+            to,
+            points: thin(rows, usize::try_from(api::HISTORY_POINTS).unwrap_or(1500)),
+        })
+    }
+
     /// Records `flow` as `device`'s slot `slot` from `now` on, when it
     /// differs from the last one recorded.
     pub fn set_flow(
@@ -340,6 +451,7 @@ impl Store {
             ("second", KEEP_SECONDS),
             ("minute", KEEP_MINUTES),
             ("hour", KEEP_HOURS),
+            ("bridge", KEEP_MINUTES),
         ] {
             db.execute(&format!("DELETE FROM {table} WHERE t < ?1"), [now - keep])
                 .map_err(|e| format!("prune {table}: {e}"))?;
@@ -643,6 +755,56 @@ impl Store {
         }
         out.flows = flows;
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod bridge_tests {
+    use super::*;
+
+    fn point(t: i64, under: u64) -> api::BridgePoint {
+        api::BridgePoint {
+            t,
+            latency_us: 1000,
+            to_asio_target_us: 1000,
+            from_asio_target_us: 1667,
+            to_asio_converter_delay_us: 167,
+            from_asio_converter_delay_us: 167,
+            to_asio_underruns: under,
+            from_asio_underruns: 0,
+            to_asio_cause: "driver".into(),
+            from_asio_cause: "none".into(),
+            late_callbacks: 3,
+            late_bins: vec![5, 4, 3, 2, 1, 0, 0, 1],
+            run_start_unix_ms: 1_700_000_000_000,
+        }
+    }
+
+    #[test]
+    fn bridge_reads_come_back_as_stored_in_their_range_case_aside() {
+        let st = Store::memory().unwrap();
+        st.add_bridge("dsg", &point(100, 0)).unwrap();
+        st.add_bridge("dsg", &point(110, 2)).unwrap();
+        st.add_bridge("other", &point(110, 9)).unwrap();
+        let b = st.bridge("DSG", 0, 105).unwrap();
+        assert_eq!(b.points, vec![point(100, 0)]);
+        let b = st.bridge("dsg", 0, 200).unwrap();
+        assert_eq!(b.points, vec![point(100, 0), point(110, 2)]);
+        assert!(st.bridge("nobody", 0, 200).unwrap().points.is_empty());
+        // Pruned with the minutes.
+        st.rollup(110 + KEEP_MINUTES + 1, 60).unwrap();
+        assert!(st.bridge("dsg", 0, i64::MAX).unwrap().points.is_empty());
+    }
+
+    #[test]
+    fn a_long_range_is_thinned_keeping_the_newest() {
+        let rows: Vec<i64> = (0..10).collect();
+        assert_eq!(thin(rows.clone(), 4), vec![0, 3, 6, 9]);
+        assert_eq!(thin(rows.clone(), 10), rows);
+        assert_eq!(
+            *thin((0..3001).collect::<Vec<i64>>(), 1500).last().unwrap(),
+            3000
+        );
     }
 }
 

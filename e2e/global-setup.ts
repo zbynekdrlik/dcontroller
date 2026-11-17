@@ -55,10 +55,50 @@ export default async function globalSetup() {
     await new Promise((r) => setTimeout(r, 250));
   }
   child.removeAllListeners("exit");
+  const bridge = await startBridge();
   return async () => {
-    const exited = new Promise<number | null>((res) => child.once("exit", res));
-    child.kill("SIGTERM");
-    const code = await exited;
-    if (code !== 0) throw new Error(`dstack-dev stopped with ${code}`);
+    for (const [c, what] of [
+      [child, "dstack-dev"],
+      [bridge, "bridge_device"],
+    ] as const) {
+      const exited = new Promise<number | null>((res) => c.once("exit", res));
+      c.kill("SIGTERM");
+      const code = await exited;
+      if (code !== 0) throw new Error(`${what} stopped with ${code}`);
+    }
   };
 }
+
+// The bridge test device (#108): a real dstack device holding bridge
+// figures (crates/server/examples/bridge_device.rs), on the namespace's
+// second address (isolated.sh), up once it says it serves.
+async function startBridge(): Promise<ChildProcess> {
+  const bin = resolve(root, "target/debug/examples/bridge_device");
+  const config = resolve(run, "bridge-device.toml");
+  writeFileSync(
+    config,
+    readFileSync(resolve(__dirname, "fixtures/bridge-device.toml"), "utf8") +
+      `state_file = "${resolve(run, "bridge-state.toml")}"\n`,
+  );
+  rmSync(resolve(run, "bridge-state.toml"), { force: true });
+  const child = spawn(bin, [config, BRIDGE_IP, resolve(run, "bridge-control.sock")], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  child.stderr?.on("data", (c: Buffer) => process.stderr.write(c));
+  await new Promise<void>((ok, fail) => {
+    const timer = setTimeout(() => fail(new Error("bridge_device did not come up in 20 s")), 20_000);
+    child.stdout?.on("data", (c: Buffer) => {
+      process.stdout.write(c);
+      if (c.toString().includes("bridge_device: serving")) {
+        clearTimeout(timer);
+        ok();
+      }
+    });
+    child.once("error", fail);
+    child.once("exit", (code) => fail(new Error(`bridge_device exited with ${code}`)));
+  });
+  child.removeAllListeners("exit");
+  return child;
+}
+
+export const BRIDGE_IP = "10.199.0.2";

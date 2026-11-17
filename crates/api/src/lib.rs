@@ -342,6 +342,56 @@ pub struct ChannelLevel {
     pub muted: bool,
 }
 
+/// `GET /api/bridge/{device}?from=&to=`: a dasio bridge device's own
+/// figures over a time range (dcontroller #108, read with dstack #391's
+/// info request), at most [`HISTORY_POINTS`] points, oldest first. Empty
+/// for a device that never answered.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bridge {
+    pub device: String,
+    pub from: i64,
+    pub to: i64,
+    pub points: Vec<BridgePoint>,
+}
+
+/// One stored read of a bridge device's figures. Targets and converter
+/// delays in µs (0: no driver open yet); underruns since the device's
+/// start; late callbacks and the lateness bins this driver run.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BridgePoint {
+    /// Unix seconds.
+    pub t: i64,
+    /// The device's own Dante latency (P) then, µs; 0 when not known.
+    pub latency_us: u32,
+    pub to_asio_target_us: u32,
+    pub from_asio_target_us: u32,
+    pub to_asio_converter_delay_us: u32,
+    pub from_asio_converter_delay_us: u32,
+    pub to_asio_underruns: u64,
+    pub from_asio_underruns: u64,
+    /// The latest underrun's cause per side: none, bridge, driver, unknown.
+    pub to_asio_cause: String,
+    pub from_asio_cause: String,
+    pub late_callbacks: u64,
+    /// Driver callbacks per 0.25 ms lateness bin (250 µs .. 2000 µs, the top one open).
+    pub late_bins: Vec<u64>,
+    /// When the device's figures started (ms since 1970): a change is a restart.
+    pub run_start_unix_ms: u64,
+}
+
+impl BridgePoint {
+    /// Dante to ASIO: the device's latency, the to-ASIO target and the
+    /// to-ASIO converter delay, µs.
+    pub fn dante_to_asio_us(&self) -> u32 {
+        self.latency_us + self.to_asio_target_us + self.to_asio_converter_delay_us
+    }
+
+    /// ASIO to Dante: the from-ASIO target and converter delay, µs.
+    pub fn asio_to_dante_us(&self) -> u32 {
+        self.from_asio_target_us + self.from_asio_converter_delay_us
+    }
+}
+
 /// `GET /api/history/{device}?from=&to=`: a receiver's packet latency per
 /// RX flow over a time range, from the server's recorder, bucketed to at
 /// most [`HISTORY_POINTS`] points.
@@ -459,6 +509,20 @@ impl RxChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bridge_path_totals_add_their_parts() {
+        let p = BridgePoint {
+            latency_us: 1000,
+            to_asio_target_us: 1000,
+            to_asio_converter_delay_us: 167,
+            from_asio_target_us: 1667,
+            from_asio_converter_delay_us: 167,
+            ..BridgePoint::default()
+        };
+        assert_eq!(p.dante_to_asio_us(), 2167);
+        assert_eq!(p.asio_to_dante_us(), 1834);
+    }
 
     #[test]
     fn devices_round_trip_through_json() {
