@@ -82,21 +82,6 @@ pub fn same_name(a: &str, b: &str) -> bool {
 /// The range a page opens with.
 pub const DEFAULT_RANGE: i64 = 3600;
 
-/// The colour of a source device that is not in the recorded order.
-const UNKNOWN_COLOR: &str = "#8b97ad";
-
-/// A source device's line colour, the same on every receiver's chart: its
-/// place in `order` (first seen first, [`History::source_order`]) steps round
-/// the hue circle by the golden angle, so any few devices stay far apart.
-/// Several sources in one label take the first one's.
-pub fn color_of(order: &[String], source: &str) -> String {
-    let first = source.split(", ").next().unwrap_or(source);
-    match order.iter().position(|o| o.eq_ignore_ascii_case(first)) {
-        Some(i) => format!("hsl({:.0}, 75%, 66%)", (215.0 + i as f64 * 137.508) % 360.0),
-        None => UNKNOWN_COLOR.to_owned(),
-    }
-}
-
 /// What a flow comes from: its source devices, or `?` when not known.
 fn source_of(f: &FlowHistory) -> String {
     if f.sources.is_empty() {
@@ -233,14 +218,15 @@ pub fn over_text(over: u64, tier_s: i64) -> String {
     format!("{over} {unit}")
 }
 
-/// How the chart's y axis reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Scale {
-    /// Each flow's peak as a share of its own latency (100 % = at it): flows
-    /// of different latencies on one axis.
-    Share,
-    /// The peaks in ms, with a line per distinct latency.
-    Ms,
+/// The colours of the sources on one chart, by their place on it: far apart
+/// on a dark background, and none of them the latency lines' red.
+pub const CHART_COLORS: [&str; 8] = [
+    "#4ade80", "#60a5fa", "#f472b6", "#facc15", "#a78bfa", "#22d3ee", "#fb923c", "#e5e7eb",
+];
+
+/// The colour of the `i`th source on a chart (the table's order, by name).
+pub fn chart_color(i: usize) -> &'static str {
+    CHART_COLORS[i % CHART_COLORS.len()]
 }
 
 #[derive(Serialize)]
@@ -273,53 +259,52 @@ struct Chart<'a> {
     height: u32,
 }
 
-/// The chart's data for `dcChart.latency`: per source device its typical
-/// peak per bucket (the margin) and its late packets (the damage, drawn as
-/// marks on the same chart), and the latency line(s). `Share` leaves out the margin of a source whose
-/// latency is not known.
-pub fn chart_json(h: &History, height: u32, scale: Scale) -> String {
+/// The chart's data for `dcChart.latency`, in ms: per source device its
+/// typical peak per bucket (the margin) and its late packets (the damage,
+/// drawn as marks on the same chart), and a dashed line per distinct flow
+/// latency, labelled with the sources whose flows run at it.
+pub fn chart_json(h: &History, height: u32) -> String {
     let groups = by_source(h);
     let sources: Vec<ChartSource> = groups
         .iter()
-        .map(|s| ChartSource {
+        .enumerate()
+        .map(|(i, s)| ChartSource {
             label: s.source.clone(),
-            color: color_of(&h.source_order, &s.source),
-            values: match scale {
-                Scale::Ms => s
-                    .typical_us
-                    .iter()
-                    .map(|v| v.map(|us| f64::from(us) / 1000.0))
-                    .collect(),
-                Scale::Share => s.typical.clone(),
-            },
+            color: chart_color(i).to_owned(),
+            values: s
+                .typical_us
+                .iter()
+                .map(|v| v.map(|us| f64::from(us) / 1000.0))
+                .collect(),
             late: s.late.clone(),
         })
         .collect();
     let mut lats: Vec<u32> = groups.iter().flat_map(|s| s.latencies.clone()).collect();
     lats.sort_unstable();
     lats.dedup();
-    let thresholds: Vec<Threshold> = match scale {
-        Scale::Ms => lats
-            .iter()
-            .map(|&us| Threshold {
-                label: format!("latency {}", ms(us)),
+    let thresholds: Vec<Threshold> = lats
+        .iter()
+        .map(|&us| {
+            let at: Vec<&str> = groups
+                .iter()
+                .filter(|s| s.latencies.contains(&us))
+                .map(|s| s.source.as_str())
+                .collect();
+            let who = if lats.len() == 1 {
+                "all sources".to_owned()
+            } else {
+                at.join(", ")
+            };
+            Threshold {
+                label: format!("latency {} · {who}", ms(us)),
                 color: "#f87171",
                 value: f64::from(us) / 1000.0,
-            })
-            .collect(),
-        Scale::Share if lats.is_empty() => Vec::new(),
-        Scale::Share => vec![Threshold {
-            label: "latency".into(),
-            color: "#f87171",
-            value: 100.0,
-        }],
-    };
+            }
+        })
+        .collect();
     let chart = Chart {
         t: &h.t,
-        unit: match scale {
-            Scale::Ms => "ms",
-            Scale::Share => "%",
-        },
+        unit: "ms",
         floor: thresholds.first().map_or(0.0, |t| t.value * 1.05),
         sources,
         thresholds,
@@ -396,41 +381,30 @@ mod tests {
     }
 
     #[test]
-    fn a_source_device_has_one_colour_on_every_receivers_chart() {
-        let order: Vec<String> = ["desk", "band", "aux"].map(String::from).to_vec();
-        let chart = |sources: &[&str]| {
-            let h = History {
-                t: vec![10],
-                flows: sources
-                    .iter()
-                    .enumerate()
-                    .map(|(i, s)| from(s, i as u16 + 1, 1000, vec![Some(1)], vec![0]))
-                    .collect(),
-                source_order: order.clone(),
-                ..History::default()
-            };
-            let v: serde_json::Value =
-                serde_json::from_str(&chart_json(&h, 300, Scale::Ms)).unwrap();
-            v["sources"]
-                .as_array()
-                .unwrap()
+    fn the_sources_on_one_chart_get_different_colours_none_red() {
+        let names = ["a", "b", "c", "d", "e", "f", "g", "h"];
+        let h = History {
+            t: vec![10],
+            flows: names
                 .iter()
-                .map(|s| {
-                    (
-                        s["label"].as_str().unwrap().to_owned(),
-                        s["color"].as_str().unwrap().to_owned(),
-                    )
-                })
-                .collect::<std::collections::HashMap<_, _>>()
+                .enumerate()
+                .map(|(i, s)| from(s, i as u16 + 1, 1000, vec![Some(1)], vec![0]))
+                .collect(),
+            ..History::default()
         };
-        let both = chart(&["band", "desk"]);
-        let alone = chart(&["band"]);
-        // Sorted first here, so its place in this chart's own list moves "band".
-        let other = chart(&["aux", "band"]);
-        assert_eq!(both["band"], alone["band"]);
-        assert_eq!(both["band"], other["band"]);
-        assert_ne!(both["band"], both["desk"]);
-        assert_ne!(other["band"], other["aux"]);
+        let v: serde_json::Value = serde_json::from_str(&chart_json(&h, 300)).unwrap();
+        let colors: Vec<&str> = v["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["color"].as_str().unwrap())
+            .collect();
+        let mut distinct = colors.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), 8);
+        assert!(!colors.contains(&"#f87171"));
+        assert_eq!(colors[0], chart_color(0));
     }
 
     #[test]
@@ -496,13 +470,12 @@ mod tests {
             ],
             ..History::default()
         };
-        let v: serde_json::Value = serde_json::from_str(&chart_json(&h, 300, Scale::Ms)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&chart_json(&h, 300)).unwrap();
         assert_eq!(v["t"], serde_json::json!([10, 20, 30]));
         assert_eq!(v["unit"], "ms");
         assert_eq!(v["sources"].as_array().unwrap().len(), 2);
         assert_eq!(v["sources"][0]["label"], "desk");
-        // Not in the recorded order: the plain colour, not another device's.
-        assert_eq!(v["sources"][0]["color"], UNKNOWN_COLOR);
+        assert_eq!(v["sources"][0]["color"], chart_color(0));
         assert_eq!(
             v["sources"][0]["values"],
             // The line is the typical second (the mean), not the worst one.
@@ -510,27 +483,28 @@ mod tests {
         );
         assert_eq!(v["sources"][0]["late"], serde_json::json!([0, 1, 2]));
         assert_eq!(v["sources"][1]["label"], "tascam");
-        assert_eq!(v["thresholds"].as_array().unwrap().len(), 2);
-        assert_eq!(v["thresholds"][0]["value"], 0.25);
-        assert_eq!(v["thresholds"][1]["label"], "latency 1.00 ms");
+        assert_eq!(v["sources"][1]["color"], chart_color(1));
+        // A line per latency, named with the sources whose flows run at it.
+        assert_eq!(
+            v["thresholds"],
+            serde_json::json!([
+                {"label": "latency 0.25 ms · tascam", "color": "#f87171", "value": 0.25},
+                {"label": "latency 1.00 ms · desk", "color": "#f87171", "value": 1.0}
+            ])
+        );
+        assert_eq!(v["floor"], 0.2625);
         assert_eq!(v["height"], 300);
-        // As a share of each flow's own latency: one 100 % line for all.
-        let p: serde_json::Value =
-            serde_json::from_str(&chart_json(&h, 300, Scale::Share)).unwrap();
-        assert_eq!(p["unit"], "%");
-        assert_eq!(
-            p["sources"][0]["values"],
-            serde_json::json!([5.0, 3.0, 15.0])
-        );
-        assert_eq!(
-            p["sources"][1]["values"],
-            serde_json::json!([null, null, 2.0])
-        );
-        assert_eq!(
-            p["thresholds"],
-            serde_json::json!([{"label": "latency", "color": "#f87171", "value": 100.0}])
-        );
-        assert_eq!(p["floor"], 105.0);
+        // One latency: one line for all.
+        let one = History {
+            t: vec![10],
+            flows: vec![
+                flow(1, 5000, vec![Some(100)], vec![0]),
+                from("tascam", 2, 5000, vec![Some(10)], vec![0]),
+            ],
+            ..History::default()
+        };
+        let o: serde_json::Value = serde_json::from_str(&chart_json(&one, 300)).unwrap();
+        assert_eq!(o["thresholds"][0]["label"], "latency 5.00 ms · all sources");
     }
 
     #[test]
