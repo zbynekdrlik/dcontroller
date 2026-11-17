@@ -108,8 +108,31 @@
     ctx.restore();
   }
 
+  // Each dashed latency line says on the chart what it is: its value and
+  // the sources whose flows run at it (the legend alone did not, #105).
+  function drawThresholds(u, el, d) {
+    const { left, top, width } = u.bbox;
+    const px = uPlot.pxRatio;
+    const ctx = u.ctx;
+    ctx.save();
+    ctx.setLineDash([]);
+    ctx.font = `600 ${11 * px}px system-ui, sans-serif`;
+    ctx.textAlign = "right";
+    ctx.textBaseline = "bottom";
+    let drawn = 0;
+    for (const th of d.thresholds) {
+      const y = Math.round(u.valToPos(th.value, "y", true));
+      if (y < top) continue;
+      ctx.fillStyle = th.color;
+      ctx.fillText(th.label, left + width - 4 * px, y - 3 * px);
+      drawn++;
+    }
+    el.dataset.thresholdLabels = String(drawn);
+    ctx.restore();
+  }
+
   function build(el, d, width) {
-    const fmt = (v) => (v == null ? "–" : d.unit === "%" ? `${v.toFixed(0)} %` : `${v.toFixed(2)} ms`);
+    const fmt = (v) => (v == null ? "–" : `${v.toFixed(2)} ms`);
     const axis = axisStyle();
     const series = [{ value: (_, t) => (t == null ? "–" : `${when(fmtDate, t)} ${when(fmtSeconds, t)}`) }];
     for (const s of d.sources) {
@@ -135,18 +158,19 @@
     const opts = {
       width,
       height: d.height || 280,
-      cursor: { drag: { x: true, y: false, setScale: false }, points: { size: 6 } },
+      // Near a line (or over its legend entry) that line stands out, the rest dim.
+      cursor: { drag: { x: true, y: false, setScale: false }, points: { size: 6 }, focus: { prox: 16 } },
+      focus: { alpha: 0.25 },
       select: { show: true },
       legend: { live: true },
       scales: { x: { time: true }, y: { auto: true, range: (u, lo, hi) => [0, Math.max(hi * 1.1, d.floor || 0.1)] } },
       tzDate: (t) => uPlot.tzDate(new Date(t * 1000), ZONE),
       axes: [
         { ...axis, values: (u, splits, _, __, step) => splits.map((t) => tick(t, step)) },
-        { ...axis, label: d.unit === "%" ? "typical peak, % of latency" : "typical peak, ms", labelSize: 14, size: 52,
-          values: (u, v) => v.map((x) => (d.unit === "%" ? x.toFixed(0) : x.toFixed(2))) },
+        { ...axis, label: "typical peak, ms", labelSize: 14, size: 52, values: (u, v) => v.map((x) => x.toFixed(2)) },
       ],
       series,
-      hooks: { ...zoomHooks(el), draw: [(u) => drawLate(u, el, el._dcData)] },
+      hooks: { ...zoomHooks(el), draw: [(u) => drawLate(u, el, el._dcData), (u) => drawThresholds(u, el, el._dcData)] },
     };
     return new uPlot(opts, chartData(d), el);
   }

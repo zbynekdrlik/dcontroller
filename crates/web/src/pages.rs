@@ -30,7 +30,6 @@ pub struct Hist {
     pub zoom: RwSignal<Option<(i64, i64)>>,
     pub data: RwSignal<Option<Result<History, String>>>,
     pub overview: RwSignal<Option<Result<Overview, String>>>,
-    pub scale: RwSignal<hist::Scale>,
     pub reads: StoredValue<hist::HistReads>,
 }
 
@@ -316,7 +315,6 @@ pub fn LatencyPage() -> impl IntoView {
     // Draw on every new read; wire the zoom events once.
     Effect::new(move |_| {
         let data = h.data.get();
-        let scale = h.scale.get();
         let Some(el) = chart_ref.get() else {
             return;
         };
@@ -344,7 +342,7 @@ pub fn LatencyPage() -> impl IntoView {
             on_unzoom.forget();
         }
         if let Some(Ok(hd)) = data.filter(|d| d.as_ref().is_ok_and(|x| !x.flows.is_empty())) {
-            chart_latency(el.unchecked_ref(), &hist::chart_json(&hd, 320, scale));
+            chart_latency(el.unchecked_ref(), &hist::chart_json(&hd, 320));
         }
     });
     let receivers = move || {
@@ -417,18 +415,8 @@ pub fn LatencyPage() -> impl IntoView {
         });
         let live = (h.zoom.get().is_none() && h.range.get() <= 24 * 3600)
             .then(|| view! { <span class="live" data-testid="lat-live">"live"</span> });
-        let scale_btn = |s: hist::Scale, label: &'static str, id: &'static str| {
-            view! {
-                <button data-testid=id class=move || if h.scale.get() == s { "seg on" } else { "seg" }
-                    on:click=move |_| h.scale.set(s)>{label}</button>
-            }
-        };
         view! {
             <div class="seg-group">{ranges}</div>
-            <div class="seg-group">
-                {scale_btn(hist::Scale::Share, "% of latency", "lat-scale-share")}
-                {scale_btn(hist::Scale::Ms, "ms", "lat-scale-ms")}
-            </div>
             {zoom}
             {live}
         }
@@ -466,7 +454,7 @@ pub fn LatencyPage() -> impl IntoView {
                     <table class="grid" data-testid="lat-sources">
                         <thead><tr><th></th><th>"From"</th><th>"Late (not played)"</th><th>"Worst peak"</th><th>"Latency"</th><th>"Past latency"</th><th>"Distribution"</th></tr></thead>
                         <tbody>
-                            {groups.iter().map(|s| source_row(hist::color_of(&hd.source_order, &s.source), s, tier)).collect_view()}
+                            {groups.iter().enumerate().map(|(i, s)| source_row(hist::chart_color(i).to_owned(), s, tier)).collect_view()}
                         </tbody>
                     </table>
                     </div>
@@ -499,15 +487,7 @@ fn source_row(color: String, s: &hist::SourceHistory, tier_s: i64) -> impl IntoV
     } else {
         format!("{} flows", s.slots.len())
     };
-    let peak = if s.peak_latency_us > 0 {
-        format!(
-            "{} ({} %)",
-            hist::ms(s.peak_us),
-            u64::from(s.peak_us) * 100 / u64::from(s.peak_latency_us)
-        )
-    } else {
-        hist::ms(s.peak_us)
-    };
+    let peak = hist::ms(s.peak_us);
     let latency = if s.latencies.is_empty() {
         "–".to_owned()
     } else {

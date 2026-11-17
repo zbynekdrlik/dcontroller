@@ -121,7 +121,7 @@ test.describe("latency history", () => {
     expect(h.flows[0].latency_us).toBe(10000);
     expect(h.flows[0].channels).toEqual(["Stage L"]);
     expect(h.flows[0].max_us.some((v: number | null) => v !== null)).toBe(true);
-    await expect(src.getByTestId("lat-source-peak")).toHaveText(/^\d+\.\d\d ms \(\d+ %\)$/);
+    await expect(src.getByTestId("lat-source-peak")).toHaveText(/^\d+\.\d\d ms$/);
     const late = h.flows[0].late_total;
     await expect(src.getByTestId("lat-source-late")).toHaveText(String(late));
     await expect(page.getByTestId("lat-verdict")).toContainText(late === 0 ? "No late packets" : `${late} late packets`);
@@ -129,24 +129,21 @@ test.describe("latency history", () => {
     // One chart: uPlot draws it and names the source device and its latency in the legend.
     const margin = page.getByTestId("lat-chart");
     await expect(margin.locator("canvas")).toHaveCount(1);
-    // The source's colour comes from the server's recorded order, the same in the chart and the table.
+    // The source's colour is its place on this chart, the same in the chart and the table.
     const color = await margin.evaluate((el) => (el as any)._dcData.sources[0].color);
-    expect(color).toMatch(/^hsl\(/);
+    expect(color).toBe("#4ade80");
     await expect(src.locator(".dot")).toHaveAttribute("data-color", color);
     await expect(margin.locator("canvas")).toBeVisible();
     await expect(margin.locator(".u-legend")).toContainText(DEVICE);
     await expect(margin.locator(".u-legend")).not.toContainText("Flow 1");
     // No late packets, no late marks.
     if (late === 0) await expect(margin).toHaveAttribute("data-late-marks", "0");
-    // The default scale is each flow's share of its own latency: one 100 % line.
-    await expect(page.getByTestId("lat-scale-share")).toHaveClass(/\bon\b/);
-    await expect(margin.locator(".u-legend")).toContainText("latency");
-    await expect(margin.locator(".u-legend")).not.toContainText("latency 10.00 ms");
-    // In ms, the latency line is named with its value.
-    await page.getByTestId("lat-scale-ms").click();
-    await expect(page.getByTestId("lat-scale-ms")).toHaveClass(/\bon\b/);
-    await expect(margin.locator(".u-legend")).toContainText("latency 10.00 ms");
-    await page.getByTestId("lat-scale-share").click();
+    // Only ms (#105): no "% of latency"; the latency line is labelled on the chart itself.
+    await expect(page.getByTestId("lat-scale-share")).toHaveCount(0);
+    await expect(page.getByTestId("lat-scale-ms")).toHaveCount(0);
+    await expect(margin.locator(".u-legend")).toContainText("latency 10.00 ms · all sources");
+    await expect(margin).toHaveAttribute("data-threshold-labels", "1");
+    await expect(page.getByText("% of latency")).toHaveCount(0);
 
     // Ranges: 5 min reads seconds, 6 h reads minutes.
     await page.locator('[data-testid="lat-range"][data-range="300"]').click();

@@ -75,7 +75,6 @@ fn App() -> impl IntoView {
         zoom: RwSignal::new(None),
         data: RwSignal::new(None),
         overview: RwSignal::new(None),
-        scale: RwSignal::new(hist::Scale::Share),
         reads: StoredValue::new(hist::HistReads::default()),
     };
     provide_context(hst);
