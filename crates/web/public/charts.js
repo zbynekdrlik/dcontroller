@@ -7,9 +7,10 @@
 //
 // One series per source device: the typical peak against the latency. A
 // bucket with late packets (they came after their flow's latency and were
-// not played) is a vertical line at that time, in the colour of the source
-// with the most of them, with the count at its top. The legend gives each
-// source's level and late packets under the cursor.
+// not played) is a red bar in a band at the bottom of the plot, its height
+// by its count against the range's most (#120: full-height lines in the
+// lines' colours made a wall of them). The legend gives each source's
+// level and late packets under the cursor.
 "use strict";
 (() => {
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -76,34 +77,45 @@
     return marks;
   }
 
+  // The late band: the bottom fifth of the plot.
+  const BAND = 0.2;
+
   function drawLate(u, el, d) {
     const marks = lateMarks(u, d);
     el.dataset.lateMarks = String(marks.length);
     const { left, top, width, height } = u.bbox;
     const px = uPlot.pxRatio;
     const ctx = u.ctx;
+    const most = marks.reduce((m, k) => Math.max(m, k.total), 0);
+    el.dataset.lateMost = String(most);
+    if (!most) return;
+    const band = height * BAND;
+    const bottom = top + height;
+    const red = css("--bad") || "#f87171";
     ctx.save();
-    ctx.lineWidth = 1.5 * px;
-    ctx.font = `600 ${11 * px}px system-ui, sans-serif`;
-    // uPlot leaves the last series' dash and the axes' alignment on the context.
     ctx.setLineDash([]);
+    // The band's floor and its name, so the bars read as a count, not a level.
+    ctx.globalAlpha = 0.35;
+    ctx.strokeStyle = red;
+    ctx.lineWidth = 1 * px;
+    ctx.beginPath();
+    ctx.moveTo(left, bottom - band);
+    ctx.lineTo(left + width, bottom - band);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = red;
+    ctx.font = `600 ${11 * px}px system-ui, sans-serif`;
     ctx.textAlign = "left";
-    ctx.textBaseline = "top";
-    let lastLabel = -Infinity;
+    ctx.textBaseline = "bottom";
+    ctx.fillText(`${d.lateName || "late packets"}, most ${most}`, left + 4 * px, bottom - band - 2 * px);
+    // One bar per bucket, at least 2 px wide, at most the bucket's width.
+    const step = d.t.length > 1 ? Math.abs(u.valToPos(d.t[1], "x", true) - u.valToPos(d.t[0], "x", true)) : 4 * px;
+    const w = Math.max(2 * px, Math.min(step * 0.8, 8 * px));
     for (const m of marks) {
-      const x = Math.round(u.valToPos(m.t, "x", true));
+      const x = u.valToPos(m.t, "x", true);
       if (x < left || x > left + width) continue;
-      ctx.strokeStyle = m.color;
-      ctx.beginPath();
-      ctx.moveTo(x, top);
-      ctx.lineTo(x, top + height);
-      ctx.stroke();
-      // Close marks share the first one's label room.
-      if (x - lastLabel >= 32 * px) {
-        ctx.fillStyle = m.color;
-        ctx.fillText(String(m.total), x + 3 * px, top + 2 * px);
-        lastLabel = x;
-      }
+      const h = Math.max(2 * px, band * Math.sqrt(m.total / most));
+      ctx.fillRect(Math.round(x - w / 2), Math.round(bottom - h), Math.round(w), Math.round(h));
     }
     ctx.restore();
   }

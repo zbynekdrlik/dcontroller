@@ -79,6 +79,21 @@ test.describe("latency history", () => {
     await expect(box.locator("canvas")).toHaveCount(1);
     // Two buckets have late packets, whichever source they came from.
     await expect(box).toHaveAttribute("data-late-marks", "2");
+    // Late packets are red bars in a band at the bottom of the plot (#120),
+    // never a full-height line: red at the bar's foot, none above the band.
+    await expect(box).toHaveAttribute("data-late-most", "4");
+    const px = await page.evaluate(() => {
+      const u = (document.getElementById("late-test") as any)._dc;
+      const x = Math.round(u.valToPos(1060, "x", true));
+      const { top, height } = u.bbox;
+      // One read of the plot's column (several reads warn in Chrome).
+      const col = u.ctx.getImageData(x, Math.round(top), 1, Math.round(height)).data;
+      const at = (y: number) => Array.from(col.slice(Math.round(y) * 4, Math.round(y) * 4 + 4)) as number[];
+      return { foot: at(height - 2), above: at(height * 0.3) };
+    });
+    const isRed = (c: number[]) => c[0] > 180 && c[1] < 150 && c[2] < 150;
+    expect(isRed(px.foot)).toBe(true);
+    expect(isRed(px.above)).toBe(false);
     // The legend names a source's late packets under the cursor.
     await page.evaluate(() => {
       const u = (document.getElementById("late-test") as any)._dc;
@@ -161,6 +176,10 @@ test.describe("latency history", () => {
     await page.locator('[data-testid="lat-range"][data-range="300"]').click();
     await expect(page.locator('[data-testid="lat-range"][data-range="300"]')).toHaveClass(/\bon\b/);
     await expect(page.getByTestId("lat-head")).toContainText("one point per 1 s");
+    // 3 h: the owner's proof window (#120).
+    await page.locator('[data-testid="lat-range"][data-range="10800"]').click();
+    await expect(page.locator('[data-testid="lat-range"][data-range="10800"]')).toHaveClass(/\bon\b/);
+    await expect(page.locator('[data-testid="lat-range"][data-range="10800"]')).toHaveText("3 h");
     await page.locator('[data-testid="lat-range"][data-range="21600"]').click();
     await expect(page.getByTestId("lat-head")).toContainText("one point per 1 min");
     await page.locator('[data-testid="lat-range"][data-range="300"]').click();
