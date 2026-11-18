@@ -265,9 +265,11 @@ impl State {
     }
 
     /// The Dante interface's netmask: a device whose ARC address is
-    /// outside its subnet is not listed.
+    /// outside its subnet is not listed. A host-only mask (/32, a networkd
+    /// leg whose subnet route sits in its own table) names no subnet, so it
+    /// filters nothing (#115).
     pub fn set_netmask(&mut self, mask: Ipv4Addr) {
-        self.netmask = Some(mask);
+        self.netmask = (mask != Ipv4Addr::BROADCAST).then_some(mask);
     }
 
     /// Whether `ip` is in the Dante interface's subnet (always, until the
@@ -931,6 +933,10 @@ fn supervise(iface: &str, state: &Shared, stop: &Arc<AtomicBool>, sink: &ChangeS
         info!(interface = %iface, %ip, "dante: discovery started");
         let mut on = State::on(iface.to_owned(), ip);
         match interface_netmask(iface, ip) {
+            Some(mask) if mask == Ipv4Addr::BROADCAST => {
+                info!(interface = %iface, %ip, %mask, "dante: host-only leg address, devices from any subnet listed");
+                on.set_netmask(mask);
+            }
             Some(mask) => {
                 info!(interface = %iface, %ip, %mask, "dante: devices listed from this subnet only");
                 on.set_netmask(mask);
