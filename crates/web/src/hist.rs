@@ -6,9 +6,10 @@ use dcontroller_api::{Bridge, BridgePoint, FlowHistory, History, ReceiverSummary
 use serde::Serialize;
 
 /// The ranges offered: label and seconds.
-pub const RANGES: [(&str, i64); 7] = [
+pub const RANGES: [(&str, i64); 8] = [
     ("5 min", 300),
     ("1 h", 3600),
+    ("3 h", 3 * 3600),
     ("6 h", 6 * 3600),
     ("24 h", 24 * 3600),
     ("7 d", 7 * 24 * 3600),
@@ -254,6 +255,9 @@ struct Chart<'a> {
     unit: &'static str,
     /// The y axis's name.
     axis: &'static str,
+    /// What the red bars at the bottom count (#120).
+    #[serde(rename = "lateName")]
+    late_name: &'static str,
     sources: Vec<ChartSource>,
     thresholds: Vec<Threshold>,
     /// The y axis reaches at least the (smallest) latency.
@@ -308,6 +312,7 @@ pub fn chart_json(h: &History, height: u32) -> String {
         t: &h.t,
         unit: "ms",
         axis: "typical peak, ms",
+        late_name: "late packets",
         floor: thresholds.first().map_or(0.0, |t| t.value * 1.05),
         sources,
         thresholds,
@@ -416,6 +421,7 @@ pub fn bridge_chart_json(b: &Bridge, height: u32) -> String {
             ),
         ],
         thresholds: Vec::new(),
+        late_name: "underruns",
         axis: if card {
             "card to card, ms"
         } else {
@@ -538,6 +544,7 @@ mod tests {
         assert_eq!(v["sources"][1]["late"], serde_json::json!([0, 2, 1, 0]));
         assert_eq!(v["thresholds"], serde_json::json!([]));
         assert_eq!(v["axis"], "path latency, ms");
+        assert_eq!(v["lateName"], "underruns");
     }
 
     #[test]
@@ -589,6 +596,7 @@ mod tests {
             ..History::default()
         };
         let v: serde_json::Value = serde_json::from_str(&chart_json(&h, 300)).unwrap();
+        assert_eq!(v["lateName"], "late packets");
         let colors: Vec<&str> = v["sources"]
             .as_array()
             .unwrap()
