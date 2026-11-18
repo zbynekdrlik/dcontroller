@@ -265,9 +265,11 @@ impl State {
     }
 
     /// The Dante interface's netmask: a device whose ARC address is
-    /// outside its subnet is not listed.
+    /// outside its subnet is not listed. A host-only mask (/32, a networkd
+    /// leg whose subnet route sits in its own table) names no subnet, so it
+    /// filters nothing (#115).
     pub fn set_netmask(&mut self, mask: Ipv4Addr) {
-        self.netmask = Some(mask);
+        self.netmask = (mask != Ipv4Addr::BROADCAST).then_some(mask);
     }
 
     /// Whether `ip` is in the Dante interface's subnet (always, until the
@@ -931,6 +933,10 @@ fn supervise(iface: &str, state: &Shared, stop: &Arc<AtomicBool>, sink: &ChangeS
         info!(interface = %iface, %ip, "dante: discovery started");
         let mut on = State::on(iface.to_owned(), ip);
         match interface_netmask(iface, ip) {
+            Some(mask) if mask == Ipv4Addr::BROADCAST => {
+                info!(interface = %iface, %ip, %mask, "dante: host-only leg address, devices from any subnet listed");
+                on.set_netmask(mask);
+            }
             Some(mask) => {
                 info!(interface = %iface, %ip, %mask, "dante: devices listed from this subnet only");
                 on.set_netmask(mask);
@@ -1120,6 +1126,18 @@ mod tests {
         moved.arc = SocketAddrV4::new(Ipv4Addr::new(10, 0, 1, 7), 4440);
         s.apply(Change::Changed(moved));
         assert!(s.view().devices.is_empty());
+    }
+
+    #[test]
+    fn a_host_only_leg_address_hides_no_device() {
+        // A netplan/networkd leg holds its address as a /32, with the subnet
+        // route in its own table only (dstack two-networks.md): that mask
+        // says nothing about the Dante subnet (#115).
+        let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
+        s.set_netmask(Ipv4Addr::new(255, 255, 255, 255));
+        s.apply(Change::Added(dev("near", 7)));
+        let names: Vec<String> = s.view().devices.into_iter().map(|d| d.name).collect();
+        assert_eq!(names, ["near"]);
     }
 
     #[test]
