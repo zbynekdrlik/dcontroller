@@ -40,6 +40,9 @@ fn main() -> anyhow::Result<()> {
         late_bins: [40, 12, 5, 2, 1, 0, 0, 1],
     });
     let slot = media.bridge_figures().clone();
+    // Its card-to-card time each way and its driver (dcontroller #117).
+    slot.set_path(7300, 7500);
+    slot.set_driver("SoundGrid");
     let stop = Arc::new(AtomicBool::new(false));
     let ticks = Arc::new(AtomicU64::new(0));
     {

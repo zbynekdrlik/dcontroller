@@ -71,6 +71,11 @@ const MIGRATIONS: &[&str] = &[
          late_bins TEXT NOT NULL, run_start_ms INTEGER NOT NULL,
          PRIMARY KEY (device, t)) WITHOUT ROWID;
      CREATE INDEX bridge_t ON bridge (t);",
+    // 5: a bridge's card-to-card time each way and its driver's name
+    // (dcontroller #117); NULL while the device does not say.
+    "ALTER TABLE bridge ADD COLUMN card_to_dante_us INTEGER;
+     ALTER TABLE bridge ADD COLUMN card_to_asio_us INTEGER;
+     ALTER TABLE bridge ADD COLUMN driver TEXT;",
 ];
 
 /// Every k-th of `rows` so at most `max` are left, the newest always kept.
@@ -288,8 +293,8 @@ impl Store {
         db.execute(
             "INSERT OR REPLACE INTO bridge (device, t, latency_us, to_target_us, from_target_us,
                  to_delay_us, from_delay_us, to_underruns, from_underruns, to_cause, from_cause,
-                 late_callbacks, late_bins, run_start_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                 late_callbacks, late_bins, run_start_ms, card_to_dante_us, card_to_asio_us, driver)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 id,
                 p.t,
@@ -305,6 +310,9 @@ impl Store {
                 i(p.late_callbacks),
                 bins,
                 i(p.run_start_unix_ms),
+                p.card_asio_to_dante_us,
+                p.card_dante_to_asio_us,
+                p.driver,
             ],
         )
         .map(|_| ())
@@ -319,7 +327,8 @@ impl Store {
             .prepare_cached(
                 "SELECT b.t, b.latency_us, b.to_target_us, b.from_target_us, b.to_delay_us,
                      b.from_delay_us, b.to_underruns, b.from_underruns, b.to_cause, b.from_cause,
-                     b.late_callbacks, b.late_bins, b.run_start_ms
+                     b.late_callbacks, b.late_bins, b.run_start_ms, b.card_to_dante_us,
+                     b.card_to_asio_us, b.driver
                  FROM bridge b JOIN device d ON d.id = b.device
                  WHERE d.name = ?1 COLLATE NOCASE AND b.t >= ?2 AND b.t <= ?3 ORDER BY b.t",
             )
@@ -346,6 +355,9 @@ impl Store {
                         .map(|b| b.parse().unwrap_or(0))
                         .collect(),
                     run_start_unix_ms: u(r.get(12)?),
+                    card_asio_to_dante_us: r.get(13)?,
+                    card_dante_to_asio_us: r.get(14)?,
+                    driver: r.get(15)?,
                 })
             })
             .map_err(|e| e.to_string())?
@@ -777,6 +789,9 @@ mod bridge_tests {
             late_callbacks: 3,
             late_bins: vec![5, 4, 3, 2, 1, 0, 0, 1],
             run_start_unix_ms: 1_700_000_000_000,
+            card_asio_to_dante_us: (t % 20 == 0).then_some(7300),
+            card_dante_to_asio_us: (t % 20 == 0).then_some(7500),
+            driver: (t % 20 == 0).then(|| "SoundGrid".to_owned()),
         }
     }
 

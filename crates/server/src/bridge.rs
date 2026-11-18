@@ -63,6 +63,9 @@ pub fn point(f: &BridgeFigures, latency_us: u32, t: i64) -> api::BridgePoint {
         late_callbacks: f.late_callbacks,
         late_bins: f.late_bins.to_vec(),
         run_start_unix_ms: f.run_start_unix_ms,
+        card_asio_to_dante_us: f.asio_to_dante_us,
+        card_dante_to_asio_us: f.dante_to_asio_us,
+        driver: f.driver.clone(),
     }
 }
 
@@ -228,6 +231,9 @@ mod tests {
             from_asio_cause: UnderrunCause::Bridge,
             late_callbacks: 2,
             late_bins: [8, 7, 6, 5, 4, 3, 2, 1],
+            asio_to_dante_us: Some(7300),
+            dante_to_asio_us: Some(7500),
+            driver: Some("SoundGrid".into()),
         }
     }
 
@@ -238,6 +244,8 @@ mod tests {
         assert_eq!(p.latency_us, 1000);
         assert_eq!(p.to_asio_cause, "driver");
         assert_eq!(p.from_asio_cause, "bridge");
+        assert_eq!(p.card_us(), Some((7300, 7500)));
+        assert_eq!(p.asio_name(), "SoundGrid");
         assert_eq!(p.late_bins, vec![8, 7, 6, 5, 4, 3, 2, 1]);
         assert_eq!(p.run_start_unix_ms, 99);
         assert_eq!(p.dante_to_asio_us(), 2167);

@@ -354,40 +354,73 @@ pub fn bridge_now(b: &Bridge) -> Option<BridgeNow> {
     })
 }
 
-/// The bridge chart's data in the latency chart's format: the two path
-/// totals in ms, each side's new underruns as its late marks.
+/// The bridge's two lines (#117): (label, µs) for the ASIO-to-Dante and
+/// the Dante-to-ASIO side, from the device's own card-to-card times when
+/// it gives them, else from its settings (latency, targets, converters).
+pub fn bridge_lines(p: &BridgePoint) -> [(String, u32); 2] {
+    let name = p.asio_name();
+    let (to_dante, to_asio) = p
+        .card_us()
+        .unwrap_or((p.asio_to_dante_us(), p.dante_to_asio_us()));
+    [
+        (format!("{name} → Dante"), to_dante),
+        (format!("Dante → {name}"), to_asio),
+    ]
+}
+
+/// The bridge chart's data in the latency chart's format: the two lines
+/// of [`bridge_lines`] in ms (the card-to-card times once the newest read
+/// has them, a gap where an older one did not), each side's new
+/// underruns as its late marks.
 pub fn bridge_chart_json(b: &Bridge, height: u32) -> String {
     let t: Vec<i64> = b.points.iter().map(|p| p.t).collect();
+    let card = b.points.last().is_some_and(|p| p.card_us().is_some());
+    let labels = b.points.last().map(bridge_lines).map(|l| l.map(|(n, _)| n));
+    let [to_dante, to_asio] =
+        labels.unwrap_or_else(|| ["ASIO → Dante".to_owned(), "Dante → ASIO".to_owned()]);
     let line =
-        |label: &str, color: &str, us: &dyn Fn(&BridgePoint) -> u32, late: Vec<u64>| ChartSource {
-            label: label.to_owned(),
+        |label: String, color: &str, us: &dyn Fn(&BridgePoint) -> Option<u32>, late| ChartSource {
+            label,
             color: color.to_owned(),
             values: b
                 .points
                 .iter()
-                .map(|p| Some(f64::from(us(p)) / 1000.0))
+                .map(|p| us(p).map(|v| f64::from(v) / 1000.0))
                 .collect(),
             late,
         };
+    type Pick = fn(&BridgePoint) -> Option<u32>;
+    let (dante, asio): (Pick, Pick) = if card {
+        (|p| p.card_asio_to_dante_us, |p| p.card_dante_to_asio_us)
+    } else {
+        (
+            |p| Some(p.asio_to_dante_us()),
+            |p| Some(p.dante_to_asio_us()),
+        )
+    };
     let chart = Chart {
         t: &t,
         unit: "ms",
         sources: vec![
             line(
-                "Dante → ASIO",
+                to_dante,
                 chart_color(0),
-                &|p| p.dante_to_asio_us(),
-                growth(&b.points, |p| p.to_asio_underruns),
+                &dante,
+                growth(&b.points, |p| p.from_asio_underruns),
             ),
             line(
-                "ASIO → Dante",
+                to_asio,
                 chart_color(1),
-                &|p| p.asio_to_dante_us(),
-                growth(&b.points, |p| p.from_asio_underruns),
+                &asio,
+                growth(&b.points, |p| p.to_asio_underruns),
             ),
         ],
         thresholds: Vec::new(),
-        axis: "path latency, ms",
+        axis: if card {
+            "card to card, ms"
+        } else {
+            "path latency, ms"
+        },
         floor: 0.0,
         height,
     };
@@ -496,13 +529,51 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&bridge_chart_json(&b, 200)).unwrap();
         assert_eq!(v["unit"], "ms");
         assert_eq!(v["t"], serde_json::json!([10, 20, 30, 40]));
-        assert_eq!(v["sources"][0]["label"], "Dante → ASIO");
-        assert_eq!(v["sources"][0]["values"][0], 2.167);
-        assert_eq!(v["sources"][0]["late"], serde_json::json!([0, 2, 1, 0]));
-        assert_eq!(v["sources"][1]["values"][0], 1.834);
-        assert_eq!(v["sources"][1]["late"], serde_json::json!([0, 0, 2, 1]));
+        // ASIO → Dante first (#117), each line with its own side's underruns.
+        assert_eq!(v["sources"][0]["label"], "ASIO → Dante");
+        assert_eq!(v["sources"][0]["values"][0], 1.834);
+        assert_eq!(v["sources"][0]["late"], serde_json::json!([0, 0, 2, 1]));
+        assert_eq!(v["sources"][1]["label"], "Dante → ASIO");
+        assert_eq!(v["sources"][1]["values"][0], 2.167);
+        assert_eq!(v["sources"][1]["late"], serde_json::json!([0, 2, 1, 0]));
         assert_eq!(v["thresholds"], serde_json::json!([]));
         assert_eq!(v["axis"], "path latency, ms");
+    }
+
+    #[test]
+    fn a_bridge_giving_its_card_to_card_times_shows_them_named_by_its_driver() {
+        let card = |t: i64| BridgePoint {
+            card_asio_to_dante_us: Some(7300),
+            card_dante_to_asio_us: Some(7500),
+            driver: Some("SoundGrid".into()),
+            ..bp(t, 1, 0, 0)
+        };
+        assert_eq!(
+            bridge_lines(&card(10)),
+            [
+                ("SoundGrid → Dante".to_owned(), 7300),
+                ("Dante → SoundGrid".to_owned(), 7500)
+            ]
+        );
+        // Without them: the settings' totals, the ASIO side unnamed.
+        assert_eq!(
+            bridge_lines(&bp(10, 1, 0, 0)),
+            [
+                ("ASIO → Dante".to_owned(), 1834),
+                ("Dante → ASIO".to_owned(), 2167)
+            ]
+        );
+        // An older read without them is a gap on the card-to-card chart.
+        let b = Bridge {
+            points: vec![bp(10, 1, 0, 0), card(20)],
+            ..Bridge::default()
+        };
+        let v: serde_json::Value = serde_json::from_str(&bridge_chart_json(&b, 200)).unwrap();
+        assert_eq!(v["axis"], "card to card, ms");
+        assert_eq!(v["sources"][0]["label"], "SoundGrid → Dante");
+        assert_eq!(v["sources"][0]["values"], serde_json::json!([null, 7.3]));
+        assert_eq!(v["sources"][1]["label"], "Dante → SoundGrid");
+        assert_eq!(v["sources"][1]["values"], serde_json::json!([null, 7.5]));
     }
 
     #[test]

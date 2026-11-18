@@ -30,6 +30,10 @@ test("a bridge device's figures show under its latency; a device without a bridg
   expect(p.to_asio_cause).toBe("driver");
   expect(p.from_asio_cause).toBe("none");
   expect(p.late_bins).toEqual([40, 12, 5, 2, 1, 0, 0, 1]);
+  // Its own card-to-card time each way and its driver (#117).
+  expect(p.card_asio_to_dante_us).toBe(7300);
+  expect(p.card_dante_to_asio_us).toBe(7500);
+  expect(p.driver).toBe("SoundGrid");
   // A device without a bridge has nothing stored.
   expect((await page.request.get(`/api/bridge/${PLAIN}`).then((r) => r.json())).points).toEqual([]);
 
@@ -38,14 +42,25 @@ test("a bridge device's figures show under its latency; a device without a bridg
   await expect(page.getByTestId("lat-title")).toHaveText(`Latency · ${BRIDGE}`);
   const panel = page.getByTestId("bridge-panel");
   await expect(panel).toBeVisible({ timeout: 20_000 });
+  // Two plain lines on top: how long the bridge holds a sample each way.
+  const lineDante = panel.getByTestId("bridge-line-dante");
+  await expect(lineDante.locator("th")).toHaveText("SoundGrid → Dante");
+  await expect(lineDante.locator("td")).toHaveText("7.30 ms");
+  const lineAsio = panel.getByTestId("bridge-line-asio");
+  await expect(lineAsio.locator("th")).toHaveText("Dante → SoundGrid");
+  await expect(lineAsio.locator("td")).toHaveText("7.50 ms");
+  await expect(panel.getByTestId("bridge-chart").locator(".u-legend")).toContainText("SoundGrid → Dante");
+  expect(await panel.getByTestId("bridge-chart").evaluate((el) => (el as any)._dcData.axis)).toBe("card to card, ms");
+  // The parts, underruns and lateness sit closed under Details.
+  await expect(panel.getByTestId("bridge-table")).toBeHidden();
+  await panel.getByTestId("bridge-details").locator("summary").click();
+  await expect(panel.getByTestId("bridge-table")).toBeVisible();
   await expect(panel.getByTestId("bridge-to").locator("td").first()).toHaveText("2.17 ms");
   await expect(panel.getByTestId("bridge-to")).toContainText("latency 1.00 ms + target 1.00 ms + converter 0.17 ms");
   await expect(panel.getByTestId("bridge-from").locator("td").first()).toHaveText("1.83 ms");
   await expect(panel.getByTestId("bridge-to-under")).toContainText("latest cause: driver callback late");
   await expect(panel.getByTestId("bridge-late")).toContainText("0.25 ms: 40");
   await expect(panel.getByTestId("bridge-chart").locator("canvas")).toHaveCount(1);
-  await expect(panel.getByTestId("bridge-chart").locator(".u-legend")).toContainText("Dante → ASIO");
-  expect(await panel.getByTestId("bridge-chart").evaluate((el) => (el as any)._dcData.axis)).toBe("path latency, ms");
 
   // Another device: no bridge part.
   await page.goto(`/#devices/${PLAIN}`);
