@@ -49,6 +49,10 @@ test("a bridge device's figures show under its latency; a device without a bridg
   const lineAsio = panel.getByTestId("bridge-line-asio");
   await expect(lineAsio.locator("th")).toHaveText("Dante → SoundGrid");
   await expect(lineAsio.locator("td")).toHaveText("7.50 ms");
+  // Read as written, not in the table headers' capitals.
+  for (const th of [lineDante.locator("th"), lineAsio.locator("th")]) {
+    expect(await th.evaluate((el) => getComputedStyle(el).textTransform)).toBe("none");
+  }
   await expect(panel.getByTestId("bridge-chart").locator(".u-legend")).toContainText("SoundGrid → Dante");
   expect(await panel.getByTestId("bridge-chart").evaluate((el) => (el as any)._dcData.axis)).toBe("card to card, ms");
   // The parts, underruns and lateness sit closed under Details.
