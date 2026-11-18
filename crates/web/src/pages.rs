@@ -454,12 +454,31 @@ pub fn LatencyPanel() -> impl IntoView {
                 <div style=move || if h.bridge.get().is_some_and(|b| !b.points.is_empty()) { "" } else { "display:none" }
                     data-testid="bridge-panel">
                     <h3 class="sub">"ASIO bridge"</h3>
+                    {move || h.bridge.get().and_then(|b| b.points.last().cloned()).map(bridge_lines)}
                     <div class="chart" node_ref=bridge_ref data-testid="bridge-chart"></div>
-                    <p class="muted small hint">"Dante → ASIO = the device's latency + the to-ASIO target + the to-ASIO converter delay; ASIO → Dante = the from-ASIO target + its converter delay. A vertical line with a number: underruns (blocks played as silence) at that time."</p>
-                    {move || h.bridge.get().as_ref().and_then(hist::bridge_now).map(bridge_table)}
+                    <p class="muted small hint">"How long the bridge holds a sample, from one card to the other. A vertical line with a number: underruns (blocks played as silence) at that time."</p>
+                    <details class="bridge-details" data-testid="bridge-details">
+                        <summary>"Details"</summary>
+                        {move || h.bridge.get().as_ref().and_then(hist::bridge_now).map(bridge_table)}
+                    </details>
                 </div>
             </section>
         </div>
+    }
+}
+
+/// The bridge's two lines now (#117): each way, how long it holds a
+/// sample, the ASIO side named by its driver.
+fn bridge_lines(p: dcontroller_api::BridgePoint) -> impl IntoView {
+    let [(a, a_us), (b, b_us)] = hist::bridge_lines(&p);
+    let known = p.card_us().is_some();
+    view! {
+        <table class="grid bridge-lines" data-testid="bridge-lines" data-card=known.to_string()>
+            <tbody>
+                <tr data-testid="bridge-line-dante"><th>{a}</th><td class="num strong">{hist::ms(a_us)}</td></tr>
+                <tr data-testid="bridge-line-asio"><th>{b}</th><td class="num strong">{hist::ms(b_us)}</td></tr>
+            </tbody>
+        </table>
     }
 }
 

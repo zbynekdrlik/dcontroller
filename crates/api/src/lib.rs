@@ -377,6 +377,16 @@ pub struct BridgePoint {
     pub late_bins: Vec<u64>,
     /// When the device's figures started (ms since 1970): a change is a restart.
     pub run_start_unix_ms: u64,
+    /// The bridge's own card-to-card time each way (dcontroller #117): a
+    /// sample's time from its arrival at one card until it leaves the
+    /// other, µs; `None` while the device does not say (figures v1).
+    #[serde(default)]
+    pub card_asio_to_dante_us: Option<u32>,
+    #[serde(default)]
+    pub card_dante_to_asio_us: Option<u32>,
+    /// The ASIO driver's name, when the device says.
+    #[serde(default)]
+    pub driver: Option<String>,
 }
 
 impl BridgePoint {
@@ -389,6 +399,17 @@ impl BridgePoint {
     /// ASIO to Dante: the from-ASIO target and converter delay, µs.
     pub fn asio_to_dante_us(&self) -> u32 {
         self.from_asio_target_us + self.from_asio_converter_delay_us
+    }
+
+    /// Both card-to-card times (ASIO to Dante, Dante to ASIO), µs, when
+    /// the device gives both (#117).
+    pub fn card_us(&self) -> Option<(u32, u32)> {
+        Some((self.card_asio_to_dante_us?, self.card_dante_to_asio_us?))
+    }
+
+    /// The ASIO side's name for the panel: the driver's, else "ASIO".
+    pub fn asio_name(&self) -> &str {
+        self.driver.as_deref().unwrap_or("ASIO")
     }
 }
 

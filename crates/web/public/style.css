@@ -267,3 +267,8 @@ button.chip { border: 0; font: inherit; font-size: 0.78rem; cursor: pointer; }
 .chip.none { background: var(--surface-2); color: var(--muted); }
 .chip.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
 [data-testid="lat-panel"] { margin-bottom: 1rem; }
+
+/* A bridge's two lines (#117): read at a glance, above its chart. */
+table.bridge-lines th { font-weight: 500; }
+table.bridge-lines td { font-size: 1.25rem; }
+details.bridge-details > summary { cursor: pointer; color: var(--muted); margin: 0.5rem 0; }
