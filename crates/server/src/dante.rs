@@ -1123,6 +1123,18 @@ mod tests {
     }
 
     #[test]
+    fn a_host_only_leg_address_hides_no_device() {
+        // A netplan/networkd leg holds its address as a /32, with the subnet
+        // route in its own table only (dstack two-networks.md): that mask
+        // says nothing about the Dante subnet (#115).
+        let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
+        s.set_netmask(Ipv4Addr::new(255, 255, 255, 255));
+        s.apply(Change::Added(dev("near", 7)));
+        let names: Vec<String> = s.view().devices.into_iter().map(|d| d.name).collect();
+        assert_eq!(names, ["near"]);
+    }
+
+    #[test]
     fn a_device_is_seen_from_when_discovery_first_listed_it() {
         let mut s = State::on("eth1".into(), Ipv4Addr::new(10, 0, 0, 100));
         s.apply_at(Change::Added(dev("Card", 3)), 100);
