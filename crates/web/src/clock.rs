@@ -162,6 +162,7 @@ pub fn service_order(c: &Clocks) -> Vec<&dcontroller_api::DsyncNode> {
     let rank = |n: &dcontroller_api::DsyncNode| match n.health().0 {
         "bad" => 0,
         "warn" => 1,
+        "none" => 3,
         _ => 2,
     };
     let mut v: Vec<&dcontroller_api::DsyncNode> = c.services.iter().collect();
@@ -178,9 +179,17 @@ pub fn service_summary(c: &Clocks) -> (String, bool) {
         .map(|n| n.node.as_str())
         .collect();
     let good = c.services.iter().filter(|n| n.health().0 == "ok").count();
-    let mut line = format!("{good} of {} service nodes locked", c.services.len());
+    // A travelling node that is away is not expected: it is not counted.
+    let away = c.services.iter().filter(|n| n.health().0 == "none").count();
+    let mut line = format!("{good} of {} service nodes locked", c.services.len() - away);
     if !bad.is_empty() {
         line.push_str(&format!(" · in trouble: {}", bad.join(", ")));
+    }
+    if away > 0 {
+        line.push_str(&format!(
+            " · {away} travelling node{} away",
+            if away == 1 { "" } else { "s" }
+        ));
     }
     (line, !bad.is_empty())
 }
@@ -216,6 +225,30 @@ mod tests {
                 "2 of 3 service nodes locked · in trouble: lost:8898".to_owned(),
                 true
             )
+        );
+        // A travelling node that is away is neither counted nor a fault,
+        // and reads last.
+        let mut c = c;
+        c.services.remove(2);
+        c.services.insert(
+            0,
+            DsyncNode {
+                node: "laptop:8898".into(),
+                error: Some("timed out".into()),
+                may_be_off: true,
+                ..DsyncNode::default()
+            },
+        );
+        assert_eq!(
+            service_summary(&c),
+            (
+                "2 of 2 service nodes locked · 1 travelling node away".to_owned(),
+                false
+            )
+        );
+        assert_eq!(
+            service_order(&c).last().map(|n| n.node.as_str()),
+            Some("laptop:8898")
         );
     }
 
