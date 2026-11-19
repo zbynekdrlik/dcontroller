@@ -108,11 +108,17 @@ fn ask(agent: &ureq::Agent, node: &str) -> Result<api::DsyncNode, String> {
         .call()
         .map_err(|e| match e {
             ureq::Error::Status(code, _) => format!("HTTP {code}"),
-            // Without the URL: the node is named next to it.
-            ureq::Error::Transport(t) => match t.message() {
-                Some(m) => format!("{}: {m}", t.kind()),
-                None => t.kind().to_string(),
-            },
+            // Without the URL (the node is named next to it), with the
+            // cause under it: "Network Error" alone says nothing.
+            ureq::Error::Transport(t) => {
+                let cause = std::error::Error::source(&t).map(|s| format!(": {s}"));
+                format!(
+                    "{}{}{}",
+                    t.kind(),
+                    t.message().map_or_else(String::new, |m| format!(": {m}")),
+                    cause.unwrap_or_default()
+                )
+            }
         })?
         .into_string()
         .map_err(|e| format!("status not read: {e}"))?;
@@ -169,11 +175,14 @@ fn agent() -> ureq::Agent {
 
 /// Whether a node's state changed between two reads: worth a log line.
 pub fn turned(before: &api::DsyncNode, after: &api::DsyncNode) -> bool {
-    before.health() != after.health()
+    // The state, not its wording: the reason carries the phase error,
+    // which moves on every read.
+    before.health().0 != after.health().0
 }
 
 /// Takes one ask's outcome into a node's slot: an answer replaces it; a
-/// failed ask leaves the last answer's fields under the error.
+/// failed ask leaves the last answer's fields, and after [`MISSES`] in a
+/// row puts the error over them.
 pub fn take(
     slot: &mut api::DsyncNode,
     at: &mut Option<Instant>,
@@ -189,7 +198,12 @@ pub fn take(
         }
         Err(e) => {
             *misses += 1;
-            slot.error = Some(e);
+            // One lost ask is no outage: an answering node turns silent
+            // after [`MISSES`] in a row; one that never answered says why
+            // at once.
+            if at.is_none() || *misses >= MISSES {
+                slot.error = Some(e);
+            }
         }
     }
 }
