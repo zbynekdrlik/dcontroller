@@ -103,6 +103,11 @@ fn App() -> impl IntoView {
         ),
     };
     provide_context(mp);
+    // The routing matrix takes each connection's state from the same read.
+    provide_context(LinkStates(Memo::new(move |_| {
+        mp.links
+            .with(|l| matrix::link_states(l.as_ref().and_then(|r| r.as_ref().ok())))
+    })));
     // The hash is the page's address: a link, back or forward moves the view
     // (and the chosen latency receiver) with it.
     {
@@ -172,13 +177,13 @@ fn App() -> impl IntoView {
     );
     // The map's connections: at once on the page, then with the overview.
     Effect::new(move |_| {
-        if view_now.get() == View::Map {
+        if matches!(view_now.get(), View::Map | View::Routing) {
             mappage::load_links(mp);
         }
     });
     let _ = set_interval_with_handle(
         move || {
-            if view_now.get_untracked() == View::Map {
+            if matches!(view_now.get_untracked(), View::Map | View::Routing) {
                 mappage::load_links(mp);
             }
         },
@@ -537,6 +542,10 @@ const CLOCKS_POLL: Duration = Duration::from_secs(4);
 /// The devices' dsync clock figures, as last read.
 #[derive(Clone, Copy)]
 struct Clk(RwSignal<Option<Result<dcontroller_api::Clocks, String>>>);
+
+/// Every connection's state, for the routing matrix.
+#[derive(Clone, Copy)]
+struct LinkStates(Memo<matrix::LinkStates>);
 
 /// The meters view's device (kept in the hash `#meters/<name>`) and its last report.
 #[derive(Clone, Copy)]
@@ -1762,6 +1771,7 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
         ..
     } = ex;
     let ctl = expect_context::<Ctl>();
+    let states = expect_context::<LinkStates>().0.get();
     let txo = tx_open.get();
     let rxo = rx_open.get();
     // Column plan: (device index, None) for a collapsed device, (device, Some(channel)) per open channel.
@@ -1857,9 +1867,31 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
                     Some(ch) => format!("{}/{}", t.device, ch),
                     None => t.device.clone(),
                 };
+                // Device by device, the cell is the connection: the worse
+                // of its status now and of its last hour, and a link to
+                // it on the Map. One of a transmitter's channels is not a
+                // connection of its own.
+                let link =
+                    (ch.is_none() && n > 0).then(|| matrix::link_of(&states, &t.device, &r.device));
+                let (class, words) = match link {
+                    Some(l) => matrix::point(x, l),
+                    None => (x.class(), String::new()),
+                };
+                let state = link.map(|l| l.unwrap_or(map::State::Unknown).class());
+                let href = link.map(|_| {
+                    map::Sel::Link {
+                        from: t.device.clone(),
+                        to: r.device.clone(),
+                    }
+                    .hash()
+                });
                 view! {
-                    <td class=x.class() data-testid="cell" data-rx=r.device.clone() data-tx=tx_attr>
-                        {(n > 0).then(|| n.to_string())}
+                    <td class=class data-testid="cell" data-rx=r.device.clone() data-tx=tx_attr
+                        data-link=state title=words>
+                        {match href {
+                            Some(href) => view! { <a href=href>{n.to_string()}</a> }.into_any(),
+                            None => view! { {(n > 0).then(|| n.to_string())} }.into_any(),
+                        }}
                     </td>
                 }
             })

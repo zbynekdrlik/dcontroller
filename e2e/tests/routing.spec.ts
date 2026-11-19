@@ -48,6 +48,42 @@ test.describe("routing matrix", () => {
     expect(console_msgs).toEqual([]);
   });
 
+  test("a device cross-point carries the connection's state and leads to it on the Map", async ({ page }) => {
+    // #123: the matrix said how many subscriptions and whether they receive
+    // now; the connection's last hour (late packets) was on the Map alone.
+    await page.goto("/#routing");
+    const matrix = page.getByTestId("matrix");
+    const devCell = matrix.locator(`[data-testid="cell"][data-rx="${DEVICE}"][data-tx="${DEVICE}"]`);
+    await expect(devCell).toHaveText("1", { timeout: 30_000 });
+    // Once the latency reader has the connection, the cell names its state
+    // in the Map's words.
+    await expect(devCell).toHaveAttribute("data-link", /^(ok|warn|bad)$/, { timeout: 40_000 });
+    // What the receiver reports now comes first (the suite's device takes
+    // its own channel, which other tests stop and start), then the last hour.
+    await expect(devCell).toHaveAttribute(
+      "title",
+      /^1 subscription, (receiving|not receiving) · [^·]+ · click: this connection on the Map$/,
+    );
+    const state = await devCell.getAttribute("data-link");
+    const now = (await devCell.getAttribute("title"))!.includes("not receiving");
+    // The colour is the worse of the two.
+    if (state === "bad") await expect(devCell).toHaveClass(/\berr\b/);
+    else if (state === "ok" && !now) await expect(devCell).toHaveClass(/\bok\b/);
+    else await expect(devCell).toHaveClass(/\b(warn|err)\b/);
+    // A cell with no subscription is no link.
+    const empty = matrix.locator('[data-testid="cell"]:not([data-link])').first();
+    await expect(empty.locator("a")).toHaveCount(0);
+    // The click opens that connection on the Map, with the same state.
+    await devCell.locator("a").click();
+    await expect(page).toHaveURL(new RegExp(`#map/link/${DEVICE}/${DEVICE}$`));
+    await expect(page.getByTestId("tab-map")).toHaveClass(/\bon\b/);
+    await expect(page.getByTestId("map-title")).toHaveText(`${DEVICE} → ${DEVICE}`, { timeout: 30_000 });
+    await expect(page.getByTestId("map-auto")).toHaveCount(0);
+    const line = page.locator(`[data-testid="map-edge"][data-from="${DEVICE}"][data-to="${DEVICE}"]`);
+    await expect(line).toHaveAttribute("data-state", state!);
+    expect(console_msgs).toEqual([]);
+  });
+
   test("the hovered cross-point lights its row and column up to both names", async ({ page }) => {
     await page.goto("/#routing");
     const matrix = page.getByTestId("matrix");
