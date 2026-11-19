@@ -12,3 +12,4 @@ paths:
 - uPlot draws axis labels on the canvas: assert chart text through `.u-legend`, not `.u-axis`.
 - The recorder needs a few seconds of heartbeats before the latency page or the overview has rows: wait on the row (timeout 30–40 s), not on a sleep.
 - Run the suite only through `e2e/isolated.sh npx playwright test …` (#95): a network namespace with a dummy `e2e0`. `playwright.config.ts` refuses any other run, because the suite's packets (a test device, fake dstack peers, mDNS floods, 96 s browsers) would reach the real Dante network the host sits on. It needs unprivileged user namespaces; CI turns off AppArmor's restriction with sudo.
+- A size check (a phone layout's height) waits for every part it measures, e.g. the mDNS tile that comes on its own poll; CI's font is wider than a dev box's, so text wraps more there.
