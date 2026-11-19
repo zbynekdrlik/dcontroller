@@ -219,6 +219,8 @@ td.cell.err { background: var(--bad); }
 .badge.err { background: var(--bad); }
 .badge.warn { background: var(--warn); }
 .chip.nometer { margin-left: 0.4rem; padding: 0 0.35rem; border: 1px dashed var(--muted); border-radius: 0.5rem; font-size: 0.7rem; color: var(--muted); }
+td.cell a { display: block; color: inherit; text-decoration: none; line-height: 1.7rem; }
+td.cell a:hover { outline: 2px solid var(--accent); outline-offset: -2px; }
 td.cell.pick { cursor: pointer; }
 td.cell.pick:hover { outline: 2px solid var(--accent); outline-offset: -2px; }
 .lvl { display: inline-block; vertical-align: middle; width: 3rem; height: 0.35rem; margin-left: 0.5rem; background: var(--surface-3); border-radius: 999px; overflow: hidden; }

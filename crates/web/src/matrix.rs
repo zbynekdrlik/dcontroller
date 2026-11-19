@@ -2,7 +2,9 @@
 //! device or channel level, from the server's device list. Pure, so it is
 //! tested on the host.
 
-use dcontroller_api::{Device, Devices, RxChannel};
+use dcontroller_api::{Device, Devices, Links, RxChannel};
+
+use crate::map::{self, State};
 
 /// A transmitter: a device with TX channels.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +61,74 @@ impl Cell {
             Cell::Err { .. } => "cell err",
         }
     }
+}
+
+/// A connection's state per (source device, receiver), names in lower
+/// case: all the routing page takes from the connections' summaries, so
+/// it is redrawn when a state changes and not on every read.
+pub type LinkStates = Vec<(String, String, State)>;
+
+/// Every connection's state from `links`.
+pub fn link_states(links: Option<&Links>) -> LinkStates {
+    let mut v: LinkStates = links
+        .map(|l| {
+            l.links
+                .iter()
+                .map(|l| {
+                    (
+                        l.from.to_lowercase(),
+                        l.to.to_lowercase(),
+                        map::link_state(l),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+/// The state of the connection `from` into `to`; `None`: not measured.
+pub fn link_of(states: &LinkStates, from: &str, to: &str) -> Option<State> {
+    let (from, to) = (from.to_lowercase(), to.to_lowercase());
+    states
+        .iter()
+        .find(|(f, t, _)| *f == from && *t == to)
+        .map(|(_, _, s)| *s)
+}
+
+/// A device cross-point's CSS class and its words: the worse of what the
+/// receiver reports now and of the connection's state as the Map names it
+/// (one vocabulary on both pages, #123).
+pub fn point(cell: Cell, link: Option<State>) -> (&'static str, String) {
+    let now = match cell {
+        Cell::Empty => return (cell.class(), String::new()),
+        Cell::Ok(1) => "1 subscription, receiving".to_owned(),
+        Cell::Ok(n) => format!("{n} subscriptions, all receiving"),
+        Cell::Warn { n, bad } | Cell::Err { n, bad } => {
+            format!("{bad} of {n} subscriptions not receiving")
+        }
+    };
+    let (rank, past) = match link {
+        Some(State::Bad) => (2, "late packets in the last hour"),
+        Some(State::Warn) => (1, "close to the latency, or late earlier today"),
+        Some(State::Ok) => (0, "no late packets"),
+        Some(State::Unknown) | None => (0, "latency not measured"),
+    };
+    let own = match cell {
+        Cell::Err { .. } => 2,
+        Cell::Warn { .. } => 1,
+        _ => 0,
+    };
+    let class = match own.max(rank) {
+        2 => "cell err",
+        1 => "cell warn",
+        _ => "cell ok",
+    };
+    (
+        class,
+        format!("{now} · {past} · click: this connection on the Map"),
+    )
 }
 
 /// Dante compares device and channel names case aside.
@@ -303,7 +373,78 @@ pub fn problems(d: &Devices) -> Vec<Problem> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dcontroller_api::{Channels, Source, TxChannel};
+    use dcontroller_api::{Channels, LinkSummary, Source, TxChannel};
+
+    #[test]
+    fn a_device_cross_point_takes_the_worse_of_now_and_the_connections_last_hour() {
+        let link = |from: &str, to: &str, late_1h, late_24h| LinkSummary {
+            from: from.into(),
+            to: to.into(),
+            latency_us: 4000,
+            peak_us: 800,
+            late_1h,
+            late_24h,
+            ..LinkSummary::default()
+        };
+        let links = Links {
+            links: vec![
+                link("Desk", "amp", 12, 12),
+                link("desk", "rec", 0, 3),
+                link("desk", "pa", 0, 0),
+            ],
+            ..Links::default()
+        };
+        let states = link_states(Some(&links));
+        // Names compare case aside, as Dante's do.
+        assert_eq!(link_of(&states, "DESK", "Amp"), Some(State::Bad));
+        assert_eq!(link_of(&states, "desk", "rec"), Some(State::Warn));
+        assert_eq!(link_of(&states, "desk", "pa"), Some(State::Ok));
+        assert_eq!(link_of(&states, "desk", "none"), None);
+        assert!(link_states(None).is_empty());
+
+        // All receiving now, late packets in the last hour: red, in words.
+        assert_eq!(
+            point(Cell::Ok(2), Some(State::Bad)),
+            (
+                "cell err",
+                "2 subscriptions, all receiving · late packets in the last hour · click: this connection on the Map"
+                    .to_owned()
+            )
+        );
+        assert_eq!(point(Cell::Ok(1), Some(State::Warn)).0, "cell warn");
+        assert_eq!(
+            point(Cell::Ok(1), Some(State::Ok)),
+            (
+                "cell ok",
+                "1 subscription, receiving · no late packets · click: this connection on the Map"
+                    .to_owned()
+            )
+        );
+        // Not measured is no fault.
+        let (class, words) = point(Cell::Ok(1), None);
+        assert_eq!(class, "cell ok");
+        assert!(words.contains("latency not measured"), "{words}");
+        // What the receiver reports now is never made better by a clean hour.
+        assert_eq!(
+            point(Cell::Err { n: 2, bad: 1 }, Some(State::Ok)).0,
+            "cell err"
+        );
+        let (class, words) = point(Cell::Warn { n: 2, bad: 1 }, Some(State::Ok));
+        assert_eq!(class, "cell warn");
+        assert!(
+            words.starts_with("1 of 2 subscriptions not receiving"),
+            "{words}"
+        );
+        assert_eq!(
+            point(Cell::Warn { n: 2, bad: 1 }, Some(State::Bad)).0,
+            "cell err"
+        );
+        // No subscription: an empty cell with nothing to say.
+        assert_eq!(
+            point(Cell::Empty, Some(State::Bad)),
+            ("cell", String::new())
+        );
+    }
 
     fn rx(label: &str, src: Option<(&str, &str)>, status: &str) -> RxChannel {
         RxChannel {
