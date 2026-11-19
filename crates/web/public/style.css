@@ -376,3 +376,4 @@ table.changes td:first-child { white-space: nowrap; }
 /* A row's parts may shrink: a strip of ranges then scrolls in itself
    instead of pushing the page wider (#123, seen with a wider font). */
 .panel-head > *, .bar > * { min-width: 0; max-width: 100%; }
+table.meters-all .lvl { width: 9rem; margin-left: 0; }

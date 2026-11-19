@@ -227,7 +227,11 @@ fn App() -> impl IntoView {
     provide_context(lv);
     let lv_busy = RwSignal::new(false);
     let poll_levels = move || {
-        if view_now.get_untracked() != View::Routing || lv_busy.get_untracked() {
+        // The matrix's headers, and the meters page while it shows every
+        // device at once (no device chosen).
+        let all_meters =
+            view_now.get_untracked() == View::Meters && mtr.device.get_untracked().is_none();
+        if (view_now.get_untracked() != View::Routing && !all_meters) || lv_busy.get_untracked() {
             return;
         }
         let names: Vec<String> = devices.with_untracked(|d| match d {
@@ -708,6 +712,16 @@ fn MeterView(d: Devices) -> impl IntoView {
         })
         .map(|dev| dev.name.clone())
         .collect();
+    // Every such device with its channel counts, for the page's first view.
+    let all: Vec<(String, usize, usize)> = d
+        .devices
+        .iter()
+        .filter_map(|dev| {
+            let c = dev.channels.as_ref()?;
+            (!c.tx.is_empty() || !c.rx.is_empty())
+                .then(|| (dev.name.clone(), c.tx.len(), c.rx.len()))
+        })
+        .collect();
     view! {
         <div class="picker">
             {names.into_iter().map(|name| {
@@ -728,7 +742,38 @@ fn MeterView(d: Devices) -> impl IntoView {
             }).collect_view()}
         </div>
         {move || match (mtr.device.get(), mtr.report.get()) {
-            (None, _) => view! { <p class="status">"Pick a device."</p> }.into_any(),
+            // No device chosen: every device's loudest channel each way, so
+            // the page says at once who sends and who receives sound (#123).
+            (None, _) => {
+                let rows = all
+                    .iter()
+                    .map(|(name, tx, rx)| {
+                        let href = format!("#meters/{}", String::from(js_sys::encode_uri_component(name)));
+                        let n = name.clone();
+                        view! {
+                            <tr data-testid="mtr-all-row" data-name=name.clone()>
+                                <td><a class="strong" href=href on:click=move |_| {
+                                    mtr.report.set(None);
+                                    mtr.device.set(Some(n.clone()));
+                                }>{name.clone()}</a></td>
+                                <td>{(*tx > 0).then(|| level_bar(name, true, None, false, Vec::new()))}</td>
+                                <td class="muted">{format!("{tx} TX")}</td>
+                                <td>{(*rx > 0).then(|| level_bar(name, false, None, false, Vec::new()))}</td>
+                                <td class="muted">{format!("{rx} RX")}</td>
+                            </tr>
+                        }
+                    })
+                    .collect_view();
+                view! {
+                    <div class="table-wrap">
+                    <table class="grid meters-all" data-testid="mtr-all">
+                        <thead><tr><th>"Device"</th><th colspan="2">"Sends (loudest channel)"</th><th colspan="2">"Receives (loudest channel)"</th></tr></thead>
+                        <tbody>{rows}</tbody>
+                    </table>
+                    </div>
+                    <p class="muted small">"Every device's loudest channel now. A click on a device shows each of its channels."</p>
+                }.into_any()
+            }
             (Some(_), None) => view! { <p class="status" data-testid="mtr-wait">"Subscribing…"</p> }.into_any(),
             (Some(_), Some(Err(e))) => view! { <p class="status error">{format!("Not readable: {e}")}</p> }.into_any(),
             (Some(_), Some(Ok(r))) => meter_report_view(r),

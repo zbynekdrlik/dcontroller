@@ -15,7 +15,23 @@ test("the meters tab subscribes to the chosen device and shows its channel level
   await page.getByTestId("tab-meters").click();
   const pick = page.locator(`[data-testid="mtr-device"][data-name="${DEVICE}"]`);
   await expect(pick).toBeVisible({ timeout: 30_000 });
+  // No device chosen: every device's loudest channel each way (#123), not
+  // an empty page.
+  const allRow = page.locator(`[data-testid="mtr-all-row"][data-name="${DEVICE}"]`);
+  await expect(allRow).toContainText("4 TX");
+  await expect(allRow).toContainText("4 RX");
+  await expect(allRow.locator('[data-testid="lvl"][data-dir="tx"]')).toHaveAttribute(
+    "title",
+    /^(Mix L|Mix R|Talkback|Click) < -60 dB$/,
+    { timeout: 30_000 },
+  );
+  await expect(allRow.locator('[data-testid="lvl"][data-dir="rx"]')).toHaveCount(1);
+  const devices = await page.evaluate(() => fetch("/api/devices").then((r) => r.json()));
+  await expect(page.getByTestId("mtr-all-row")).toHaveCount(
+    devices.devices.filter((d: { channels?: { tx: unknown[]; rx: unknown[] } }) => d.channels && d.channels.tx.length + d.channels.rx.length > 0).length,
+  );
   await pick.click();
+  await expect(page.getByTestId("mtr-all")).toHaveCount(0);
   await expect(page).toHaveURL(new RegExp(`#meters/${DEVICE}$`));
   await expect(pick).toHaveClass(/on/);
 
