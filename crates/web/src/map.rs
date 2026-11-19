@@ -432,6 +432,60 @@ pub fn worst(g: &Graph) -> Option<&Edge> {
         })
 }
 
+/// Every connection, the worst first (most lost, then the peak closest to
+/// its latency), equals in the graph's order.
+pub fn worst_first(g: &Graph) -> Vec<&Edge> {
+    let mut all: Vec<&Edge> = g.edges.iter().collect();
+    all.sort_by_key(|e| std::cmp::Reverse((e.state, e.weight)));
+    all
+}
+
+/// The connections' last hour in one line (#122 step 3).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Health {
+    /// Dante connections, and how many of them are measured.
+    pub links: usize,
+    pub measured: usize,
+    /// Measured ones that lost nothing in the last hour.
+    pub clean: usize,
+    /// Those that lost audio in the last hour, worst first: name and count.
+    pub lost: Vec<(String, u64)>,
+    /// Those close to their latency or late earlier today.
+    pub warn: usize,
+    /// Bridges, and their underruns in the last hour.
+    pub bridges: usize,
+    pub underruns: u64,
+}
+
+pub fn health(g: &Graph) -> Health {
+    let mut h = Health::default();
+    for e in worst_first(g) {
+        match &e.sel {
+            Sel::Link { from, to } => {
+                h.links += 1;
+                match e.state {
+                    State::Unknown => continue,
+                    State::Bad => h.lost.push((format!("{from} → {to}"), e.weight.0)),
+                    State::Warn => h.warn += 1,
+                    State::Ok => {}
+                }
+                h.measured += 1;
+                if e.state != State::Bad {
+                    h.clean += 1;
+                }
+            }
+            Sel::Bridge { to_dante, .. } => {
+                if *to_dante {
+                    h.bridges += 1;
+                }
+                h.underruns += e.weight.0;
+            }
+            Sel::Device { .. } => {}
+        }
+    }
+    h
+}
+
 /// The edge `sel` names, if the graph has it.
 pub fn edge_of<'a>(g: &'a Graph, sel: &Sel) -> Option<&'a Edge> {
     g.edges.iter().find(|e| e.sel.same(sel))
@@ -1104,6 +1158,16 @@ mod tests {
         assert_eq!((down.label.as_str(), down.state), ("7.50 ms", State::Bad));
         assert_eq!(down.lost.as_deref(), Some("2 underruns"));
         assert_eq!(g.edges.len(), 9);
+        // All of them, the worst first; and the network's hour in one line.
+        let order: Vec<State> = worst_first(&g).iter().map(|e| e.state).collect();
+        assert!(order.windows(2).all(|w| w[0] >= w[1]), "{order:?}");
+        assert_eq!(worst_first(&g)[0].sel, bad.sel);
+        assert_eq!(worst_first(&g).len(), g.edges.len());
+        let h = health(&g);
+        assert_eq!((h.links, h.measured, h.clean, h.warn), (7, 4, 3, 2));
+        assert_eq!(h.lost, [("player → bridge".to_owned(), 67_004)]);
+        assert_eq!((h.bridges, h.underruns), (1, 2));
+        assert_eq!(health(&Graph::default()), Health::default());
         // The worst shows when nothing is chosen.
         assert_eq!(worst(&g).map(|e| &e.sel), Some(&bad.sel));
         assert!(
