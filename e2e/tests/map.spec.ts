@@ -69,9 +69,28 @@ test("the map is the start page: every device a box, every connection a line, a 
   await expect(page).toHaveURL(new RegExp(`#map/bridge/${BRIDGE}/to-asio$`));
   await expect(page.getByTestId("map-title")).toHaveText("Dante → SoundGrid");
   await expect(rows.filter({ hasText: "Dante → SoundGrid" })).toHaveClass(/\bsel\b/);
+  // Devices: every device in one table (step 4); a row chooses the device.
+  await page.getByTestId("map-view-devices").click();
+  await expect(page.getByTestId("map-links-panel")).toBeHidden();
+  const drows = page.getByTestId("map-devices").getByTestId("map-device-row");
+  await expect(drows).toHaveCount(devices.devices.length);
+  const drow = page.locator(`[data-testid="map-device-row"][data-name="${DEVICE}"]`);
+  await expect(drow).toContainText("4 TX · 4 RX");
+  await expect(drow).toContainText("latency 10.00 ms");
+  await expect(drow).toContainText("there at start");
+  await page.getByTestId("map-sort-newest").click();
+  await expect(page.getByTestId("map-sort-newest")).toHaveClass(/\bon\b/);
+  await expect(drows).toHaveCount(devices.devices.length);
+  await page.getByTestId("map-sort-name").click();
+  await drow.click();
+  await expect(page).toHaveURL(new RegExp(`#map/device/${DEVICE}$`));
+  await expect(page.getByTestId("map-title")).toHaveText(DEVICE);
+  await expect(drow).toHaveClass(/\bsel\b/);
+  await expect(page.getByTestId("map-device-body").getByTestId("rename-device")).toBeVisible();
   await page.getByTestId("map-view-schema").click();
   await expect(page.getByTestId("map-panel")).toBeVisible();
   await expect(page.getByTestId("map-links-panel")).toBeHidden();
+  await expect(page.getByTestId("map-devices-panel")).toBeHidden();
   await page.goto("/#map");
 
   // Nothing chosen: the worst connection shows, and says so.

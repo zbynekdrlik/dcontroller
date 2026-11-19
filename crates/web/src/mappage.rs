@@ -14,8 +14,18 @@ use wasm_bindgen::JsCast;
 pub struct MapCtl {
     pub links: RwSignal<Option<Result<Links, String>>>,
     pub chosen: RwSignal<Option<map::Sel>>,
-    /// The Links table shows in place of the schema.
-    pub table: RwSignal<bool>,
+    /// What shows above the detail: the schema, or one of the lists.
+    pub view: RwSignal<MapView>,
+}
+
+/// The map's three views of the same network.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapView {
+    Schema,
+    /// Every connection, the worst first.
+    Links,
+    /// Every device, by name or newest first.
+    Devices,
 }
 
 /// Reads the connections' summaries.
@@ -59,6 +69,7 @@ fn row_of(g: &map::Graph, e: &map::Edge, name: String, links: Option<&Links>) ->
         lost: e.lost.clone(),
         chip: chip(e.state, bridge),
         sum,
+        bridge,
     }
 }
 
@@ -70,6 +81,8 @@ struct Row {
     lost: Option<String>,
     chip: (&'static str, &'static str),
     sum: Option<dcontroller_api::LinkSummary>,
+    /// A bridge's own way: no packet history, its underruns as the loss.
+    bridge: bool,
 }
 
 fn row(r: Row) -> impl IntoView {
@@ -99,14 +112,14 @@ fn row_marked(r: Row, on: bool) -> impl IntoView {
         None => (
             dash(),
             dash(),
-            view! { <td class=if r.lost.is_some() { "num bad strong" } else { "num" }>{r.lost.clone().unwrap_or_else(dash)}</td> }.into_any(),
+            view! { <td class=if r.lost.is_some() { "num bad strong" } else { "num" }>{r.lost.clone().unwrap_or_else(|| if r.bridge { "0".to_owned() } else { dash() })}</td> }.into_any(),
             view! { <td class="num">{dash()}</td> }.into_any(),
         ),
     };
     view! {
         <tr class=if on { "click sel" } else { "click" } data-testid="map-dev-row" data-edge=r.hash.clone() on:click=go>
             <td><a class="strong" href=r.hash.clone()>{r.name}</a></td>
-            <td>{pages::spark_of(r.sum.as_ref().map_or(&[], |s| s.spark.as_slice()), "spark")}</td>
+            <td>{r.sum.as_ref().map(|s| pages::spark_of(&s.spark, "spark"))}</td>
             <td class="num">{r.label}</td>
             <td class="num">{typical}</td>
             <td class="num">{worst}</td>
@@ -635,27 +648,111 @@ pub fn MapPage() -> impl IntoView {
         }
         .into_any()
     };
-    let tab = move |table: bool, label: &'static str, id: &'static str| {
+    // Every device in one table (#122 step 4): the Devices page's list,
+    // a row choosing the device like a click on its box.
+    let NewestFirst(newest) = expect_context::<NewestFirst>();
+    let devices = move || {
+        let Some(Ok(d)) = ctl.devices.get() else {
+            return ().into_any();
+        };
+        let start = pages::time_text(d.started_at as i64);
+        let on = shown.get().map(|s| s.hash());
+        let rows = devlist::order(&d, newest.get())
+            .into_iter()
+            .map(|dev| {
+                let hash = map::Sel::Device { name: dev.name.clone() }.hash();
+                let sel = on.as_deref() == Some(hash.as_str());
+                let joined = match devlist::joined(&dev, &d) {
+                    devlist::Joined::AtStart => format!("there at start ({start})"),
+                    devlist::Joined::At(t) => format!("joined {}", pages::time_text(t as i64)),
+                };
+                // Its connections: how many, and the worst one's state.
+                let (count, worst) = graph.with(|g| {
+                    map::node_of(g, &dev.name).map_or((0, None), |n| {
+                        let all: Vec<&map::Edge> = map::edges_of(g, n).into_iter().flatten().collect();
+                        let worst = all.iter().map(|e| (e.state, matches!(e.sel, map::Sel::Bridge { .. }))).max();
+                        (all.len(), worst)
+                    })
+                });
+                let state = worst.map(|(st, bridge)| {
+                    let (class, text) = chip(st, bridge);
+                    view! { <span class=class>{text}</span> }
+                });
+                let what = [dev.manufacturer.clone(), dev.model.clone()].into_iter().flatten().collect::<Vec<_>>().join(" ");
+                let counts = dev.channels.as_ref().map_or_else(|| "not read yet".to_owned(), |c| format!("{} TX · {} RX", c.tx.len(), c.rx.len()));
+                let settings = settings_line(&dev.settings.clone().unwrap_or_default(), dev.info.as_ref()).unwrap_or_default();
+                let clock = dev.clock.as_ref().map_or_else(String::new, |c| {
+                    if c.grandmaster { "grandmaster".to_owned() } else { c.sync.clone() }
+                });
+                let go = {
+                    let hash = hash.clone();
+                    move |_| {
+                        let _ = window().location().set_hash(&hash);
+                    }
+                };
+                view! {
+                    <tr class=if sel { "click sel" } else { "click" } data-testid="map-device-row" data-name=dev.name.clone() on:click=go>
+                        <td><a class="strong" href=hash>{dev.name.clone()}</a></td>
+                        <td class="muted">{what}</td>
+                        <td>{counts}</td>
+                        <td>{settings}</td>
+                        <td>{clock}</td>
+                        <td class="mono">{dev.address.clone()}</td>
+                        <td class="muted">{joined}</td>
+                        <td>{if count == 0 { "none".to_owned() } else { count.to_string() }}" "{state}</td>
+                    </tr>
+                }
+            })
+            .collect_view();
+        let seg = move |on: bool, label: &'static str, id: &'static str| {
+            view! {
+                <button data-testid=id class=move || if newest.get() == on { "seg on" } else { "seg" }
+                    on:click=move |_| newest.set(on)>{label}</button>
+            }
+        };
         view! {
-            <button data-testid=id class=move || if m.table.get() == table { "seg on" } else { "seg" }
-                on:click=move |_| m.table.set(table)>{label}</button>
+            <div class="bar">
+                <div class="seg-group" data-testid="map-device-sort">
+                    {seg(false, "By name", "map-sort-name")}
+                    {seg(true, "Newest first", "map-sort-newest")}
+                </div>
+            </div>
+            <div class="table-wrap">
+            <table class="grid" data-testid="map-devices">
+                <thead><tr><th>"Device"</th><th>"Model"</th><th>"Channels"</th><th>"Settings"</th><th>"Clock"</th><th>"Address"</th><th>"On the network"</th><th>"Connections"</th></tr></thead>
+                <tbody>{rows}</tbody>
+            </table>
+            </div>
+            <p class="muted small">"Every device. A click shows its detail below."</p>
+        }
+        .into_any()
+    };
+    let tab = move |view: MapView, label: &'static str, id: &'static str| {
+        view! {
+            <button data-testid=id class=move || if m.view.get() == view { "seg on" } else { "seg" }
+                on:click=move |_| m.view.set(view)>{label}</button>
         }
     };
     view! {
         {tiles_top}
         <div class="bar">
             <div class="seg-group" data-testid="map-view">
-                {tab(false, "Schema", "map-view-schema")}
-                {tab(true, "Links", "map-view-links")}
+                {tab(MapView::Schema, "Schema", "map-view-schema")}
+                {tab(MapView::Links, "Links", "map-view-links")}
+                {tab(MapView::Devices, "Devices", "map-view-devices")}
             </div>
             <span class="status" data-testid="status">{status}</span>
         </div>
         <section class="panel" data-testid="map-links-panel"
-            style=move || if m.table.get() { "" } else { "display:none" }>
-            {move || m.table.get().then(table)}
+            style=move || if m.view.get() == MapView::Links { "" } else { "display:none" }>
+            {move || (m.view.get() == MapView::Links).then(table)}
+        </section>
+        <section class="panel" data-testid="map-devices-panel"
+            style=move || if m.view.get() == MapView::Devices { "" } else { "display:none" }>
+            {move || (m.view.get() == MapView::Devices).then(devices)}
         </section>
         <section class="panel" data-testid="map-panel"
-            style=move || if m.table.get() { "display:none" } else { "" }>
+            style=move || if m.view.get() == MapView::Schema { "" } else { "display:none" }>
             <div class="map-wrap" data-testid="map" on:click=click
                 on:mouseover=move |ev| focus(ev, true) on:mouseout=move |ev| focus(ev, false)
                 inner_html=drawing></div>
