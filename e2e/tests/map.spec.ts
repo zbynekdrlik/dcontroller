@@ -109,6 +109,12 @@ test("the map is the start page: every device a box, every connection a line, a 
   await expect(line).toHaveClass(/\bsel\b/);
   await expect(page.getByTestId("map-auto")).toHaveCount(0);
   await expect(page.getByTestId("map-title")).toHaveText(`${DEVICE} → ${DEVICE}`);
+  // #142: the detail and its chart come into view; under the schema they
+  // were a screen below and the owner had to look for them.
+  await expect(page.getByTestId("map-title")).toBeInViewport();
+  await expect
+    .poll(() => page.getByTestId("map-detail").evaluate((e) => Math.round(e.getBoundingClientRect().top)), { timeout: 5_000 })
+    .toBeLessThan(40);
   await expect(page.getByTestId("map-what")).toContainText("channel");
   await expect(page.getByTestId("map-latency").locator(".v")).toHaveText("10.00 ms", { timeout: 30_000 });
   // A count (the test device may lose a few packets as it starts).

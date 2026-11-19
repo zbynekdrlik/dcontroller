@@ -120,7 +120,22 @@ fn App() -> impl IntoView {
             if v == View::Map {
                 let c = map::Sel::from_hash(&window().location().hash().unwrap_or_default());
                 if mp.chosen.get_untracked() != c {
+                    let picked = c.is_some();
                     mp.chosen.set(c);
+                    // A choice brings its detail and chart into view (#142):
+                    // under a tall schema they were a screen below.
+                    if picked {
+                        set_timeout(
+                            || {
+                                if let Ok(Some(e)) =
+                                    document().query_selector(r#"[data-testid="map-detail"]"#)
+                                {
+                                    e.scroll_into_view();
+                                }
+                            },
+                            Duration::from_millis(60),
+                        );
+                    }
                 }
             }
             if v == View::Devices {

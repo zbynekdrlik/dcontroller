@@ -355,6 +355,10 @@ svg.map.has-device .edge.of { opacity: 1; }
 svg.map.has-device .edge.of path.line { stroke-width: 3; }
 svg.map .edge.quiet.of .lbl { display: inline; }
 table.grid tr.click { cursor: pointer; }
+/* A choice scrolls its detail to the top of the window (#142): the panel
+   holds a window's height so the scroll always lands, and the chart does
+   not jump in late. */
+section[data-testid="map-detail"] { min-height: calc(100vh - 2rem); scroll-margin-top: 0.5rem; }
 .map-device { margin-top: 0.4rem; padding: 0.2rem 0 0.8rem; }
 .map-device > :not(summary) { margin: 0.8rem 1rem; }
 .device details > table.rx, .map-device > table.rx { width: calc(100% - 2rem); }
