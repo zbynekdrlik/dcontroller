@@ -30,6 +30,16 @@ pub const PORT: u16 = 8898;
 /// it last answered.
 pub type Latest = Arc<RwLock<Vec<(api::DsyncNode, Option<Instant>)>>>;
 
+/// A config entry as its address and whether it may be off: a trailing `?`
+/// marks a travelling node (a laptop), which is no alarm while it is away.
+pub fn named(entry: &str) -> (String, bool) {
+    let entry = entry.trim();
+    match entry.strip_suffix('?') {
+        Some(name) => (address(name), true),
+        None => (address(entry), false),
+    }
+}
+
 /// `name` as `host:port` (dsync's port when it names none).
 pub fn address(name: &str) -> String {
     let name = name.trim();
@@ -98,6 +108,7 @@ pub fn parse(node: &str, body: &str) -> Result<api::DsyncNode, String> {
         drift_ppm: num("drift_ppm"),
         fallback_role: text("fallback_role"),
         alarm,
+        may_be_off: false,
     })
 }
 
@@ -168,9 +179,46 @@ pub fn start(nodes: &[String], latest: Latest, stop: Arc<AtomicBool>) {
         .expect("spawn the dsync reader");
 }
 
+/// A name's addresses, looked up.
+type Lookup = Arc<dyn Fn(&str) -> std::io::Result<Vec<std::net::SocketAddr>> + Send + Sync>;
+
+/// The reader's name resolver.
+#[derive(Clone)]
+pub struct Names {
+    lookup: Lookup,
+}
+
+impl Default for Names {
+    fn default() -> Self {
+        Names {
+            lookup: Arc::new(|netloc| {
+                std::net::ToSocketAddrs::to_socket_addrs(netloc).map(Iterator::collect)
+            }),
+        }
+    }
+}
+
+impl Names {
+    /// Drops what is kept for `netloc`.
+    pub fn forget(&self, _netloc: &str) {}
+}
+
+impl ureq::Resolver for Names {
+    fn resolve(&self, netloc: &str) -> std::io::Result<Vec<std::net::SocketAddr>> {
+        (self.lookup)(netloc)
+    }
+}
+
 /// The HTTP client of the reader.
 fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new().timeout(WAIT).build()
+    agent_with(Names::default())
+}
+
+fn agent_with(names: Names) -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout(WAIT)
+        .resolver(names)
+        .build()
 }
 
 /// Whether a node's state changed between two reads: worth a log line.
@@ -388,6 +436,69 @@ mod tests {
             now,
         );
         assert_eq!(fresh.error.as_deref(), Some("connection refused"));
+    }
+
+    #[test]
+    fn a_nodes_name_is_looked_up_once_and_again_only_after_a_failure() {
+        // dsync traced the one-in-twenty failed asks to DNS lookups timing
+        // out on the client: the reader looked the name up on every ask.
+        use std::sync::atomic::AtomicUsize;
+        use ureq::Resolver;
+        let count = Arc::new(AtomicUsize::new(0));
+        let names = Names {
+            lookup: {
+                let count = Arc::clone(&count);
+                Arc::new(move |netloc: &str| {
+                    count.fetch_add(1, Ordering::Relaxed);
+                    if netloc.starts_with("gone") {
+                        return Err(std::io::Error::other("no such host"));
+                    }
+                    Ok(vec!["10.0.9.5:8898".parse().unwrap()])
+                })
+            },
+            ..Names::default()
+        };
+        for _ in 0..5 {
+            assert_eq!(names.resolve("pc.lan:8898").unwrap().len(), 1);
+        }
+        assert_eq!(count.load(Ordering::Relaxed), 1, "one lookup for five asks");
+        // After a failed ask the name is looked up again (its address may
+        // have changed).
+        names.forget("pc.lan:8898");
+        names.resolve("pc.lan:8898").unwrap();
+        assert_eq!(count.load(Ordering::Relaxed), 2);
+        // A lookup that fails is not kept.
+        assert!(names.resolve("gone.lan:8898").is_err());
+        assert!(names.resolve("gone.lan:8898").is_err());
+        assert_eq!(count.load(Ordering::Relaxed), 4);
+    }
+
+    #[test]
+    fn a_node_marked_as_travelling_is_never_an_alarm_when_it_is_off() {
+        // A travel laptop on the roster: off most days, at another site
+        // on others. Named with a trailing `?` in the config.
+        assert_eq!(named("10.0.7.109?"), ("10.0.7.109:8898".to_owned(), true));
+        assert_eq!(named("mixer.lan"), ("mixer.lan:8898".to_owned(), false));
+        let off = api::DsyncNode {
+            node: "10.0.7.109:8898".into(),
+            may_be_off: true,
+            error: Some("timed out".into()),
+            ..api::DsyncNode::default()
+        };
+        assert_eq!(
+            off.health(),
+            (
+                "none",
+                "not there (a travelling node, may be off)".to_owned()
+            )
+        );
+        // There and locked, it reads like any node; there and not locked,
+        // it is a fault like any node's.
+        let mut on = parse("10.0.7.109:8898", STATUS).unwrap();
+        on.may_be_off = true;
+        assert_eq!(on.health().0, "ok");
+        on.ptp_phase_locked = Some(false);
+        assert_eq!(on.health().0, "bad");
     }
 
     #[test]

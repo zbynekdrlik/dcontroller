@@ -517,6 +517,10 @@ pub struct DsyncNode {
     pub fallback_role: Option<String>,
     /// The clock alarm's reason while it is active.
     pub alarm: Option<String>,
+    /// A travelling node (the box's config says so): no alarm while it
+    /// does not answer.
+    #[serde(default)]
+    pub may_be_off: bool,
 }
 
 /// dsync's own line for the phase error, µs: at or over it, it alarms.
