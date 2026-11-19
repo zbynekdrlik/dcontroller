@@ -349,3 +349,27 @@ table.grid tr.click { cursor: pointer; }
 table.grid tr.sel td { background: var(--accent-soft); }
 .mono { font-family: var(--mono); font-size: 0.82rem; }
 table.changes td:first-child { white-space: nowrap; }
+
+/* A phone (#123): the health tiles two to a row and small, ranges and
+   views in one line that scrolls, wide tables scrolling inside their box. */
+.seg { white-space: nowrap; }
+.seg-group { max-width: 100%; overflow-x: auto; }
+@media (max-width: 44rem) {
+  .tiles { grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 0.8rem; }
+  .tile { padding: 0.5rem 0.65rem; }
+  .tile-title { font-size: 0.68rem; }
+  .tile-value { font-size: 1.15rem; }
+  .tile-value.long { font-size: 0.9rem; }
+  .tile-sub { font-size: 0.74rem; }
+  .figs { grid-template-columns: 1fr 1fr; }
+  .fig .v { font-size: 1.15rem; }
+  .panel { padding: 0.7rem 0.75rem; }
+  .legend { font-size: 0.72rem; gap: 0.2rem 0.7rem; }
+  /* A connection's row on a phone: its name, latency, worst peak, lost in
+     the hour and state; the sparkline, typical and the day's count wait
+     for a wider screen. */
+  table.links th:nth-child(2), table.links td:nth-child(2),
+  table.links th:nth-child(4), table.links td:nth-child(4),
+  table.links th:nth-child(7), table.links td:nth-child(7) { display: none; }
+  table.grid th, table.grid td { padding: 0.4rem 0.4rem; }
+}

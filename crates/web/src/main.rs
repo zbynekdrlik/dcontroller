@@ -87,7 +87,20 @@ fn App() -> impl IntoView {
         chosen: RwSignal::new(map::Sel::from_hash(
             &window().location().hash().unwrap_or_default(),
         )),
-        view: RwSignal::new(mappage::MapView::Schema),
+        // A phone holds one column of the schema: it opens on the table of
+        // connections, the schema one tap away (#123).
+        view: RwSignal::new(
+            if window()
+                .inner_width()
+                .ok()
+                .and_then(|w| w.as_f64())
+                .is_some_and(|w| w < 700.0)
+            {
+                mappage::MapView::Links
+            } else {
+                mappage::MapView::Schema
+            },
+        ),
     };
     provide_context(mp);
     // The hash is the page's address: a link, back or forward moves the view
@@ -1604,10 +1617,12 @@ fn ChangeLog() -> impl IntoView {
                     </div>
                     <span class="muted small">"A connection that stopped and received again is one line, with how long it took."</span>
                 </div>
+                <div class="table-wrap">
                 <table class="changes" data-testid="changes-table">
                     <thead><tr><th>"When"</th><th>"Who"</th><th>"What"</th><th>"Before"</th><th>"Asked"</th><th>"After"</th><th>"Result"</th></tr></thead>
                     <tbody>{rows}</tbody>
                 </table>
+                </div>
                 {older}
             }.into_any()
         }
