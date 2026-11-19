@@ -76,7 +76,7 @@ h1, h2, h3 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.1rem; margin-bottom: 1.2rem; min-width: 0; }
 .panel-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 1rem; margin-bottom: 0.8rem; }
 .panel-head h2 { font-size: 1.05rem; }
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0.9rem; margin-bottom: 1.2rem; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.9rem; margin-bottom: 1.2rem; }
 .tile { display: flex; flex-direction: column; gap: 0.2rem; padding: 0.9rem 1rem; text-decoration: none;
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); position: relative; overflow: hidden; }
 .tile::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--ok); }
@@ -345,6 +345,10 @@ svg.map.has-sel .node.rel rect { stroke: var(--accent); }
 svg.map.dense .edge path.line { stroke-width: 1.6; }
 svg.map.dense .edge:hover path.line, svg.map.dense .edge.sel path.line { stroke-width: 4; }
 svg.map .edge.quiet .lbl { display: none; }
+/* A dense map keeps its good lines faint at rest, so the ones in trouble
+   stand out (#142); a pointed, chosen or focused line comes back. */
+svg.map.dense .edge.quiet { opacity: 0.35; }
+svg.map.dense .edge.quiet:hover, svg.map.dense .edge.quiet.sel { opacity: 1; }
 svg.map .edge.quiet:hover .lbl, svg.map .edge.quiet.sel .lbl, svg.map .edge.quiet.focus .lbl { display: inline; }
 svg.map.focus-on .edge:not(.focus):not(.sel) { opacity: 0.12; }
 svg.map.focus-on .edge.focus { opacity: 1; }

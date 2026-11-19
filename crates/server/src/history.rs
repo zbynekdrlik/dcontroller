@@ -388,6 +388,31 @@ impl Store {
 
     /// Every stored read of `device`'s bridge figures from `from` to `to`,
     /// oldest first.
+    /// The underruns `device` counted from `from` to `to`, each way, as
+    /// the 1 h figure counts them (a restart counts its new value from
+    /// zero), summed in the database so a day of reads is not loaded.
+    fn bridge_underruns(&self, device: &str, from: i64, to: i64) -> Result<(u64, u64), String> {
+        let db = self.conn();
+        let mut q = db
+            .prepare_cached(
+                "SELECT COALESCE(SUM(CASE WHEN pr IS NULL THEN 0
+                            WHEN pr != run OR tu < pt THEN tu ELSE tu - pt END), 0),
+                        COALESCE(SUM(CASE WHEN pr IS NULL THEN 0
+                            WHEN pr != run OR fu < pf THEN fu ELSE fu - pf END), 0)
+                 FROM (SELECT b.to_underruns AS tu, b.from_underruns AS fu, b.run_start_ms AS run,
+                          LAG(b.to_underruns) OVER w AS pt, LAG(b.from_underruns) OVER w AS pf,
+                          LAG(b.run_start_ms) OVER w AS pr
+                       FROM bridge b JOIN device d ON d.id = b.device
+                       WHERE d.name = ?1 COLLATE NOCASE AND b.t >= ?2 AND b.t <= ?3
+                       WINDOW w AS (ORDER BY b.t))",
+            )
+            .map_err(|e| e.to_string())?;
+        let (t, f): (i64, i64) = q
+            .query_row(params![device, from, to], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?;
+        Ok((u64::try_from(t).unwrap_or(0), u64::try_from(f).unwrap_or(0)))
+    }
+
     fn bridge_points(
         &self,
         device: &str,
@@ -916,10 +941,13 @@ impl Store {
                     })
                     .sum()
             };
+            let (to_24h, from_24h) = self.bridge_underruns(&device, now - 86_400, now)?;
             out.bridges.push(api::BridgeSummary {
                 device,
                 to_asio_underruns_1h: grown(|p| p.to_asio_underruns),
                 from_asio_underruns_1h: grown(|p| p.from_asio_underruns),
+                to_asio_underruns_24h: to_24h,
+                from_asio_underruns_24h: from_24h,
                 last,
             });
         }
@@ -1133,6 +1161,25 @@ mod bridge_tests {
         assert_eq!(b.device, "dsg");
         assert_eq!(b.last, again);
         assert_eq!((b.to_asio_underruns_1h, b.from_asio_underruns_1h), (3, 0));
+    }
+
+    #[test]
+    fn a_bridges_day_of_underruns_counts_past_the_hour_and_across_a_restart() {
+        let st = Store::memory().unwrap();
+        let now = 100_000;
+        // Older than a day: not counted, only the base of the next read.
+        st.add_bridge("dsg", &point(now - 90_000, 4)).unwrap();
+        st.add_bridge("dsg", &point(now - 80_000, 6)).unwrap();
+        st.add_bridge("dsg", &point(now - 40_000, 9)).unwrap();
+        st.add_bridge("dsg", &point(now - 3000, 9)).unwrap();
+        let mut again = point(now - 20, 2);
+        again.run_start_unix_ms += 1;
+        st.add_bridge("dsg", &again).unwrap();
+        let l = st.links(now).unwrap();
+        let b = &l.bridges[0];
+        // 6 to 9 in the day (+3), the restart's 2: 5; the hour has only the 2.
+        assert_eq!((b.to_asio_underruns_24h, b.from_asio_underruns_24h), (5, 0));
+        assert_eq!(b.to_asio_underruns_1h, 2);
     }
 
     #[test]
