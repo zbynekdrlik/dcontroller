@@ -475,6 +475,103 @@ pub struct ReceiverSummary {
 /// Buckets in a receiver's overview sparkline.
 pub const SPARK_POINTS: i64 = 60;
 
+/// `GET /api/clocks`: every dstack device's own clock figures (dsync's
+/// follower in the device and its view of the PC's dsync service), as last
+/// read with dstack's clock figures request (dcontroller #124, dstack #429).
+/// A device that does not answer the request is not listed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Clocks {
+    /// Unix seconds.
+    pub now: i64,
+    pub nodes: Vec<ClockNode>,
+}
+
+/// One device's clock, as it says itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClockNode {
+    pub device: String,
+    /// Seconds since its last reply.
+    pub age_s: i64,
+    /// What its media clock runs on: `none` (nothing ready), `follower`
+    /// (dsync's follower in the device), `service` (the PC's dsync
+    /// service), `system` (the test system clock, no PTP).
+    pub source: String,
+    /// The media clock has a time.
+    pub ready: bool,
+    pub follower: Option<Follower>,
+    pub service: Option<ServicePoll>,
+}
+
+/// dsync's follower inside a device.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Follower {
+    pub locked: bool,
+    pub settled: bool,
+    pub holdover: bool,
+    /// Why the clock does not use it (`stopped`, `no PTP heard`, `not
+    /// locked`, `not settled`, `waits to agree`); `None` while in use.
+    pub waiting: Option<String>,
+    /// The grandmaster of the last Sync it heard, `aa:bb:cc:dd:ee:ff`.
+    pub grandmaster: Option<String>,
+    /// Its runs in holdover since the device started.
+    pub holdovers: u32,
+    pub freq_ppb: i32,
+    /// The p90 of its error over its last windows, ns.
+    pub error_p90_ns: Option<i64>,
+}
+
+/// A device's poll of the PC's dsync service.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServicePoll {
+    /// The last poll: `usable`, `no reply`, `not locked`, `no date state`,
+    /// `step near`, `slewing`.
+    pub poll: String,
+    /// ms since the service's last reply.
+    pub reply_age_ms: Option<u32>,
+    pub locked: bool,
+    pub settled: bool,
+    pub holdover: bool,
+    pub holdovers: u32,
+    pub freq_ppb: i32,
+    pub grandmaster: Option<String>,
+}
+
+impl ClockNode {
+    /// Whether the device's clock is good (`ok`), limps (`warn`) or has no
+    /// usable time (`bad`), and why, in words. Plain reading of what the
+    /// device says: no thresholds of our own.
+    pub fn health(&self) -> (&'static str, String) {
+        if !self.ready {
+            return ("bad", "its media clock has no time yet".to_owned());
+        }
+        match self.source.as_str() {
+            "follower" => match &self.follower {
+                Some(f) if f.holdover => (
+                    "warn",
+                    "in holdover: no PTP heard, running on its own".to_owned(),
+                ),
+                Some(f) if !f.locked => ("bad", "follower not locked".to_owned()),
+                Some(f) if !f.settled => ("warn", "follower locked, not settled yet".to_owned()),
+                Some(_) => ("ok", "locked".to_owned()),
+                None => ("bad", "on its follower, which gives no figures".to_owned()),
+            },
+            "service" => match &self.service {
+                Some(s) if s.poll == "usable" && s.locked && !s.holdover => {
+                    ("ok", "locked through the PC's dsync service".to_owned())
+                }
+                Some(s) if s.holdover => ("warn", "the service poll is in holdover".to_owned()),
+                Some(s) if s.poll == "usable" => {
+                    ("bad", "the dsync service is not locked".to_owned())
+                }
+                Some(s) => ("bad", format!("dsync service: {}", s.poll)),
+                None => ("bad", "on the dsync service, not polled yet".to_owned()),
+            },
+            "system" => ("warn", "test system clock: no PTP".to_owned()),
+            _ => ("bad", "no clock source".to_owned()),
+        }
+    }
+}
+
 /// `GET /api/links`: the last hour of every recorded connection (one source
 /// device into one receiver, dcontroller #122) and of every bridge device,
 /// for the map.
@@ -574,6 +671,67 @@ impl RxChannel {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_clock_nodes_health_reads_what_the_device_says() {
+        let follower = |locked, settled, holdover| ClockNode {
+            ready: true,
+            source: "follower".into(),
+            follower: Some(Follower {
+                locked,
+                settled,
+                holdover,
+                ..Follower::default()
+            }),
+            ..ClockNode::default()
+        };
+        assert_eq!(
+            follower(true, true, false).health(),
+            ("ok", "locked".to_owned())
+        );
+        assert_eq!(follower(true, false, false).health().0, "warn");
+        assert_eq!(
+            follower(false, false, false).health(),
+            ("bad", "follower not locked".to_owned())
+        );
+        assert_eq!(follower(true, true, true).health().0, "warn");
+        let service = |poll: &str, locked| ClockNode {
+            ready: true,
+            source: "service".into(),
+            service: Some(ServicePoll {
+                poll: poll.into(),
+                locked,
+                ..ServicePoll::default()
+            }),
+            ..ClockNode::default()
+        };
+        assert_eq!(service("usable", true).health().0, "ok");
+        assert_eq!(service("usable", false).health().0, "bad");
+        assert_eq!(
+            service("no reply", false).health(),
+            ("bad", "dsync service: no reply".to_owned())
+        );
+        // No time at all beats everything else.
+        let mut cold = follower(true, true, false);
+        cold.ready = false;
+        assert_eq!(cold.health().0, "bad");
+        let system = ClockNode {
+            ready: true,
+            source: "system".into(),
+            ..ClockNode::default()
+        };
+        assert_eq!(system.health().0, "warn");
+        assert_eq!(
+            ClockNode {
+                ready: true,
+                ..ClockNode::default()
+            }
+            .health()
+            .0,
+            "bad"
+        );
+    }
+
     use super::*;
 
     #[test]
