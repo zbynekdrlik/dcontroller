@@ -477,13 +477,48 @@ pub fn MapPage() -> impl IntoView {
                     }
                     .hash()
                 };
+                // The receiver's other connections, each with its hour (#142,
+                // as mockup v2): from one connection to the next without
+                // going back to the schema.
+                let others: Vec<Row> = graph.with(|g| {
+                    let Some(n) = map::node_of(g, &to) else {
+                        return Vec::new();
+                    };
+                    let links = m.links.get();
+                    let links = links.as_ref().and_then(|r| r.as_ref().ok());
+                    let [ins, outs, inside] = map::edges_of(g, n);
+                    ins.into_iter()
+                        .map(|e| (e, format!("from {}", g.nodes[e.from].name)))
+                        .chain(
+                            outs.into_iter()
+                                .map(|e| (e, format!("to {}", g.nodes[e.to].name))),
+                        )
+                        .chain(inside.into_iter().map(|e| (e, String::new())))
+                        .filter(|(e, _)| !matches!(&e.sel, map::Sel::Link { from: f, to: t } if f.eq_ignore_ascii_case(&from) && t.eq_ignore_ascii_case(&to)))
+                        .map(|(e, name)| row_of(g, e, name, links))
+                        .collect()
+                });
+                let others = (!others.is_empty()).then(|| view! {
+                    <h3 class="sub">{format!("Other connections of {to}")}</h3>
+                    <div class="table-wrap">
+                    <table class="grid links" data-testid="map-others">
+                        <thead><tr><th>"Connection"</th><th>"Last hour"</th><th>"Latency"</th><th>"Typical"</th><th>"Worst peak"</th><th>"Lost 1 h"</th><th>"Lost 24 h"</th><th>"State"</th></tr></thead>
+                        <tbody>{others.into_iter().map(row).collect_view()}</tbody>
+                    </table>
+                    </div>
+                });
+                let changes = format!("#changes/{}", map::encode(&to));
                 view! {
                     {table}
+                    <h3 class="sub">"Do something"</h3>
                     <p class="actions" data-testid="map-actions">
-                        <a class="act" href=dev(&to)>{format!("Device {to}: settings, latency")}</a>
+                        <a class="act" href=dev(&to)>{format!("Change the latency of {to}")}</a>
+                        <a class="act" href=dev(&to)>{format!("Device {to}")}</a>
                         <a class="act" href=dev(&from)>{format!("Device {from}")}</a>
-                        <a class="act" href="#routing">"Routing"</a>
+                        <a class="act" href="#routing">"Open in Routing"</a>
+                        <a class="act" href=changes data-testid="map-changes">{format!("Changes of {to}")}</a>
                     </p>
+                    {others}
                 }
                 .into_any()
             }

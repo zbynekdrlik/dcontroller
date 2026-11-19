@@ -53,6 +53,17 @@ test("a channel renamed outside dcontroller shows in Changes", async ({ page }) 
     const at = logged.find((e: { name_after: string }) => e.name_after === "Ext 3").at;
     await expect(row).toContainText(new Date(at * 1000).toLocaleString("sk-SK", { timeZone: "Europe/Bratislava" }));
     await expect(row).toContainText("Spare 3");
+    // #142: `#changes/<device>` lists only what concerns that device (the
+    // Map's "Changes of" link); one with no change lists nothing of it.
+    await page.goto(`/#changes/${DEVICE}`);
+    await expect(page.getByTestId("changes-only")).toHaveText(`only ${DEVICE}`);
+    await expect(page.getByTestId("change-row").filter({ hasText: "Ext 3" }).first()).toBeVisible();
+    await page.goto("/#changes/no-such-device");
+    await expect(page.getByTestId("changes-only")).toHaveText("only no-such-device");
+    await expect(page.getByTestId("change-row")).toHaveCount(0);
+    await page.getByTestId("changes-every").click();
+    await expect(page).toHaveURL(/#changes$/);
+    await expect(page.getByTestId("change-row").filter({ hasText: "Ext 3" }).first()).toBeVisible();
   } finally {
     rename(arc, 3, "Spare 3");
     // The other tests see the device as it was: wait until a read has it back.

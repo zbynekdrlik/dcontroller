@@ -53,6 +53,8 @@ fn App() -> impl IntoView {
     // The devices whose channels are open, kept across refreshes.
     provide_context(Open(RwSignal::new(BTreeSet::new())));
     provide_context(NewestFirst(RwSignal::new(false)));
+    let changes_only = RwSignal::new(hash_device("#changes/"));
+    provide_context(ChangesOnly(changes_only));
     provide_context(Expanded {
         tx: RwSignal::new(BTreeSet::new()),
         rx: RwSignal::new(BTreeSet::new()),
@@ -137,6 +139,12 @@ fn App() -> impl IntoView {
                             Duration::from_millis(60),
                         );
                     }
+                }
+            }
+            if v == View::Changes {
+                let d = hash_device("#changes/");
+                if changes_only.get_untracked() != d {
+                    changes_only.set(d);
                 }
             }
             if v == View::Devices {
@@ -559,6 +567,10 @@ const CLOCKS_POLL: Duration = Duration::from_secs(4);
 /// The devices' dsync clock figures, as last read.
 #[derive(Clone, Copy)]
 struct Clk(RwSignal<Option<Result<dcontroller_api::Clocks, String>>>);
+
+/// The device the Changes page is narrowed to (`#changes/<device>`).
+#[derive(Clone, Copy)]
+struct ChangesOnly(RwSignal<Option<String>>);
 
 /// Every connection's state, for the routing matrix.
 #[derive(Clone, Copy)]
@@ -1645,13 +1657,20 @@ fn ChangeLog() -> impl IntoView {
     // 0: everything, 1: changes made, 2: what devices did.
     let filter = RwSignal::new(0u8);
     let limit = RwSignal::new(CHANGES_PAGE);
+    // `#changes/<device>`: only what concerns that device (a connection's
+    // "Changes of" link on the Map, #142); the hash listener keeps it.
+    let ChangesOnly(only) = expect_context::<ChangesOnly>();
     move || {
+        let only = only.get();
         match list.get() {
         None => view! { <p class="status">"Loading…"</p> }.into_any(),
         Some(Err(e)) => view! { <p class="status error">{format!("Changes not readable: {e}")}</p> }.into_any(),
         Some(Ok(v)) if v.is_empty() => view! { <p class="status" data-testid="changes-empty">"No changes yet. Changes made here, and changes seen on the network (made in Dante Controller, on a mixer or a device itself), show up in this list."</p> }.into_any(),
         Some(Ok(v)) => {
-            let items = changes::fold(&v);
+            let mut items = changes::fold(&v);
+            if let Some(name) = &only {
+                items.retain(|i| i.concerns(name));
+            }
             let made = items.iter().filter(|i| !i.is_status()).count();
             let status = items.len() - made;
             let f = filter.get();
@@ -1690,6 +1709,10 @@ fn ChangeLog() -> impl IntoView {
                         {seg(1, format!("Changes made {made}"), "changes-made")}
                         {seg(2, format!("Device status {status}"), "changes-status")}
                     </div>
+                    {only.clone().map(|name| view! {
+                        <span class="chip info" data-testid="changes-only">{format!("only {name}")}</span>
+                        <a class="act" href="#changes" data-testid="changes-every">"every device"</a>
+                    })}
                     <span class="muted small">"A connection that stopped and received again is one line, with how long it took."</span>
                 </div>
                 <div class="table-wrap">

@@ -148,6 +148,20 @@ test("the map is the start page: every device a box, every connection a line, a 
   await expect(page.locator('[data-testid="map-range"][data-range="300"]')).toHaveClass(/\bon\b/);
   await expect(chart.locator("canvas")).toBeVisible();
 
+  // #142, as mockup v2: "Do something" under the chart, and the receiver's
+  // other connections (never the one shown), each a row with its hour.
+  const acts = page.getByTestId("map-actions");
+  await expect(acts.getByRole("link", { name: `Change the latency of ${DEVICE}` })).toHaveAttribute(
+    "href",
+    `#map/device/${DEVICE}`,
+  );
+  await expect(acts.getByRole("link", { name: "Open in Routing" })).toHaveAttribute("href", "#routing");
+  await expect(page.getByTestId("map-changes")).toHaveAttribute("href", `#changes/${DEVICE}`);
+  const others = page.getByTestId("map-others");
+  if ((await others.count()) > 0) {
+    await expect(others.locator(`[data-edge="#map/link/${DEVICE}/${DEVICE}"]`)).toHaveCount(0);
+  }
+
   // The bridge's way to Dante is a connection too: its hold time, its chart.
   const up = map.locator('[data-testid="map-edge"][data-from="SoundGrid"]');
   await expect(up.locator(".lbl text")).toContainText("7.30 ms");
