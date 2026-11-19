@@ -2076,6 +2076,7 @@ fn ClockView(d: Devices) -> impl IntoView {
 
 #[component]
 fn DeviceCard(dev: Device, joined: String) -> impl IntoView {
+    let body = dev.clone();
     let Open(open) = expect_context::<Open>();
     let is_open = open.with_untracked(|o| o.contains(&dev.name));
     let key = dev.name.clone();
@@ -2104,7 +2105,6 @@ fn DeviceCard(dev: Device, joined: String) -> impl IntoView {
         .map_or(0, |c| c.rx.iter().filter(|r| r.source.is_some()).count());
     let name = dev.name.clone();
     let name_attr = dev.name.clone();
-    let flows_name = dev.name.clone();
     // A receiver's latency (#106): its last hour as a chip; a click shows
     // its latency on top of this page.
     let latency = dev
@@ -2154,55 +2154,68 @@ fn DeviceCard(dev: Device, joined: String) -> impl IntoView {
                     <span class="subs" data-testid="device-joined">{joined}</span>
                     {latency}
                 </summary>
-                {Some({
-                    let mut rows = settings_rows(&dev.settings.clone().unwrap_or_default(), dev.info.as_ref());
-                    rows.extend(dev.clock.as_ref().map(clock_rows).unwrap_or_default());
-                    rows.extend(dev.network.as_deref().map(network_rows).unwrap_or_default());
-                    rows
-                }).filter(|r| !r.is_empty()).map(|rows| view! {
-                    <table class="settings" data-testid="settings-table">
-                        {rows.into_iter().map(|(k, v)| view! { <tr><th>{k}</th><td>{v}</td></tr> }).collect_view()}
-                    </table>
-                })}
-                <div class="actions">
-                    <button data-testid="rename-device" on:click={
-                        let name = dev.name.clone();
-                        move |_| {
-                            let ctl = expect_context::<Ctl>();
-                            if let Some(Ok(d)) = ctl.devices.get_untracked() {
-                                ctl.renaming.set(Some(RenameAsk::device(&d, &name)));
-                            }
-                        }
-                    }>"Rename device"</button>
-                    {settings::asks(&dev).into_iter().map(|a| {
-                        let id = format!("change-{}", a.kind.name().replace(' ', "-"));
-                        let label = format!("Change {}", a.kind.name());
-                        view! {
-                            <button data-testid=id on:click=move |_| {
-                                expect_context::<Ctl>().setting.set(Some(a.clone()));
-                            }>{label}</button>
-                        }
-                    }).collect_view()}
-                </div>
-                {dev.error.clone().map(|e| view! {
-                    <p class="error" data-testid="device-error">{format!("Last read failed: {e}")}</p>
-                })}
-                {dev.channels.map(|c| view! {
-                    <h3>"Receive"</h3>
-                    <table class="rx" data-testid="rx-table">
-                        <thead><tr><th>"#"</th><th>"Channel"</th><th>"Source"</th><th>"Status"</th></tr></thead>
-                        <tbody>{c.rx.into_iter().map(|r| view! { <RxRow r=r/> }).collect_view()}</tbody>
-                    </table>
-                    <h3>"Transmit"</h3>
-                    <ol class="tx" data-testid="tx-list">
-                        {c.tx.clone().into_iter().map(|t| view! {
-                            <li data-testid="tx-channel" value=t.channel>{t.label}</li>
-                        }).collect_view()}
-                    </ol>
-                    <TxFlowsBox device=flows_name.clone() tx=c.tx.iter().map(|t| (t.channel, t.label.clone())).collect()/>
-                })}
+                <DeviceBody dev=body/>
             </details>
         </li>
+    }
+}
+
+/// Everything a device's card holds under its summary line: its settings,
+/// clock, network and product rows, the rename and change buttons, the
+/// last read's error, its RX channels with their sources, its TX channels
+/// and flows. One piece, so the card and the map's device detail (#122)
+/// show the same.
+#[component]
+fn DeviceBody(dev: Device) -> impl IntoView {
+    let flows_name = dev.name.clone();
+    view! {
+        {Some({
+            let mut rows = settings_rows(&dev.settings.clone().unwrap_or_default(), dev.info.as_ref());
+            rows.extend(dev.clock.as_ref().map(clock_rows).unwrap_or_default());
+            rows.extend(dev.network.as_deref().map(network_rows).unwrap_or_default());
+            rows
+        }).filter(|r| !r.is_empty()).map(|rows| view! {
+            <table class="settings" data-testid="settings-table">
+                {rows.into_iter().map(|(k, v)| view! { <tr><th>{k}</th><td>{v}</td></tr> }).collect_view()}
+            </table>
+        })}
+        <div class="actions">
+            <button data-testid="rename-device" on:click={
+                let name = dev.name.clone();
+                move |_| {
+                    let ctl = expect_context::<Ctl>();
+                    if let Some(Ok(d)) = ctl.devices.get_untracked() {
+                        ctl.renaming.set(Some(RenameAsk::device(&d, &name)));
+                    }
+                }
+            }>"Rename device"</button>
+            {settings::asks(&dev).into_iter().map(|a| {
+                let id = format!("change-{}", a.kind.name().replace(' ', "-"));
+                let label = format!("Change {}", a.kind.name());
+                view! {
+                    <button data-testid=id on:click=move |_| {
+                        expect_context::<Ctl>().setting.set(Some(a.clone()));
+                    }>{label}</button>
+                }
+            }).collect_view()}
+        </div>
+        {dev.error.clone().map(|e| view! {
+            <p class="error" data-testid="device-error">{format!("Last read failed: {e}")}</p>
+        })}
+        {dev.channels.map(|c| view! {
+            <h3>"Receive"</h3>
+            <table class="rx" data-testid="rx-table">
+                <thead><tr><th>"#"</th><th>"Channel"</th><th>"Source"</th><th>"Status"</th></tr></thead>
+                <tbody>{c.rx.into_iter().map(|r| view! { <RxRow r=r/> }).collect_view()}</tbody>
+            </table>
+            <h3>"Transmit"</h3>
+            <ol class="tx" data-testid="tx-list">
+                {c.tx.clone().into_iter().map(|t| view! {
+                    <li data-testid="tx-channel" value=t.channel>{t.label}</li>
+                }).collect_view()}
+            </ol>
+            <TxFlowsBox device=flows_name.clone() tx=c.tx.iter().map(|t| (t.channel, t.label.clone())).collect()/>
+        })}
     }
 }
 

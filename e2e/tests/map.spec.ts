@@ -7,7 +7,7 @@ import { test, expect, type ConsoleMessage } from "@playwright/test";
 const DEVICE = "dc-e2e-device";
 const BRIDGE = "dc-e2e-bridge";
 
-test("the map is the start page: every device a box, every connection a line, a click shows that connection's chart", async ({ page }) => {
+test("the map is the start page: every device a box, every connection a line, a click shows that connection's chart or that device's detail", async ({ page }) => {
   const msgs: string[] = [];
   page.on("console", (m: ConsoleMessage) => {
     if (m.type() === "error" || m.type() === "warning") msgs.push(`${m.type()}: ${m.text()}`);
@@ -92,10 +92,52 @@ test("the map is the start page: every device a box, every connection a line, a 
   await expect(page.getByTestId("map-title")).toHaveText("SoundGrid → Dante", { timeout: 30_000 });
   await expect(page.getByTestId("map-held").locator(".v")).toHaveText("7.30 ms", { timeout: 30_000 });
 
-  // A click on a device's box opens the device (its detail comes to the map in step 2).
+  // A click on a device's box: its detail under the schema (step 2), its
+  // box and its connections standing out.
   await map.locator(`[data-testid="map-node"][data-node="${DEVICE}"]`).click();
-  await expect(page).toHaveURL(new RegExp(`#devices/${DEVICE}$`));
-  await expect(page.getByTestId("tab-devices")).toHaveClass(/\bon\b/);
-  await expect(page.getByTestId("lat-title")).toHaveText(`Latency · ${DEVICE}`);
+  await expect(page).toHaveURL(new RegExp(`#map/device/${DEVICE}$`));
+  await expect(page.getByTestId("tab-map")).toHaveClass(/\bon\b/);
+  await expect(page.getByTestId("map-title")).toHaveText(DEVICE);
+  await expect(map.locator(`[data-testid="map-node"][data-node="${DEVICE}"]`)).toHaveClass(/\bsel\b/);
+  await expect(line).toHaveClass(/\bof\b/);
+  await expect(page.getByTestId("map-what")).toContainText("4 TX · 4 RX");
+  await expect(page.getByTestId("map-chart")).toBeHidden();
+  await expect(page.locator('[data-testid="map-range"]').first()).toBeHidden();
+  // Its connections, each with the last hour's figures.
+  const incoming = page.getByTestId("map-dev-in").getByTestId("map-dev-row");
+  await expect(incoming).toHaveCount(1);
+  await expect(incoming).toContainText(`from ${DEVICE}`);
+  await expect(incoming).toContainText("10.00 ms");
+  await expect(incoming.locator("svg.spark path.line")).toHaveAttribute("d", /^M/);
+  await expect(page.getByTestId("map-dev-out").getByTestId("map-dev-row")).toHaveCount(1);
+  // Everything today's device card holds, by the same code.
+  const body = page.getByTestId("map-device-body");
+  await expect(body.getByTestId("settings-table")).toContainText("Sample rate");
+  await expect(body.getByTestId("rename-device")).toBeVisible();
+  await expect(body.getByTestId("change-latency")).toBeVisible();
+  await expect(body.getByTestId("rx-table").getByTestId("rx-channel")).toHaveCount(4);
+  await expect(body.getByTestId("tx-list").getByTestId("tx-channel")).toHaveCount(4);
+  // A change asked from here opens the same confirm dialog as on the card.
+  await body.getByTestId("change-latency").click();
+  await expect(page.getByTestId("setting-dialog")).toBeVisible();
+  await page.getByTestId("setting-cancel").click();
+  await expect(page.getByTestId("setting-dialog")).toBeHidden();
+  await page.screenshot({ path: "test-results/map-device.png", fullPage: true });
+  // A row leads to that connection's chart.
+  await incoming.click();
+  await expect(page).toHaveURL(new RegExp(`#map/link/${DEVICE}/${DEVICE}$`));
+  await expect(page.getByTestId("map-chart").locator("canvas")).toBeVisible();
+  // The bridge: its two ways inside it.
+  await map.locator(`[data-testid="map-node"][data-node="${BRIDGE}"]`).click();
+  await expect(page.getByTestId("map-title")).toHaveText(BRIDGE);
+  const inside = page.getByTestId("map-dev-bridge").getByTestId("map-dev-row");
+  await expect(inside).toHaveCount(2);
+  await expect(inside.first()).toContainText("SoundGrid → Dante");
+  await expect(inside.first()).toContainText("7.30 ms");
+  // The device's link from a connection's panel leads here too.
+  await inside.first().click();
+  await expect(page.getByTestId("map-title")).toHaveText("SoundGrid → Dante");
+  await page.getByTestId("map-actions").getByRole("link", { name: `Device ${BRIDGE}` }).click();
+  await expect(page).toHaveURL(new RegExp(`#map/device/${BRIDGE}$`));
   expect(msgs).toEqual([]);
 });

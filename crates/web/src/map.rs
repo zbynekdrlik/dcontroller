@@ -37,6 +37,8 @@ pub enum Sel {
     Link { from: String, to: String },
     /// A bridge device's own path: its ASIO side to Dante, or back.
     Bridge { device: String, to_dante: bool },
+    /// A device: its detail shows, with its connections.
+    Device { name: String },
 }
 
 /// `text` with every byte outside `A-Z a-z 0-9 - _ . ~` as `%XX`.
@@ -80,13 +82,21 @@ impl Sel {
                 encode(device),
                 if *to_dante { "to-dante" } else { "to-asio" }
             ),
+            Sel::Device { name } => format!("#map/device/{}", encode(name)),
         }
     }
 
     /// The connection a hash names, if it names one.
     pub fn from_hash(hash: &str) -> Option<Sel> {
         let mut parts = hash.strip_prefix("#map/")?.split('/');
-        let (kind, a, b) = (parts.next()?, parts.next()?, parts.next()?);
+        let (kind, a) = (parts.next()?, parts.next()?);
+        if kind == "device" {
+            return match parts.next() {
+                None => Some(Sel::Device { name: decode(a)? }),
+                Some(_) => None,
+            };
+        }
+        let b = parts.next()?;
         if parts.next().is_some() {
             return None;
         }
@@ -104,11 +114,12 @@ impl Sel {
     }
 
     /// The device whose history holds this connection: the receiver, or
-    /// the bridge.
-    pub fn device(&self) -> &str {
+    /// the bridge; none for a device (its connections carry the charts).
+    pub fn device(&self) -> Option<&str> {
         match self {
-            Sel::Link { to, .. } => to,
-            Sel::Bridge { device, .. } => device,
+            Sel::Link { to, .. } => Some(to),
+            Sel::Bridge { device, .. } => Some(device),
+            Sel::Device { .. } => None,
         }
     }
 
@@ -128,6 +139,7 @@ impl Sel {
                     to_dante: y,
                 },
             ) => a.eq_ignore_ascii_case(b) && x == y,
+            (Sel::Device { name: a }, Sel::Device { name: b }) => a.eq_ignore_ascii_case(b),
             _ => false,
         }
     }
@@ -423,6 +435,43 @@ pub fn worst(g: &Graph) -> Option<&Edge> {
 /// The edge `sel` names, if the graph has it.
 pub fn edge_of<'a>(g: &'a Graph, sel: &Sel) -> Option<&'a Edge> {
     g.edges.iter().find(|e| e.sel.same(sel))
+}
+
+/// The device's box `name` names (no ASIO side, no missing source).
+pub fn node_of(g: &Graph, name: &str) -> Option<usize> {
+    g.nodes
+        .iter()
+        .position(|n| n.kind == NodeKind::Device && n.name.eq_ignore_ascii_case(name))
+}
+
+/// Whether the network has what `sel` names.
+pub fn has(g: &Graph, sel: &Sel) -> bool {
+    match sel {
+        Sel::Device { name } => node_of(g, name).is_some(),
+        _ => edge_of(g, sel).is_some(),
+    }
+}
+
+/// A device's connections: into it, out of it, and inside it (a bridge's
+/// two ways), each in the graph's order.
+pub fn edges_of(g: &Graph, node: usize) -> [Vec<&Edge>; 3] {
+    let dante = |e: &&Edge| matches!(e.sel, Sel::Link { .. });
+    [
+        g.edges
+            .iter()
+            .filter(dante)
+            .filter(|e| e.to == node)
+            .collect(),
+        g.edges
+            .iter()
+            .filter(dante)
+            .filter(|e| e.from == node)
+            .collect(),
+        g.edges
+            .iter()
+            .filter(|e| matches!(e.sel, Sel::Bridge { .. }) && (e.from == node || e.to == node))
+            .collect(),
+    ]
 }
 
 // ---- layout ----
@@ -758,10 +807,17 @@ pub const QUIET_OVER: usize = 12;
 /// The schema as SVG: a box per node (`data-node`), a line per connection
 /// (`data-edge`: its hash), `chosen` standing out with its two ends.
 pub fn svg(g: &Graph, p: &Placed, chosen: Option<&Sel>) -> String {
+    let on = |e: &Edge| chosen.is_some_and(|c| c.same(&e.sel));
+    // A chosen device: its box, and its connections brought forward.
+    let device = chosen.and_then(|c| match c {
+        Sel::Device { name } => node_of(g, name),
+        _ => None,
+    });
     let dense = g.edges.len() > QUIET_OVER;
     let mut s = format!(
-        r#"<svg class="map{}{}" viewBox="0 0 {WIDTH} {:.0}" role="img" aria-label="Devices and their connections">"#,
+        r#"<svg class="map{}{}{}" viewBox="0 0 {WIDTH} {:.0}" role="img" aria-label="Devices and their connections">"#,
         if chosen.is_some() { " has-sel" } else { "" },
+        if device.is_some() { " has-device" } else { "" },
         if dense { " dense" } else { "" },
         p.height
     );
@@ -783,11 +839,11 @@ pub fn svg(g: &Graph, p: &Placed, chosen: Option<&Sel>) -> String {
             ));
         }
     }
-    let on = |e: &Edge| chosen.is_some_and(|c| c.same(&e.sel));
+    let of = |e: &Edge| device.is_some_and(|d| e.from == d || e.to == d);
     let ends: Vec<usize> = g
         .edges
         .iter()
-        .filter(|e| on(e))
+        .filter(|e| on(e) || of(e))
         .flat_map(|e| [e.from, e.to])
         .collect();
     // The chosen line last: on top of the others.
@@ -802,8 +858,9 @@ pub fn svg(g: &Graph, p: &Placed, chosen: Option<&Sel>) -> String {
             format!(r#"<tspan class="lost"> · {}</tspan>"#, esc(t))
         });
         s.push_str(&format!(
-            r#"<g class="edge {class}{}{}" data-testid="map-edge" data-edge="{}" data-from="{}" data-to="{}" data-state="{class}"><path class="line" d="{}" marker-end="url(#map-arrow-{class})"/><g class="lbl"><rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.0}" rx="10"/><text x="{:.1}" y="{:.1}">{}{lost}</text></g><path class="hit" d="{}"><title>{}</title></path></g>"#,
+            r#"<g class="edge {class}{}{}{}" data-testid="map-edge" data-edge="{}" data-from="{}" data-to="{}" data-state="{class}"><path class="line" d="{}" marker-end="url(#map-arrow-{class})"/><g class="lbl"><rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.0}" rx="10"/><text x="{:.1}" y="{:.1}">{}{lost}</text></g><path class="hit" d="{}"><title>{}</title></path></g>"#,
             if on(e) { " sel" } else { "" },
+            if of(e) { " of" } else { "" },
             if dense && matches!(e.state, State::Ok | State::Unknown) {
                 " quiet"
             } else {
@@ -843,7 +900,13 @@ pub fn svg(g: &Graph, p: &Placed, chosen: Option<&Sel>) -> String {
         let room = if n.badge.is_some() { 17 } else { 24 };
         s.push_str(&format!(
             r#"<g class="node{kind}{}" data-testid="map-node" data-node="{}"><title>{}</title><rect x="{:.1}" y="{:.1}" width="{:.0}" height="{:.0}" rx="10"/><text class="name" x="{:.1}" y="{:.1}">{}</text><text class="sub" x="{:.1}" y="{:.1}">{}</text><text class="sub" x="{:.1}" y="{:.1}">{}</text>{badge}</g>"#,
-            if ends.contains(&i) { " rel" } else { "" },
+            if device == Some(i) {
+                " sel"
+            } else if ends.contains(&i) {
+                " rel"
+            } else {
+                ""
+            },
             esc(&n.name),
             esc(&n.name),
             r.x,
@@ -971,8 +1034,19 @@ mod tests {
         };
         assert_eq!(b.hash(), "#map/bridge/dsg/to-asio");
         assert_eq!(Sel::from_hash(&b.hash()), Some(b.clone()));
-        assert_eq!(l.device(), "amp-1");
-        assert_eq!(b.device(), "dsg");
+        assert_eq!(l.device(), Some("amp-1"));
+        assert_eq!(b.device(), Some("dsg"));
+        let d = Sel::Device {
+            name: "stage rack".into(),
+        };
+        assert_eq!(d.hash(), "#map/device/stage%20rack");
+        assert_eq!(Sel::from_hash(&d.hash()), Some(d.clone()));
+        assert_eq!(d.device(), None);
+        assert!(d.same(&Sel::Device {
+            name: "STAGE RACK".into()
+        }));
+        assert!(!d.same(&l));
+        assert_eq!(Sel::from_hash("#map/device/a/b"), None);
         for bad in [
             "#map",
             "#map/link/a",
@@ -1168,6 +1242,44 @@ mod tests {
         assert_eq!(s.matches(" rel\"").count(), 2);
         assert!(s.contains(r#"class="node asio""#));
         assert!(s.contains(r#"class="node missing""#));
+        // A chosen device: its box, its connections and their other ends.
+        let dv = svg(
+            &g,
+            &p,
+            Some(&Sel::Device {
+                name: "BRIDGE".into(),
+            }),
+        );
+        assert!(dv.starts_with(r#"<svg class="map has-sel has-device""#));
+        assert!(dv.contains(r#"class="node sel" data-testid="map-node" data-node="bridge""#));
+        // player in, stream out, and its two ways to the ASIO side.
+        assert_eq!(dv.matches(" of\"").count() + dv.matches(" of ").count(), 4);
+        assert_eq!(
+            dv.matches(r#"class="node rel""#).count()
+                + dv.matches(r#"class="node asio rel""#).count(),
+            3
+        );
+        assert!(has(
+            &g,
+            &Sel::Device {
+                name: "Bridge".into()
+            }
+        ));
+        assert!(!has(
+            &g,
+            &Sel::Device {
+                name: "SoundGrid".into()
+            }
+        ));
+        assert!(!has(
+            &g,
+            &Sel::Device {
+                name: "gone".into()
+            }
+        ));
+        assert!(has(&g, &chosen));
+        let [ins, outs, inside] = edges_of(&g, node_of(&g, "bridge").unwrap());
+        assert_eq!((ins.len(), outs.len(), inside.len()), (1, 1, 2));
         // Nothing chosen: nothing stands out.
         assert!(svg(&g, &p, None).starts_with(r#"<svg class="map" "#));
         // A small network shows every line's number.
