@@ -86,6 +86,7 @@ fn App() -> impl IntoView {
         chosen: RwSignal::new(map::Sel::from_hash(
             &window().location().hash().unwrap_or_default(),
         )),
+        table: RwSignal::new(false),
     };
     provide_context(mp);
     // The hash is the page's address: a link, back or forward moves the view

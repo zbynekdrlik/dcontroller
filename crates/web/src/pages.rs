@@ -159,22 +159,101 @@ pub(crate) fn spark_of(values: &[Option<u32>], class: &'static str) -> AnyView {
     .into_any()
 }
 
-/// One health tile of the overview.
-fn tile(
+/// One health tile: a title, a value (long names get a smaller type so
+/// they are not cut), a line under it; a click goes to `href`.
+pub(crate) fn tile(
     id: &'static str,
     title: &'static str,
     value: String,
     sub: String,
     class: &'static str,
-    href: &'static str,
+    href: String,
 ) -> impl IntoView {
+    let size = if value.chars().count() > 12 {
+        "tile-value long"
+    } else {
+        "tile-value"
+    };
+    let hover = value.clone();
     view! {
         <a class=format!("tile {class}") href=href data-testid=id>
             <span class="tile-title">{title}</span>
-            <span class="tile-value">{value}</span>
+            <span class=size title=hover>{value}</span>
             <span class="tile-sub">{sub}</span>
         </a>
     }
+}
+
+/// The tiles that come from the device list alone, for the overview and
+/// the map: devices, subscriptions, clock, network.
+pub(crate) fn device_tiles(d: &Devices) -> [AnyView; 4] {
+    let read = d.devices.iter().filter(|x| x.channels.is_some()).count();
+    let failing = d.devices.iter().filter(|x| x.error.is_some()).count();
+    let subs: Vec<&RxChannel> = d
+        .devices
+        .iter()
+        .filter_map(|x| x.channels.as_ref())
+        .flat_map(|c| c.rx.iter())
+        .filter(|r| r.source.is_some())
+        .collect();
+    let not_rx = subs.iter().filter(|r| !r.receiving()).count();
+    let crow = clock::rows(d);
+    let (cline, cwarn) = clock::summary(&crow);
+    let leader = clock::leaders(&crow).first().map(|s| (*s).to_owned());
+    let nrow = net::rows(d);
+    let (_, nwarn) = net::summary(&nrow);
+    let slow = nrow.iter().filter(|r| r.warn).count();
+    let nread = nrow.iter().filter(|r| r.primary.is_some()).count();
+    [
+        tile(
+            "tile-devices",
+            "Devices",
+            format!("{}", d.devices.len()),
+            if failing > 0 {
+                format!("{read} read · {failing} not answering")
+            } else {
+                format!("{read} read, all answering")
+            },
+            if failing > 0 { "warn" } else { "ok" },
+            "#devices".to_owned(),
+        )
+        .into_any(),
+        tile(
+            "tile-subs",
+            "Subscriptions",
+            format!("{}", subs.len()),
+            if not_rx > 0 {
+                format!("{not_rx} not receiving")
+            } else {
+                "all receiving".to_owned()
+            },
+            if not_rx > 0 { "warn" } else { "ok" },
+            "#routing".to_owned(),
+        )
+        .into_any(),
+        tile(
+            "tile-clock",
+            "Clock",
+            leader.unwrap_or_else(|| "no leader".to_owned()),
+            cline,
+            if cwarn { "warn" } else { "ok" },
+            "#clock".to_owned(),
+        )
+        .into_any(),
+        tile(
+            "tile-network",
+            "Network",
+            format!("{nread} links"),
+            if slow > 0 {
+                format!("{slow} slow or down")
+            } else {
+                "every link at full speed".to_owned()
+            },
+            if nwarn { "warn" } else { "ok" },
+            "#network".to_owned(),
+        )
+        .into_any(),
+    ]
 }
 
 /// The overview: the network's health at a glance, and every receiver's
@@ -187,23 +266,7 @@ pub fn OverviewPage() -> impl IntoView {
         let Some(Ok(d)) = ctl.devices.get() else {
             return view! { <p class="status" data-testid="status">"Loading…"</p> }.into_any();
         };
-        let read = d.devices.iter().filter(|x| x.channels.is_some()).count();
-        let failing = d.devices.iter().filter(|x| x.error.is_some()).count();
-        let subs: Vec<&RxChannel> = d
-            .devices
-            .iter()
-            .filter_map(|x| x.channels.as_ref())
-            .flat_map(|c| c.rx.iter())
-            .filter(|r| r.source.is_some())
-            .collect();
-        let not_rx = subs.iter().filter(|r| !r.receiving()).count();
-        let crow = clock::rows(&d);
-        let (cline, cwarn) = clock::summary(&crow);
-        let leader = clock::leaders(&crow).first().map(|s| (*s).to_owned());
-        let nrow = net::rows(&d);
-        let (_, nwarn) = net::summary(&nrow);
-        let slow = nrow.iter().filter(|r| r.warn).count();
-        let nread = nrow.iter().filter(|r| r.primary.is_some()).count();
+        let [devices, subs, clock, network] = device_tiles(&d);
         let o = h.overview.get();
         let recs = o
             .as_ref()
@@ -238,19 +301,12 @@ pub fn OverviewPage() -> impl IntoView {
         };
         view! {
             <section class="tiles">
-                {tile("tile-devices", "Devices", format!("{}", d.devices.len()),
-                    if failing > 0 { format!("{read} read · {failing} not answering") } else { format!("{read} read, all answering") },
-                    if failing > 0 { "warn" } else { "ok" }, "#devices")}
+                {devices}
                 {tile("tile-latency", "Receivers clean · 1 h", format!("{clean} / {}", recs.len()), lat_sub,
-                    lat_class, "#devices")}
-                {tile("tile-subs", "Subscriptions", format!("{}", subs.len()),
-                    if not_rx > 0 { format!("{not_rx} not receiving") } else { "all receiving".to_owned() },
-                    if not_rx > 0 { "warn" } else { "ok" }, "#routing")}
-                {tile("tile-clock", "Clock", leader.unwrap_or_else(|| "no leader".to_owned()), cline,
-                    if cwarn { "warn" } else { "ok" }, "#clock")}
-                {tile("tile-network", "Network", format!("{nread} links"),
-                    if slow > 0 { format!("{slow} slow or down") } else { "every link at full speed".to_owned() },
-                    if nwarn { "warn" } else { "ok" }, "#network")}
+                    lat_class, "#devices".to_owned())}
+                {subs}
+                {clock}
+                {network}
             </section>
         }
         .into_any()

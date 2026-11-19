@@ -14,6 +14,8 @@ use wasm_bindgen::JsCast;
 pub struct MapCtl {
     pub links: RwSignal<Option<Result<Links, String>>>,
     pub chosen: RwSignal<Option<map::Sel>>,
+    /// The Links table shows in place of the schema.
+    pub table: RwSignal<bool>,
 }
 
 /// Reads the connections' summaries.
@@ -38,6 +40,28 @@ fn chip(state: map::State, bridge: bool) -> (&'static str, &'static str) {
     }
 }
 
+/// A connection's row: `name` for a Dante connection, the bridge's own
+/// wording for its two ways.
+fn row_of(g: &map::Graph, e: &map::Edge, name: String, links: Option<&Links>) -> Row {
+    let sum = match &e.sel {
+        map::Sel::Link { from, to } => map::summary_of(links, from, to).cloned(),
+        _ => None,
+    };
+    let bridge = matches!(e.sel, map::Sel::Bridge { .. });
+    Row {
+        hash: e.sel.hash(),
+        name: match e.sel {
+            map::Sel::Bridge { to_dante: true, .. } => format!("{} → Dante", g.nodes[e.from].name),
+            map::Sel::Bridge { .. } => format!("Dante → {}", g.nodes[e.to].name),
+            _ => name,
+        },
+        label: e.label.clone(),
+        lost: e.lost.clone(),
+        chip: chip(e.state, bridge),
+        sum,
+    }
+}
+
 /// One connection of the chosen device, as its table shows it.
 struct Row {
     hash: String,
@@ -49,6 +73,11 @@ struct Row {
 }
 
 fn row(r: Row) -> impl IntoView {
+    row_marked(r, false)
+}
+
+/// A connection's row; `on` marks the one that shows below.
+fn row_marked(r: Row, on: bool) -> impl IntoView {
     let go = {
         let hash = r.hash.clone();
         move |_| {
@@ -75,7 +104,7 @@ fn row(r: Row) -> impl IntoView {
         ),
     };
     view! {
-        <tr class="click" data-testid="map-dev-row" data-edge=r.hash.clone() on:click=go>
+        <tr class=if on { "click sel" } else { "click" } data-testid="map-dev-row" data-edge=r.hash.clone() on:click=go>
             <td><a class="strong" href=r.hash.clone()>{r.name}</a></td>
             <td>{pages::spark_of(r.sum.as_ref().map_or(&[], |s| s.spark.as_slice()), "spark")}</td>
             <td class="num">{r.label}</td>
@@ -469,6 +498,8 @@ pub fn MapPage() -> impl IntoView {
                         return Vec::new();
                     };
                     let [ins, outs, inside] = map::edges_of(g, n);
+                    let links = m.links.get();
+                    let links = links.as_ref().and_then(|r| r.as_ref().ok());
                     let rows = |edges: Vec<&map::Edge>,
                                 other: fn(&map::Edge) -> usize,
                                 word: &str|
@@ -476,35 +507,8 @@ pub fn MapPage() -> impl IntoView {
                         edges
                             .into_iter()
                             .map(|e| {
-                                let sum = match &e.sel {
-                                    map::Sel::Link { from, to } => m.links.with(|l| {
-                                        map::summary_of(
-                                            l.as_ref().and_then(|r| r.as_ref().ok()),
-                                            from,
-                                            to,
-                                        )
-                                        .cloned()
-                                    }),
-                                    _ => None,
-                                };
-                                let bridge = matches!(e.sel, map::Sel::Bridge { .. });
-                                Row {
-                                    hash: e.sel.hash(),
-                                    name: if bridge {
-                                        match e.sel {
-                                            map::Sel::Bridge { to_dante: true, .. } => {
-                                                format!("{} → Dante", g.nodes[e.from].name)
-                                            }
-                                            _ => format!("Dante → {}", g.nodes[e.to].name),
-                                        }
-                                    } else {
-                                        format!("{word} {}", g.nodes[other(e)].name)
-                                    },
-                                    label: e.label.clone(),
-                                    lost: e.lost.clone(),
-                                    chip: chip(e.state, bridge),
-                                    sum,
-                                }
+                                let name = format!("{word} {}", g.nodes[other(e)].name);
+                                row_of(g, e, name, links)
                             })
                             .collect()
                     };
@@ -541,9 +545,117 @@ pub fn MapPage() -> impl IntoView {
             }
         }
     };
+    // The network's last hour at a glance (#122 step 3): the tiles the
+    // overview has, with the connections in place of the receivers.
+    let tiles_top = move || {
+        let Some(Ok(d)) = ctl.devices.get() else {
+            return ().into_any();
+        };
+        let [devices, subs, clock, network] = pages::device_tiles(&d);
+        let (hl, worst) = graph.with(|g| (map::health(g), map::worst(g).map(|e| e.sel.hash())));
+        let (class, sub) = if let Some((name, n)) = hl.lost.first() {
+            let more = match hl.lost.len() {
+                1 => String::new(),
+                k => format!(" and {} more", k - 1),
+            };
+            (
+                "bad",
+                format!("losing audio: {name} ({} late){more}", map::num(*n)),
+            )
+        } else if hl.warn > 0 {
+            (
+                "warn",
+                format!(
+                    "no late packets in the last hour · {} close to the latency or late earlier today",
+                    hl.warn
+                ),
+            )
+        } else if hl.measured == 0 {
+            ("ok", "nothing measured yet".to_owned())
+        } else {
+            ("ok", "no late packets in the last hour".to_owned())
+        };
+        let unmeasured = hl.links - hl.measured;
+        let value = format!("{} / {}", hl.clean, hl.measured);
+        let sub = if unmeasured > 0 {
+            format!("{sub} · {unmeasured} not measured")
+        } else {
+            sub
+        };
+        let bridges = (hl.bridges > 0).then(|| {
+            pages::tile(
+                "tile-bridges",
+                "Bridge underruns · 1 h",
+                map::num(hl.underruns),
+                match hl.bridges {
+                    1 => "1 bridge, blocks played as silence".to_owned(),
+                    n => format!("{n} bridges, blocks played as silence"),
+                },
+                if hl.underruns > 0 { "bad" } else { "ok" },
+                "#map".to_owned(),
+            )
+        });
+        view! {
+            <section class="tiles" data-testid="map-tiles-top">
+                {pages::tile("tile-connections", "Connections clean · 1 h", value, sub, class, worst.unwrap_or_else(|| "#map".to_owned()))}
+                {bridges}
+                {devices}
+                {subs}
+                {clock}
+                {network}
+            </section>
+        }
+        .into_any()
+    };
+    // Every connection, the worst first.
+    let table = move || {
+        let links = m.links.get();
+        let links = links.as_ref().and_then(|r| r.as_ref().ok());
+        let rows: Vec<Row> = graph.with(|g| {
+            map::worst_first(g)
+                .into_iter()
+                .map(|e| {
+                    let name = format!("{} → {}", g.nodes[e.from].name, g.nodes[e.to].name);
+                    row_of(g, e, name, links)
+                })
+                .collect()
+        });
+        let on = shown.get().map(|s| s.hash());
+        if rows.is_empty() {
+            return view! { <p class="muted" data-testid="map-links-none">"No connection: nothing is subscribed yet."</p> }.into_any();
+        }
+        view! {
+            <div class="table-wrap">
+            <table class="grid" data-testid="map-links">
+                <thead><tr><th>"Connection"</th><th>"Last hour"</th><th>"Latency"</th><th>"Typical"</th><th>"Worst peak"</th><th>"Lost 1 h"</th><th>"Lost 24 h"</th><th>"State"</th></tr></thead>
+                <tbody>{rows.into_iter().map(|r| { let sel = on.as_deref() == Some(r.hash.as_str()); row_marked(r, sel) }).collect_view()}</tbody>
+            </table>
+            </div>
+            <p class="muted small">"Every connection, the worst on top. A click shows its chart below."</p>
+        }
+        .into_any()
+    };
+    let tab = move |table: bool, label: &'static str, id: &'static str| {
+        view! {
+            <button data-testid=id class=move || if m.table.get() == table { "seg on" } else { "seg" }
+                on:click=move |_| m.table.set(table)>{label}</button>
+        }
+    };
     view! {
-        <p class="status" data-testid="status">{status}</p>
-        <section class="panel" data-testid="map-panel">
+        {tiles_top}
+        <div class="bar">
+            <div class="seg-group" data-testid="map-view">
+                {tab(false, "Schema", "map-view-schema")}
+                {tab(true, "Links", "map-view-links")}
+            </div>
+            <span class="status" data-testid="status">{status}</span>
+        </div>
+        <section class="panel" data-testid="map-links-panel"
+            style=move || if m.table.get() { "" } else { "display:none" }>
+            {move || m.table.get().then(table)}
+        </section>
+        <section class="panel" data-testid="map-panel"
+            style=move || if m.table.get() { "display:none" } else { "" }>
             <div class="map-wrap" data-testid="map" on:click=click
                 on:mouseover=move |ev| focus(ev, true) on:mouseout=move |ev| focus(ev, false)
                 inner_html=drawing></div>

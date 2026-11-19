@@ -47,7 +47,34 @@ test("the map is the start page: every device a box, every connection a line, a 
   await expect(line).not.toHaveAttribute("data-state", "unknown", { timeout: 40_000 });
   await expect(line.locator(".lbl text")).toContainText("10.00 ms");
 
-  // Nothing chosen yet: the worst connection shows, and says so.
+  // The network's hour at a glance: connections, the bridge, and the
+  // tiles the overview has.
+  const top = page.getByTestId("map-tiles-top");
+  await expect(top.getByTestId("tile-connections").locator(".tile-value")).toHaveText(/^\d+ \/ 1$/, { timeout: 40_000 });
+  await expect(top.getByTestId("tile-bridges")).toContainText("1 bridge");
+  await expect(top.getByTestId("tile-devices").locator(".tile-value")).toHaveText(String(devices.devices.length));
+  await expect(top.getByTestId("tile-subs")).toContainText("Subscriptions");
+  await expect(top.getByTestId("tile-clock")).toContainText("Clock");
+  await expect(top.getByTestId("tile-network")).toContainText("links");
+
+  // Links: every connection in one table, the worst first; a row is a click
+  // on its line.
+  await page.getByTestId("map-view-links").click();
+  await expect(page.getByTestId("map-panel")).toBeHidden();
+  const rows = page.getByTestId("map-links").getByTestId("map-dev-row");
+  await expect(rows).toHaveCount(3);
+  await expect(page.getByTestId("map-links")).toContainText(`${DEVICE} → ${DEVICE}`);
+  await expect(page.getByTestId("map-links")).toContainText("SoundGrid → Dante");
+  await rows.filter({ hasText: "Dante → SoundGrid" }).click();
+  await expect(page).toHaveURL(new RegExp(`#map/bridge/${BRIDGE}/to-asio$`));
+  await expect(page.getByTestId("map-title")).toHaveText("Dante → SoundGrid");
+  await expect(rows.filter({ hasText: "Dante → SoundGrid" })).toHaveClass(/\bsel\b/);
+  await page.getByTestId("map-view-schema").click();
+  await expect(page.getByTestId("map-panel")).toBeVisible();
+  await expect(page.getByTestId("map-links-panel")).toBeHidden();
+  await page.goto("/#map");
+
+  // Nothing chosen: the worst connection shows, and says so.
   const detail = page.getByTestId("map-detail");
   await expect(detail).toBeVisible();
   await expect(page.getByTestId("map-auto")).toBeVisible();
