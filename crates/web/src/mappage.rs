@@ -564,7 +564,9 @@ pub fn MapPage() -> impl IntoView {
         let Some(Ok(d)) = ctl.devices.get() else {
             return ().into_any();
         };
-        let [devices, subs, clock, network] = pages::device_tiles(&d);
+        let clocks = expect_context::<Clk>().0.get();
+        let [devices, subs, clock, network] =
+            pages::device_tiles(&d, clocks.as_ref().and_then(|c| c.as_ref().ok()));
         let (hl, worst) = graph.with(|g| (map::health(g), map::worst(g).map(|e| e.sel.hash())));
         let (class, sub) = if let Some((name, n)) = hl.lost.first() {
             let more = match hl.lost.len() {

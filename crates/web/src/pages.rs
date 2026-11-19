@@ -186,7 +186,7 @@ pub(crate) fn tile(
 
 /// The tiles that come from the device list alone, for the overview and
 /// the map: devices, subscriptions, clock, network.
-pub(crate) fn device_tiles(d: &Devices) -> [AnyView; 4] {
+pub(crate) fn device_tiles(d: &Devices, dsync: Option<&dcontroller_api::Clocks>) -> [AnyView; 4] {
     let read = d.devices.iter().filter(|x| x.channels.is_some()).count();
     let failing = d.devices.iter().filter(|x| x.error.is_some()).count();
     let subs: Vec<&RxChannel> = d
@@ -199,6 +199,21 @@ pub(crate) fn device_tiles(d: &Devices) -> [AnyView; 4] {
     let not_rx = subs.iter().filter(|r| !r.receiving()).count();
     let crow = clock::rows(d);
     let (cline, cwarn) = clock::summary(&crow);
+    // The dsync clocks join the Dante ones in the one clock tile (#124): a
+    // node that lost its lock is the rig's problem wherever it shows.
+    let (cline, cclass) = match dsync.map(clock::rig_summary) {
+        Some((line, bad)) if !line.is_empty() => (
+            format!("{cline} · {line}"),
+            if bad {
+                "bad"
+            } else if cwarn {
+                "warn"
+            } else {
+                "ok"
+            },
+        ),
+        _ => (cline, if cwarn { "warn" } else { "ok" }),
+    };
     let leader = clock::leaders(&crow).first().map(|s| (*s).to_owned());
     let nrow = net::rows(d);
     let (_, nwarn) = net::summary(&nrow);
@@ -236,7 +251,7 @@ pub(crate) fn device_tiles(d: &Devices) -> [AnyView; 4] {
             "Clock",
             leader.unwrap_or_else(|| "no leader".to_owned()),
             cline,
-            if cwarn { "warn" } else { "ok" },
+            cclass,
             "#clock".to_owned(),
         )
         .into_any(),
@@ -266,7 +281,9 @@ pub fn OverviewPage() -> impl IntoView {
         let Some(Ok(d)) = ctl.devices.get() else {
             return view! { <p class="status" data-testid="status">"Loading…"</p> }.into_any();
         };
-        let [devices, subs, clock, network] = device_tiles(&d);
+        let clocks = expect_context::<Clk>().0.get();
+        let [devices, subs, clock, network] =
+            device_tiles(&d, clocks.as_ref().and_then(|c| c.as_ref().ok()));
         let o = h.overview.get();
         let recs = o
             .as_ref()

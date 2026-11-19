@@ -170,6 +170,37 @@ pub fn service_order(c: &Clocks) -> Vec<&dcontroller_api::DsyncNode> {
     v
 }
 
+/// The dsync clocks in a few words for the rig's clock tile: empty when
+/// there is none to speak of; `true` when one has no usable time.
+pub fn rig_summary(c: &Clocks) -> (String, bool) {
+    let node_bad: Vec<&str> = c
+        .nodes
+        .iter()
+        .filter(|n| n.health().0 == "bad")
+        .map(|n| n.device.as_str())
+        .collect();
+    let service_bad: Vec<&str> = c
+        .services
+        .iter()
+        .filter(|n| n.health().0 == "bad")
+        .map(|n| n.node.as_str())
+        .collect();
+    let expected = c.services.iter().filter(|n| n.health().0 != "none").count();
+    if c.nodes.is_empty() && expected == 0 {
+        return (String::new(), false);
+    }
+    let bad: Vec<&str> = node_bad.into_iter().chain(service_bad).collect();
+    if !bad.is_empty() {
+        return (format!("dsync not locked: {}", bad.join(", ")), true);
+    }
+    let locked = c.nodes.iter().filter(|n| n.health().0 == "ok").count()
+        + c.services.iter().filter(|n| n.health().0 == "ok").count();
+    (
+        format!("dsync {locked} of {} locked", c.nodes.len() + expected),
+        false,
+    )
+}
+
 /// One line for the service nodes: how many are locked, who is not.
 pub fn service_summary(c: &Clocks) -> (String, bool) {
     let bad: Vec<&str> = c
@@ -226,6 +257,11 @@ mod tests {
                 true
             )
         );
+        assert_eq!(
+            rig_summary(&c),
+            ("dsync not locked: lost:8898".to_owned(), true)
+        );
+        assert_eq!(rig_summary(&Clocks::default()), (String::new(), false));
         // A travelling node that is away is neither counted nor a fault,
         // and reads last.
         let mut c = c;
@@ -250,6 +286,7 @@ mod tests {
             service_order(&c).last().map(|n| n.node.as_str()),
             Some("laptop:8898")
         );
+        assert_eq!(rig_summary(&c), ("dsync 2 of 2 locked".to_owned(), false));
     }
 
     #[test]
