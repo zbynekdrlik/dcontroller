@@ -343,3 +343,4 @@ table.grid tr.click { cursor: pointer; }
 .bar { display: flex; flex-wrap: wrap; gap: 0.6rem 1rem; align-items: center; margin-bottom: 0.7rem; }
 .bar .status { margin: 0; }
 table.grid tr.sel td { background: var(--accent-soft); }
+.mono { font-family: var(--mono); font-size: 0.82rem; }
