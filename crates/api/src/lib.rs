@@ -696,6 +696,31 @@ pub struct LinkSummary {
     pub age_s: Option<i64>,
 }
 
+/// A page or thing opened in the app (#142): the view (`map`, `routing`
+/// …) and what in it (a connection, a device, empty for the page).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UseEvent {
+    pub view: String,
+    #[serde(default)]
+    pub target: String,
+}
+
+/// How often each view and thing was opened over the last [`Usage::days`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Usage {
+    pub days: u32,
+    pub rows: Vec<UseCount>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UseCount {
+    pub view: String,
+    pub target: String,
+    pub count: u64,
+    /// Unix seconds of the last time.
+    pub last: i64,
+}
+
 /// One bridge device now: its newest figures and its underruns in the last
 /// hour, each way.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

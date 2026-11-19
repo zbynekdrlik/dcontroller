@@ -76,7 +76,16 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE bridge ADD COLUMN card_to_dante_us INTEGER;
      ALTER TABLE bridge ADD COLUMN card_to_asio_us INTEGER;
      ALTER TABLE bridge ADD COLUMN driver TEXT;",
+    // 6: what is opened in the app, so its design follows use (#142).
+    "CREATE TABLE usage (t INTEGER NOT NULL, user TEXT NOT NULL, view TEXT NOT NULL,
+         target TEXT NOT NULL);
+     CREATE INDEX usage_t ON usage (t);",
 ];
+
+/// How long the record of use is kept, and how far back it is counted.
+pub const USAGE_DAYS: u32 = 30;
+/// The longest view or target name kept.
+pub const USAGE_TEXT: usize = 200;
 
 /// Every k-th of `rows` so at most `max` are left, the newest always kept.
 fn thin<T>(rows: Vec<T>, max: usize) -> Vec<T> {
@@ -279,6 +288,52 @@ impl Store {
 
     /// Stores one read of a bridge device's figures (a second stored twice
     /// keeps the later read).
+    /// Records that `user` opened `e` at `now`; drops what is older than
+    /// [`USAGE_DAYS`].
+    pub fn record_use(&self, now: i64, user: &str, e: &api::UseEvent) -> Result<(), String> {
+        let cut = |s: &str| s.chars().take(USAGE_TEXT).collect::<String>();
+        let db = self.conn();
+        db.execute(
+            "INSERT INTO usage (t, user, view, target) VALUES (?1, ?2, ?3, ?4)",
+            params![now, cut(user), cut(&e.view), cut(&e.target)],
+        )
+        .map_err(|e| e.to_string())?;
+        db.execute(
+            "DELETE FROM usage WHERE t < ?1",
+            params![now - i64::from(USAGE_DAYS) * 86_400],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Each view and thing opened in the last [`USAGE_DAYS`], the most
+    /// opened first.
+    pub fn usage(&self, now: i64) -> Result<api::Usage, String> {
+        let db = self.conn();
+        let mut q = db
+            .prepare(
+                "SELECT view, target, COUNT(*), MAX(t) FROM usage WHERE t >= ?1
+                 GROUP BY view, target ORDER BY COUNT(*) DESC, MAX(t) DESC, view, target LIMIT 200",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = q
+            .query_map(params![now - i64::from(USAGE_DAYS) * 86_400], |r| {
+                Ok(api::UseCount {
+                    view: r.get(0)?,
+                    target: r.get(1)?,
+                    count: u64::try_from(r.get::<_, i64>(2)?).unwrap_or(0),
+                    last: r.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(api::Usage {
+            days: USAGE_DAYS,
+            rows,
+        })
+    }
+
     pub fn add_bridge(&self, device: &str, p: &api::BridgePoint) -> Result<(), String> {
         let db = self.conn();
         let id = Self::device_id(&db, device).map_err(|e| e.to_string())?;
@@ -1128,6 +1183,56 @@ mod tests {
             channels: vec!["In 1".into()],
             sources: vec!["desk".into()],
         }
+    }
+
+    #[test]
+    fn what_is_opened_is_counted_the_most_first_and_old_use_drops() {
+        let st = Store::memory().unwrap();
+        let now = 3_000_000;
+        let ev = |view: &str, target: &str| api::UseEvent {
+            view: view.into(),
+            target: target.into(),
+        };
+        st.record_use(now - 40 * 86_400, "owner", &ev("devices", ""))
+            .unwrap();
+        st.record_use(now - 100, "owner", &ev("map", "link/a/b"))
+            .unwrap();
+        st.record_use(now - 50, "owner", &ev("routing", ""))
+            .unwrap();
+        st.record_use(now - 10, "local", &ev("map", "link/a/b"))
+            .unwrap();
+        // A name past the limit is cut, not refused.
+        st.record_use(now, "owner", &ev("map", &"x".repeat(500)))
+            .unwrap();
+        let u = st.usage(now).unwrap();
+        assert_eq!(u.days, USAGE_DAYS);
+        let got: Vec<(&str, &str, u64, i64)> = u
+            .rows
+            .iter()
+            .map(|r| {
+                (
+                    r.view.as_str(),
+                    &r.target[..r.target.len().min(8)],
+                    r.count,
+                    r.last,
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("map", "link/a/b", 2, now - 10),
+                ("map", "xxxxxxxx", 1, now),
+                ("routing", "", 1, now - 50),
+            ]
+        );
+        assert_eq!(u.rows[1].target.len(), USAGE_TEXT);
+        // The 40-day-old use was dropped by the next record.
+        let n: i64 = st
+            .conn()
+            .query_row("SELECT COUNT(*) FROM usage", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 4);
     }
 
     #[test]

@@ -166,6 +166,15 @@ pub fn fold(entries: &[ChangeEntry]) -> Vec<Item> {
     items
 }
 
+/// An address as the record of use names it (#142): the view (the Map
+/// when the hash is empty) and the rest, still URI-encoded.
+pub fn use_parts(hash: &str) -> (String, String) {
+    let rest = hash.trim_start_matches('#');
+    let (view, target) = rest.split_once('/').unwrap_or((rest, ""));
+    let view = if view.is_empty() { "map" } else { view };
+    (view.to_owned(), target.to_owned())
+}
+
 /// A span in words: `45 s`, `2 min 5 s`, `1 h 3 min`.
 pub fn span(seconds: u64) -> String {
     match seconds {
@@ -327,6 +336,18 @@ mod tests {
         });
         let i = Item::Change(sub);
         assert!(i.concerns("rec") && i.concerns("player") && !i.concerns("desk"));
+    }
+
+    #[test]
+    fn an_address_names_its_view_and_what_in_it() {
+        let p = |h: &str| use_parts(h);
+        assert_eq!(p(""), ("map".into(), "".into()));
+        assert_eq!(p("#routing"), ("routing".into(), "".into()));
+        assert_eq!(
+            p("#map/link/a%20b/c"),
+            ("map".into(), "link/a%20b/c".into())
+        );
+        assert_eq!(p("#changes/amp"), ("changes".into(), "amp".into()));
     }
 
     #[test]

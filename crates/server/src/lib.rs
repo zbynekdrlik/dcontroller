@@ -231,6 +231,43 @@ async fn clocks_now(State(s): State<Shared>) -> axum::Json<dcontroller_api::Cloc
     })
 }
 
+/// A page or thing opened (#142): kept so the design can follow use.
+async fn record_use(
+    State(s): State<Shared>,
+    headers: axum::http::HeaderMap,
+    axum::Json(e): axum::Json<dcontroller_api::UseEvent>,
+) -> StatusCode {
+    let who = user(&headers);
+    let now = history::unix_now();
+    tracing::info!(user = %who, view = %e.view, target = %e.target, "opened");
+    match tokio::task::spawn_blocking(move || s.history.record_use(now, &who, &e)).await {
+        Ok(Ok(())) => StatusCode::NO_CONTENT,
+        Ok(Err(err)) => {
+            tracing::error!(error = %err, "usage: not recorded");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+        Err(err) => {
+            tracing::error!(error = %err, "usage: task failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
+async fn usage(State(s): State<Shared>) -> Result<axum::Json<dcontroller_api::Usage>, StatusCode> {
+    let now = history::unix_now();
+    tokio::task::spawn_blocking(move || s.history.usage(now))
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "usage: task failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .map(axum::Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "usage: read failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
 async fn links(State(s): State<Shared>) -> Result<axum::Json<dcontroller_api::Links>, StatusCode> {
     let now = history::unix_now();
     tokio::task::spawn_blocking(move || s.history.links(now))
@@ -414,6 +451,7 @@ pub fn app(web_dir: &Path, shared: Shared) -> Router {
         .route("/api/bridge/{device}", get(bridge_report))
         .route("/api/overview", get(overview))
         .route("/api/links", get(links))
+        .route("/api/usage", get(usage).post(record_use))
         .route("/api/clocks", get(clocks_now))
         .route("/api/meters/{device}", get(meter_report))
         .route("/api/levels", get(levels_report))

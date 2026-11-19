@@ -64,6 +64,18 @@ test("a channel renamed outside dcontroller shows in Changes", async ({ page }) 
     await page.getByTestId("changes-every").click();
     await expect(page).toHaveURL(/#changes$/);
     await expect(page.getByTestId("change-row").filter({ hasText: "Ext 3" }).first()).toBeVisible();
+    // #142: what is opened in the app is recorded; the page lists it, the
+    // most opened first, each a link back to it.
+    await page.goto(`/#map/device/${DEVICE}`);
+    await expect(page.getByTestId("map-title")).toHaveText(DEVICE, { timeout: 30_000 });
+    await page.goto("/#changes");
+    await page.getByTestId("changes-usage").click();
+    const used = page.getByTestId("usage-row").filter({ hasText: `device/${DEVICE}` });
+    await expect(used.first()).toBeVisible({ timeout: 10_000 });
+    await expect(used.first().locator("a")).toHaveAttribute("href", `#map/device/${DEVICE}`);
+    const usage = await page.evaluate(() => fetch("/api/usage").then((r) => r.json()));
+    expect(usage.days).toBe(30);
+    expect(usage.rows.some((r: any) => r.view === "changes")).toBe(true);
   } finally {
     rename(arc, 3, "Spare 3");
     // The other tests see the device as it was: wait until a read has it back.
