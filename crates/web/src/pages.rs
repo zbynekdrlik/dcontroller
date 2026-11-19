@@ -194,11 +194,12 @@ pub(crate) fn tile(
         "tile-value"
     };
     let hover = value.clone();
+    let whole = sub.clone();
     view! {
         <a class=format!("tile {class}") href=href data-testid=id>
             <span class="tile-title">{title}</span>
             <span class=size title=hover>{value}</span>
-            <span class="tile-sub">{sub}</span>
+            <span class="tile-sub" title=whole>{sub}</span>
         </a>
     }
 }

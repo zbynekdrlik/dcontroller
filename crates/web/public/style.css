@@ -382,7 +382,10 @@ table.changes td:first-child { white-space: nowrap; }
   .tile-title { font-size: 0.68rem; }
   .tile-value { font-size: 1.15rem; }
   .tile-value.long { font-size: 0.9rem; }
-  .tile-sub { font-size: 0.74rem; }
+  /* Two lines of a tile's line on a phone, so every tile fits the first
+     screen; the whole line is its title, and the tile leads to the page. */
+  .tile-sub { font-size: 0.74rem; display: -webkit-box; -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
   .figs { grid-template-columns: 1fr 1fr; }
   .fig .v { font-size: 1.15rem; }
   .panel { padding: 0.7rem 0.75rem; }
