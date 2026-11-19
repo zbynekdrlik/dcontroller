@@ -21,7 +21,8 @@ use tracing::{info, warn};
 
 use crate::dante::{self, Shared};
 
-/// How many entries `GET /api/changes` lists.
+/// How many entries of each kind (status, and everything else)
+/// `GET /api/changes` lists.
 pub const LIST: usize = 200;
 
 /// The changes log (JSON lines) and the lock that runs changes one at a time.
@@ -71,8 +72,11 @@ impl Changes {
         }
     }
 
-    /// The last [`LIST`] entries, newest first. A line that does not parse is
-    /// skipped and logged.
+    /// The log, newest first: the last [`LIST`] status entries (what devices
+    /// did) and the last [`LIST`] of everything else (the changes people
+    /// made), each kind with its own room, so a flapping connection cannot
+    /// push the changes out (#123). A line that does not parse is skipped
+    /// and logged.
     pub fn list(&self) -> Result<Vec<api::ChangeEntry>, String> {
         let f = match std::fs::File::open(&self.path) {
             Ok(f) => f,
@@ -90,7 +94,16 @@ impl Changes {
             }
         }
         out.reverse();
-        out.truncate(LIST);
+        let (mut status, mut made) = (0usize, 0usize);
+        out.retain(|e| {
+            let n = if e.kind == dante::STATUS {
+                &mut status
+            } else {
+                &mut made
+            };
+            *n += 1;
+            *n <= LIST
+        });
         Ok(out)
     }
 
