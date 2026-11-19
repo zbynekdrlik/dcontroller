@@ -52,6 +52,22 @@ impl Item {
         }
     }
 
+    /// Whether it concerns the device `name` (#142: a connection's "Changes
+    /// of" link): as the receiver, or as a source before, asked or after.
+    pub fn concerns(&self, name: &str) -> bool {
+        let is = |n: &str| n.eq_ignore_ascii_case(name);
+        match self {
+            Item::Change(e) | Item::Alarm(e) => {
+                is(&e.rx_device)
+                    || [&e.before, &e.requested, &e.after]
+                        .into_iter()
+                        .flatten()
+                        .any(|s| is(&s.device))
+            }
+            Item::Outage(o) => is(&o.from) || is(&o.to),
+        }
+    }
+
     /// Whether the device-status filter shows it.
     pub fn is_status(&self) -> bool {
         !matches!(self, Item::Change(_))
@@ -148,6 +164,15 @@ pub fn fold(entries: &[ChangeEntry]) -> Vec<Item> {
     items.reverse();
     items.sort_by_key(|i| std::cmp::Reverse(i.at()));
     items
+}
+
+/// An address as the record of use names it (#142): the view (the Map
+/// when the hash is empty) and the rest, still URI-encoded.
+pub fn use_parts(hash: &str) -> (String, String) {
+    let rest = hash.trim_start_matches('#');
+    let (view, target) = rest.split_once('/').unwrap_or((rest, ""));
+    let view = if view.is_empty() { "map" } else { view };
+    (view.to_owned(), target.to_owned())
 }
 
 /// A span in words: `45 s`, `2 min 5 s`, `1 h 3 min`.
@@ -290,6 +315,39 @@ mod tests {
         assert_eq!(items[1], Item::Alarm(alarm));
         assert!(items[1].is_status());
         assert!(fold(&[]).is_empty());
+    }
+
+    #[test]
+    fn an_item_concerns_its_receiver_and_its_sources() {
+        let items = fold(&log(vec![
+            status(100, "amp", 1, "desk", false, "Unresolved"),
+            change(110, "rename"),
+        ]));
+        let Item::Outage(_) = &items[1] else { panic!() };
+        assert!(items[1].concerns("AMP") && items[1].concerns("desk"));
+        assert!(!items[1].concerns("player"));
+        // A change with no device named concerns none.
+        assert!(!items[0].concerns("amp"));
+        let mut sub = change(120, "subscribe");
+        sub.rx_device = "rec".into();
+        sub.after = Some(Source {
+            channel: "Out 1".into(),
+            device: "Player".into(),
+        });
+        let i = Item::Change(sub);
+        assert!(i.concerns("rec") && i.concerns("player") && !i.concerns("desk"));
+    }
+
+    #[test]
+    fn an_address_names_its_view_and_what_in_it() {
+        let p = |h: &str| use_parts(h);
+        assert_eq!(p(""), ("map".into(), "".into()));
+        assert_eq!(p("#routing"), ("routing".into(), "".into()));
+        assert_eq!(
+            p("#map/link/a%20b/c"),
+            ("map".into(), "link/a%20b/c".into())
+        );
+        assert_eq!(p("#changes/amp"), ("changes".into(), "amp".into()));
     }
 
     #[test]

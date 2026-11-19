@@ -677,10 +677,48 @@ pub struct LinkSummary {
     /// Late packets in the last hour and the last day.
     pub late_1h: u64,
     pub late_24h: u64,
+    /// The last 3 hours and the last day as the hour's figures say it
+    /// (#142): late packets, and the peak closest to its flow's latency
+    /// with that latency. The Map colours a connection by the window shown.
+    #[serde(default)]
+    pub late_3h: u64,
+    #[serde(default)]
+    pub peak_3h_us: u32,
+    #[serde(default)]
+    pub latency_3h_us: u32,
+    #[serde(default)]
+    pub peak_24h_us: u32,
+    #[serde(default)]
+    pub latency_24h_us: u32,
     /// The last hour as [`ReceiverSummary::spark`], of this connection.
     pub spark: Vec<Option<u32>>,
     /// Seconds since the last sample.
     pub age_s: Option<i64>,
+}
+
+/// A page or thing opened in the app (#142): the view (`map`, `routing`
+/// …) and what in it (a connection, a device, empty for the page).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UseEvent {
+    pub view: String,
+    #[serde(default)]
+    pub target: String,
+}
+
+/// How often each view and thing was opened over the last [`Usage::days`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Usage {
+    pub days: u32,
+    pub rows: Vec<UseCount>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UseCount {
+    pub view: String,
+    pub target: String,
+    pub count: u64,
+    /// Unix seconds of the last time.
+    pub last: i64,
 }
 
 /// One bridge device now: its newest figures and its underruns in the last

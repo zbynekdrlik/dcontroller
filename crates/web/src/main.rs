@@ -53,6 +53,8 @@ fn App() -> impl IntoView {
     // The devices whose channels are open, kept across refreshes.
     provide_context(Open(RwSignal::new(BTreeSet::new())));
     provide_context(NewestFirst(RwSignal::new(false)));
+    let changes_only = RwSignal::new(hash_device("#changes/"));
+    provide_context(ChangesOnly(changes_only));
     provide_context(Expanded {
         tx: RwSignal::new(BTreeSet::new()),
         rx: RwSignal::new(BTreeSet::new()),
@@ -102,17 +104,19 @@ fn App() -> impl IntoView {
                 mappage::MapView::Schema
             },
         ),
+        span: RwSignal::new(map::Span::default()),
     };
     provide_context(mp);
     // The routing matrix takes each connection's state from the same read.
     provide_context(LinkStates(Memo::new(move |_| {
         mp.links
-            .with(|l| matrix::link_states(l.as_ref().and_then(|r| r.as_ref().ok())))
+            .with(|l| matrix::link_states(l.as_ref().and_then(|r| r.as_ref().ok()), mp.span.get()))
     })));
     // The hash is the page's address: a link, back or forward moves the view
     // (and the chosen latency receiver) with it.
     {
         let on_hash = wasm_bindgen::closure::Closure::<dyn Fn()>::new(move || {
+            record_use();
             let v = View::from_hash();
             if view_now.get_untracked() != v {
                 view_now.set(v);
@@ -120,7 +124,28 @@ fn App() -> impl IntoView {
             if v == View::Map {
                 let c = map::Sel::from_hash(&window().location().hash().unwrap_or_default());
                 if mp.chosen.get_untracked() != c {
+                    let picked = c.is_some();
                     mp.chosen.set(c);
+                    // A choice brings its detail and chart into view (#142):
+                    // under a tall schema they were a screen below.
+                    if picked {
+                        set_timeout(
+                            || {
+                                if let Ok(Some(e)) =
+                                    document().query_selector(r#"[data-testid="map-detail"]"#)
+                                {
+                                    e.scroll_into_view();
+                                }
+                            },
+                            Duration::from_millis(60),
+                        );
+                    }
+                }
+            }
+            if v == View::Changes {
+                let d = hash_device("#changes/");
+                if changes_only.get_untracked() != d {
+                    changes_only.set(d);
                 }
             }
             if v == View::Devices {
@@ -138,6 +163,8 @@ fn App() -> impl IntoView {
             wasm_bindgen::JsCast::unchecked_ref(on_hash.as_ref()),
         );
         on_hash.forget();
+        // The page as it opened counts too.
+        record_use();
     }
     // The history of the chosen receiver: at once on any change, then
     // every few seconds while the range is live.
@@ -543,6 +570,10 @@ const CLOCKS_POLL: Duration = Duration::from_secs(4);
 /// The devices' dsync clock figures, as last read.
 #[derive(Clone, Copy)]
 struct Clk(RwSignal<Option<Result<dcontroller_api::Clocks, String>>>);
+
+/// The device the Changes page is narrowed to (`#changes/<device>`).
+#[derive(Clone, Copy)]
+struct ChangesOnly(RwSignal<Option<String>>);
 
 /// Every connection's state, for the routing matrix.
 #[derive(Clone, Copy)]
@@ -1518,6 +1549,70 @@ fn MulticastDialog() -> impl IntoView {
     }
 }
 
+/// What the address opens, as the record of use names it: the view and
+/// the rest of the hash (#142).
+fn use_of(hash: &str) -> dcontroller_api::UseEvent {
+    let (view, target) = changes::use_parts(hash);
+    let target = js_sys::decode_uri_component(&target)
+        .ok()
+        .map(String::from)
+        .unwrap_or(target);
+    dcontroller_api::UseEvent { view, target }
+}
+
+/// Tells the server what was just opened; a failure costs nothing but
+/// the record, so it is only logged.
+fn record_use() {
+    let e = use_of(&window().location().hash().unwrap_or_default());
+    spawn_local(async move {
+        let sent = match gloo_net::http::Request::post("/api/usage").json(&e) {
+            Ok(r) => r.send().await.map_err(|e| e.to_string()),
+            Err(err) => Err(err.to_string()),
+        };
+        match sent {
+            Ok(r) if r.ok() => {}
+            Ok(r) => leptos::logging::log!("usage: server answered {}", r.status()),
+            Err(err) => leptos::logging::log!("usage: not sent: {err}"),
+        }
+    });
+}
+
+/// How often each view and thing was opened (#142): what the design
+/// should serve first.
+#[component]
+fn UsageTable(usage: RwSignal<Option<Result<dcontroller_api::Usage, String>>>) -> impl IntoView {
+    move || {
+        match usage.get() {
+        None => view! { <p class="status">"Reading…"</p> }.into_any(),
+        Some(Err(e)) => view! { <p class="status error">{format!("Use not readable: {e}")}</p> }.into_any(),
+        Some(Ok(u)) if u.rows.is_empty() => {
+            view! { <p class="status" data-testid="usage-empty">"Nothing opened yet."</p> }.into_any()
+        }
+        Some(Ok(u)) => view! {
+            <p class="status" data-testid="usage-summary">{format!("What was opened in the app in the last {} days, the most first.", u.days)}</p>
+            <div class="table-wrap">
+            <table class="grid" data-testid="usage-table">
+                <thead><tr><th>"Page"</th><th>"What"</th><th class="num">"Times"</th><th>"Last"</th></tr></thead>
+                <tbody>
+                    {u.rows.into_iter().map(|r| {
+                        let href = if r.target.is_empty() { format!("#{}", r.view) } else { format!("#{}/{}", r.view, r.target) };
+                        view! {
+                            <tr data-testid="usage-row">
+                                <td>{r.view.clone()}</td>
+                                <td><a href=href>{if r.target.is_empty() { "the page".to_owned() } else { r.target.clone() }}</a></td>
+                                <td class="num">{r.count}</td>
+                                <td>{pages::time_text(r.last)}</td>
+                            </tr>
+                        }
+                    }).collect_view()}
+                </tbody>
+            </table>
+            </div>
+        }.into_any(),
+    }
+    }
+}
+
 async fn fetch_changes() -> Result<Vec<ChangeEntry>, String> {
     let res = gloo_net::http::Request::get("/api/changes")
         .send()
@@ -1626,16 +1721,30 @@ const CHANGES_PAGE: usize = 100;
 fn ChangeLog() -> impl IntoView {
     let list = RwSignal::new(None::<Result<Vec<ChangeEntry>, String>>);
     spawn_local(async move { list.set(Some(fetch_changes().await)) });
-    // 0: everything, 1: changes made, 2: what devices did.
+    // 0: everything, 1: changes made, 2: what devices did, 3: what is
+    // opened in the app (#142).
     let filter = RwSignal::new(0u8);
+    let usage = RwSignal::new(None::<Result<dcontroller_api::Usage, String>>);
+    Effect::new(move |_| {
+        if filter.get() == 3 {
+            spawn_local(async move { usage.set(Some(pages::get_json("/api/usage").await)) });
+        }
+    });
     let limit = RwSignal::new(CHANGES_PAGE);
+    // `#changes/<device>`: only what concerns that device (a connection's
+    // "Changes of" link on the Map, #142); the hash listener keeps it.
+    let ChangesOnly(only) = expect_context::<ChangesOnly>();
     move || {
+        let only = only.get();
         match list.get() {
         None => view! { <p class="status">"Loading…"</p> }.into_any(),
         Some(Err(e)) => view! { <p class="status error">{format!("Changes not readable: {e}")}</p> }.into_any(),
         Some(Ok(v)) if v.is_empty() => view! { <p class="status" data-testid="changes-empty">"No changes yet. Changes made here, and changes seen on the network (made in Dante Controller, on a mixer or a device itself), show up in this list."</p> }.into_any(),
         Some(Ok(v)) => {
-            let items = changes::fold(&v);
+            let mut items = changes::fold(&v);
+            if let Some(name) = &only {
+                items.retain(|i| i.concerns(name));
+            }
             let made = items.iter().filter(|i| !i.is_status()).count();
             let status = items.len() - made;
             let f = filter.get();
@@ -1673,10 +1782,16 @@ fn ChangeLog() -> impl IntoView {
                         {seg(0, format!("All {}", items.len()), "changes-all")}
                         {seg(1, format!("Changes made {made}"), "changes-made")}
                         {seg(2, format!("Device status {status}"), "changes-status")}
+                        {seg(3, "What is opened".to_owned(), "changes-usage")}
                     </div>
+                    {only.clone().map(|name| view! {
+                        <span class="chip info" data-testid="changes-only">{format!("only {name}")}</span>
+                        <a class="act" href="#changes" data-testid="changes-every">"every device"</a>
+                    })}
                     <span class="muted small">"A connection that stopped and received again is one line, with how long it took."</span>
                 </div>
-                <div class="table-wrap">
+                {(f == 3).then(|| view! { <UsageTable usage=usage/> })}
+                <div class="table-wrap" style=if f == 3 { "display:none" } else { "" }>
                 <table class="changes" data-testid="changes-table">
                     <thead><tr><th>"When"</th><th>"Who"</th><th>"What"</th><th>"Before"</th><th>"Asked"</th><th>"After"</th><th>"Result"</th></tr></thead>
                     <tbody>{rows}</tbody>

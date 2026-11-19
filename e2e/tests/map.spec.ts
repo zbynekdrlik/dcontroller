@@ -48,6 +48,24 @@ test("the map is the start page: every device a box, every connection a line, a 
   await expect(line).not.toHaveAttribute("data-state", "unknown", { timeout: 40_000 });
   await expect(line.locator(".lbl text")).toContainText("10.00 ms");
 
+  // #142: the colours speak of a window, 1 h by default; the switch moves
+  // them to 3 h or 24 h, and the line's state follows /api/links for it.
+  await expect(page.getByTestId("map-span-1h")).toHaveClass(/\bon\b/);
+  const sum = (await page.request.get("/api/links").then((r) => r.json())).links.find(
+    (l: any) => l.from === DEVICE && l.to === DEVICE,
+  );
+  const want = (late: number, peak: number, lat: number) =>
+    late > 0 ? "bad" : lat > 0 && peak * 10 >= lat * 9 ? "warn" : "ok";
+  await page.getByTestId("map-span-24h").click();
+  await expect(page.getByTestId("map-span-24h")).toHaveClass(/\bon\b/);
+  await expect(line).toHaveAttribute(
+    "data-state",
+    new RegExp(`^(${want(sum.late_24h, sum.peak_24h_us, sum.latency_24h_us)}|bad)$`),
+  );
+  await expect(page.locator(".legend")).toContainText("in the last 24 hours");
+  await page.getByTestId("map-span-1h").click();
+  await expect(page.locator(".legend")).toContainText("in the last hour");
+
   // The network's hour at a glance: connections, the bridge, and the
   // tiles the overview has.
   const top = page.getByTestId("map-tiles-top");
@@ -109,6 +127,12 @@ test("the map is the start page: every device a box, every connection a line, a 
   await expect(line).toHaveClass(/\bsel\b/);
   await expect(page.getByTestId("map-auto")).toHaveCount(0);
   await expect(page.getByTestId("map-title")).toHaveText(`${DEVICE} → ${DEVICE}`);
+  // #142: the detail and its chart come into view; under the schema they
+  // were a screen below and the owner had to look for them.
+  await expect(page.getByTestId("map-title")).toBeInViewport();
+  await expect
+    .poll(() => page.getByTestId("map-detail").evaluate((e) => Math.round(e.getBoundingClientRect().top)), { timeout: 5_000 })
+    .toBeLessThan(40);
   await expect(page.getByTestId("map-what")).toContainText("channel");
   await expect(page.getByTestId("map-latency").locator(".v")).toHaveText("10.00 ms", { timeout: 30_000 });
   // A count (the test device may lose a few packets as it starts).
@@ -123,6 +147,20 @@ test("the map is the start page: every device a box, every connection a line, a 
   await page.locator('[data-testid="map-range"][data-range="300"]').click();
   await expect(page.locator('[data-testid="map-range"][data-range="300"]')).toHaveClass(/\bon\b/);
   await expect(chart.locator("canvas")).toBeVisible();
+
+  // #142, as mockup v2: "Do something" under the chart, and the receiver's
+  // other connections (never the one shown), each a row with its hour.
+  const acts = page.getByTestId("map-actions");
+  await expect(acts.getByRole("link", { name: `Change the latency of ${DEVICE}` })).toHaveAttribute(
+    "href",
+    `#map/device/${DEVICE}`,
+  );
+  await expect(acts.getByRole("link", { name: "Open in Routing" })).toHaveAttribute("href", "#routing");
+  await expect(page.getByTestId("map-changes")).toHaveAttribute("href", `#changes/${DEVICE}`);
+  const others = page.getByTestId("map-others");
+  if ((await others.count()) > 0) {
+    await expect(others.locator(`[data-edge="#map/link/${DEVICE}/${DEVICE}"]`)).toHaveCount(0);
+  }
 
   // The bridge's way to Dante is a connection too: its hold time, its chart.
   const up = map.locator('[data-testid="map-edge"][data-from="SoundGrid"]');

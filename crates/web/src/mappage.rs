@@ -16,6 +16,8 @@ pub struct MapCtl {
     pub chosen: RwSignal<Option<map::Sel>>,
     /// What shows above the detail: the schema, or one of the lists.
     pub view: RwSignal<MapView>,
+    /// The window the colours speak of (#142).
+    pub span: RwSignal<map::Span>,
 }
 
 /// The map's three views of the same network.
@@ -39,14 +41,20 @@ pub fn load_links(m: MapCtl) {
     });
 }
 
-fn chip(state: map::State, bridge: bool) -> (&'static str, &'static str) {
+/// A state's chip; a Dante connection's in the window shown, a bridge's
+/// in the last hour (its figures cover the hour).
+fn chip(state: map::State, bridge: bool) -> (&'static str, String) {
+    let span = expect_context::<MapCtl>().span.get_untracked();
     match (state, bridge) {
-        (map::State::Bad, false) => ("chip bad", "late packets in the last hour"),
-        (map::State::Bad, true) => ("chip bad", "underruns in the last hour"),
-        (map::State::Warn, _) => ("chip warn", "close to the latency, or late earlier today"),
-        (map::State::Ok, false) => ("chip ok", "no late packets"),
-        (map::State::Ok, true) => ("chip ok", "no underruns"),
-        (map::State::Unknown, _) => ("chip none", "not measured"),
+        (map::State::Bad, false) => (
+            "chip bad",
+            format!("late packets in the last {}", span.words()),
+        ),
+        (map::State::Bad, true) => ("chip bad", "underruns in the last hour".to_owned()),
+        (map::State::Warn, _) => ("chip warn", "peak close to the latency".to_owned()),
+        (map::State::Ok, false) => ("chip ok", "no late packets".to_owned()),
+        (map::State::Ok, true) => ("chip ok", "no underruns".to_owned()),
+        (map::State::Unknown, _) => ("chip none", "not measured".to_owned()),
     }
 }
 
@@ -79,7 +87,7 @@ struct Row {
     name: String,
     label: String,
     lost: Option<String>,
-    chip: (&'static str, &'static str),
+    chip: (&'static str, String),
     sum: Option<dcontroller_api::LinkSummary>,
     /// A bridge's own way: no packet history, its underruns as the loss.
     bridge: bool,
@@ -149,7 +157,7 @@ pub fn MapPage() -> impl IntoView {
     let graph = Memo::new(move |_| match ctl.devices.get() {
         Some(Ok(d)) => m
             .links
-            .with(|l| map::build(&d, l.as_ref().and_then(|r| r.as_ref().ok()))),
+            .with(|l| map::build(&d, l.as_ref().and_then(|r| r.as_ref().ok()), m.span.get())),
         _ => map::Graph::default(),
     });
     // The connection that shows: the chosen one while the network has it,
@@ -469,13 +477,48 @@ pub fn MapPage() -> impl IntoView {
                     }
                     .hash()
                 };
+                // The receiver's other connections, each with its hour (#142,
+                // as mockup v2): from one connection to the next without
+                // going back to the schema.
+                let others: Vec<Row> = graph.with(|g| {
+                    let Some(n) = map::node_of(g, &to) else {
+                        return Vec::new();
+                    };
+                    let links = m.links.get();
+                    let links = links.as_ref().and_then(|r| r.as_ref().ok());
+                    let [ins, outs, inside] = map::edges_of(g, n);
+                    ins.into_iter()
+                        .map(|e| (e, format!("from {}", g.nodes[e.from].name)))
+                        .chain(
+                            outs.into_iter()
+                                .map(|e| (e, format!("to {}", g.nodes[e.to].name))),
+                        )
+                        .chain(inside.into_iter().map(|e| (e, String::new())))
+                        .filter(|(e, _)| !matches!(&e.sel, map::Sel::Link { from: f, to: t } if f.eq_ignore_ascii_case(&from) && t.eq_ignore_ascii_case(&to)))
+                        .map(|(e, name)| row_of(g, e, name, links))
+                        .collect()
+                });
+                let others = (!others.is_empty()).then(|| view! {
+                    <h3 class="sub">{format!("Other connections of {to}")}</h3>
+                    <div class="table-wrap">
+                    <table class="grid links" data-testid="map-others">
+                        <thead><tr><th>"Connection"</th><th>"Last hour"</th><th>"Latency"</th><th>"Typical"</th><th>"Worst peak"</th><th>"Lost 1 h"</th><th>"Lost 24 h"</th><th>"State"</th></tr></thead>
+                        <tbody>{others.into_iter().map(row).collect_view()}</tbody>
+                    </table>
+                    </div>
+                });
+                let changes = format!("#changes/{}", map::encode(&to));
                 view! {
                     {table}
+                    <h3 class="sub">"Do something"</h3>
                     <p class="actions" data-testid="map-actions">
-                        <a class="act" href=dev(&to)>{format!("Device {to}: settings, latency")}</a>
+                        <a class="act" href=dev(&to)>{format!("Change the latency of {to}")}</a>
+                        <a class="act" href=dev(&to)>{format!("Device {to}")}</a>
                         <a class="act" href=dev(&from)>{format!("Device {from}")}</a>
-                        <a class="act" href="#routing">"Routing"</a>
+                        <a class="act" href="#routing">"Open in Routing"</a>
+                        <a class="act" href=changes data-testid="map-changes">{format!("Changes of {to}")}</a>
                     </p>
+                    {others}
                 }
                 .into_any()
             }
@@ -581,14 +624,18 @@ pub fn MapPage() -> impl IntoView {
             (
                 "warn",
                 format!(
-                    "no late packets in the last hour · {} close to the latency or late earlier today",
+                    "no late packets in the last {} · {} with a peak close to the latency",
+                    m.span.get().words(),
                     hl.warn
                 ),
             )
         } else if hl.measured == 0 {
             ("ok", "nothing measured yet".to_owned())
         } else {
-            ("ok", "no late packets in the last hour".to_owned())
+            (
+                "ok",
+                format!("no late packets in the last {}", m.span.get().words()),
+            )
         };
         let unmeasured = hl.links - hl.measured;
         let value = format!("{} / {}", hl.clean, hl.measured);
@@ -612,7 +659,7 @@ pub fn MapPage() -> impl IntoView {
         });
         view! {
             <section class="tiles" data-testid="map-tiles-top">
-                {pages::tile("tile-connections", "Connections clean · 1 h", value, sub, class, worst.unwrap_or_else(|| "#map".to_owned()))}
+                {pages::tile("tile-connections", "Connections clean", value, sub, class, worst.unwrap_or_else(|| "#map".to_owned()))}
                 {bridges}
                 {devices}
                 {subs}
@@ -743,6 +790,14 @@ pub fn MapPage() -> impl IntoView {
                 {tab(MapView::Links, "Links", "map-view-links")}
                 {tab(MapView::Devices, "Devices", "map-view-devices")}
             </div>
+            // What the colours speak of: the last hour, 3 hours or day.
+            <div class="seg-group" data-testid="map-span" title="The window the colours of the connections speak of">
+                {map::Span::ALL.map(|s| view! {
+                    <button data-testid=format!("map-span-{}", s.label().replace(' ', ""))
+                        class=move || if m.span.get() == s { "seg on" } else { "seg" }
+                        on:click=move |_| m.span.set(s)>{s.label()}</button>
+                }).collect_view()}
+            </div>
             <span class="status" data-testid="status">{status}</span>
         </div>
         <section class="panel" data-testid="map-links-panel"
@@ -760,8 +815,9 @@ pub fn MapPage() -> impl IntoView {
                 inner_html=drawing></div>
             <div class="legend">
                 <span><i class="ok"></i>"no late packets"</span>
-                <span><i class="warn"></i>"close to the latency, or late earlier today"</span>
-                <span><i class="bad"></i>"late packets or underruns in the last hour (audio lost)"</span>
+                <span><i class="warn"></i>"peak close to the latency"</span>
+                <span><i class="bad"></i>{move || format!("late packets (underruns for a bridge) in the last {}: audio lost", m.span.get().words())}</span>
+                <span>"colours speak of the window on the right of the tabs: 1 h, 3 h or 24 h"</span>
                 <span><i class="unknown"></i>"not measured"</span>
                 <span>"number on a line: the receiver's latency for that connection"</span>
                 <span>"point at a device: its connections stand out"</span>
