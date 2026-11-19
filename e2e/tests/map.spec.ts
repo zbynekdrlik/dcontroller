@@ -72,6 +72,7 @@ test("the map is the start page: every device a box, every connection a line, a 
   await expect(top.getByTestId("tile-connections").locator(".tile-value")).toHaveText(/^\d+ \/ 1$/, { timeout: 40_000 });
   await expect(top.getByTestId("tile-bridges")).toContainText("1 bridge");
   await expect(top.getByTestId("tile-devices").locator(".tile-value")).toHaveText(String(devices.devices.length));
+  await expect(top.getByTestId("tile-devices")).toContainText("all there since");
   await expect(top.getByTestId("tile-subs")).toContainText("Subscriptions");
   await expect(top.getByTestId("tile-clock")).toContainText("Clock");
   // The clock tile counts the dsync clocks too (#124): the suite's second
