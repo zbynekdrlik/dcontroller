@@ -22,7 +22,10 @@ test.describe("routing matrix", () => {
     // Discovery plus the first ARC read.
     await expect(devCell).toHaveText("1", { timeout: 30_000 });
     await expect(devCell).toHaveClass(/\bcell\b/);
-    await expect(devCell).toHaveClass(/\b(ok|warn)\b/);
+    // Since #123 the device cell also carries the connection's last hour,
+    // and the suite's device loses packets as it starts: any state is a
+    // coloured cell (the next test checks which colour).
+    await expect(devCell).toHaveClass(/\b(ok|warn|err)\b/);
 
     // Open the receiver: one row per RX channel; the collapsed TX device names the source channel.
     await matrix.locator(`[data-testid="rx-device"][data-name="${DEVICE}"]`).click();

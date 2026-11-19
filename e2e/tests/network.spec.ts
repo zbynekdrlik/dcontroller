@@ -57,6 +57,19 @@ test("the network tab lists every device's interfaces as the server read them", 
     .evaluateAll((rows) => rows.map((r) => (r.classList.contains("warn") ? 0 : 1)));
   expect(warned).toEqual([...warned].sort((a, b) => a - b));
 
+  // A device's name is a link to its place on the Map (#123), here as on
+  // the clock page.
+  await page.goto("/#clock");
+  await expect(page.locator(`[data-testid="clock-row"][data-name="${DEVICE}"]`).getByTestId("dev-link")).toHaveAttribute(
+    "href",
+    `#map/device/${DEVICE}`,
+  );
+  await page.goto("/#network");
+  await row.getByTestId("dev-link").click();
+  await expect(page).toHaveURL(new RegExp(`#map/device/${DEVICE}$`));
+  await expect(page.getByTestId("tab-map")).toHaveClass(/\bon\b/);
+  await expect(page.getByTestId("map-title")).toHaveText(DEVICE, { timeout: 30_000 });
+
   // The device table shows the same interface.
   await page.getByTestId("tab-devices").click();
   const card = page.locator(`[data-testid="device"][data-name="${DEVICE}"]`);
