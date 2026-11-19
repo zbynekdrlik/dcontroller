@@ -272,3 +272,61 @@ button.chip { border: 0; font: inherit; font-size: 0.78rem; cursor: pointer; }
 table.bridge-lines th { font-weight: 500; text-transform: none; letter-spacing: normal; font-size: 0.95rem; color: var(--text); }
 table.bridge-lines td { font-size: 1.25rem; }
 details.bridge-details > summary { cursor: pointer; color: var(--muted); margin: 0.5rem 0; }
+
+/* The map (#122): the schema of devices and connections, and the chosen
+   connection's figures. */
+.map-wrap { overflow-x: auto; }
+svg.map { width: 100%; min-width: 860px; display: block; }
+svg.map .col-title { fill: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+svg.map .node rect { fill: var(--surface-2); stroke: var(--border); stroke-width: 1.2; }
+svg.map .node { cursor: pointer; }
+svg.map .node:hover rect { stroke: var(--accent); stroke-width: 2; }
+svg.map .node.asio, svg.map .node.missing { cursor: default; }
+svg.map .node.asio rect, svg.map .node.missing rect { fill: none; stroke-dasharray: 5 4; }
+svg.map .node.asio:hover rect, svg.map .node.missing:hover rect { stroke: var(--border); stroke-width: 1.2; }
+svg.map .node text { pointer-events: none; fill: var(--text); font-size: 13.5px; font-weight: 650; }
+svg.map .node text.sub { fill: var(--muted); font-size: 11px; font-weight: 400; }
+svg.map .node text.badge { fill: var(--muted); font-size: 10px; font-weight: 700; }
+svg.map .node text.badge.bad { fill: var(--bad); }
+svg.map .edge { cursor: pointer; }
+svg.map .edge.ok { color: var(--ok); }
+svg.map .edge.warn { color: var(--warn); }
+svg.map .edge.bad { color: var(--bad); }
+svg.map .edge.unknown { color: var(--muted); }
+svg.map .edge path.line { fill: none; stroke: currentColor; stroke-width: 2.2; }
+svg.map .edge.unknown path.line { stroke-dasharray: 2 5; }
+svg.map .edge path.hit { fill: none; stroke: transparent; stroke-width: 18; }
+svg.map marker.arrow.ok path { fill: var(--ok); }
+svg.map marker.arrow.warn path { fill: var(--warn); }
+svg.map marker.arrow.bad path { fill: var(--bad); }
+svg.map marker.arrow.unknown path { fill: var(--muted); }
+svg.map .edge .lbl rect { fill: var(--bg); stroke: currentColor; stroke-width: 1; }
+svg.map .edge .lbl text { fill: var(--text); font-size: 11px; font-weight: 600; text-anchor: middle; pointer-events: none; }
+svg.map .edge .lbl text .lost { fill: var(--bad); }
+svg.map .edge:hover path.line, svg.map .edge.sel path.line { stroke-width: 4.5; }
+svg.map .edge.sel .lbl rect { fill: var(--surface-3); stroke-width: 2; }
+svg.map.has-sel .edge:not(.sel) { opacity: 0.6; }
+svg.map.has-sel .edge:not(.sel):hover { opacity: 1; }
+svg.map.has-sel .node.rel rect { stroke: var(--accent); }
+.legend { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; }
+.legend i { display: inline-block; width: 22px; height: 3px; vertical-align: middle; margin-right: 0.35rem; border-radius: 2px; }
+.legend i.ok { background: var(--ok); }
+.legend i.warn { background: var(--warn); }
+.legend i.bad { background: var(--bad); }
+.legend i.unknown { background: var(--muted); }
+.panel-head .grow { flex: 1 1 auto; }
+.figs { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0.6rem; margin: 0.6rem 0; }
+.fig { background: var(--surface-2); border-radius: var(--radius-s); padding: 0.5rem 0.75rem; }
+.fig .k { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.fig .v { font-size: 1.45rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.fig .s { font-size: 0.78rem; color: var(--muted); }
+.fig.bad .v { color: var(--bad); }
+a.act { display: inline-block; background: var(--surface-3); border: 1px solid var(--border); border-radius: var(--radius-s); padding: 0.3rem 0.7rem; font-size: 0.82rem; text-decoration: none; margin: 0.6rem 0.4rem 0 0; }
+a.act:hover { border-color: var(--accent); }
+svg.map.dense .edge path.line { stroke-width: 1.6; }
+svg.map.dense .edge:hover path.line, svg.map.dense .edge.sel path.line { stroke-width: 4; }
+svg.map .edge.quiet .lbl { display: none; }
+svg.map .edge.quiet:hover .lbl, svg.map .edge.quiet.sel .lbl, svg.map .edge.quiet.focus .lbl { display: inline; }
+svg.map.focus-on .edge:not(.focus):not(.sel) { opacity: 0.12; }
+svg.map.focus-on .edge.focus { opacity: 1; }
+svg.map.focus-on .edge.focus path.line { stroke-width: 3.2; }

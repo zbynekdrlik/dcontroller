@@ -8,7 +8,7 @@ paths:
 - Playwright `hasText` matches a substring, case aside: `th` "Software" also hits "Dante software". Match a table row by its exact header: `getByRole("rowheader", { name, exact: true })`.
 - After a commit, rebuild both the web (`trunk build`) and the server before a local run: the dashboard test compares their versions, and a stale build of either fails it.
 - dstack's own device (`e2e/fixtures/device.toml`) answers settings, product and board info like hardware. Assert what it is configured with; take versions from `/api/devices` and check that the page shows the same.
-- The start page is Overview: a spec opens its page by hash (`/#routing`, `/#devices`), never relying on `/`.
+- The start page is the Map (#122): a spec opens its page by hash (`/#overview`, `/#routing`, `/#devices`), never relying on `/`.
 - uPlot draws axis labels on the canvas: assert chart text through `.u-legend`, not `.u-axis`.
 - The recorder needs a few seconds of heartbeats before the latency page or the overview has rows: wait on the row (timeout 30–40 s), not on a sleep.
 - Run the suite only through `e2e/isolated.sh npx playwright test …` (#95): a network namespace with a dummy `e2e0`. `playwright.config.ts` refuses any other run, because the suite's packets (a test device, fake dstack peers, mDNS floods, 96 s browsers) would reach the real Dante network the host sits on. It needs unprivileged user namespaces; CI turns off AppArmor's restriction with sudo.

@@ -312,6 +312,68 @@ pub fn OverviewPage() -> impl IntoView {
 
 /// The latency history of one receiver: a chart per range with zoom, and
 /// each flow's figures and distribution over it.
+/// Draws or updates the chart in `el` (`charts.js`).
+pub(crate) fn draw_chart(el: &JsValue, json: &str) {
+    chart_latency(el, json);
+}
+
+/// A chart's drag-zoom and double-click, into the page's zoom.
+pub(crate) fn wire_zoom(target: &web_sys::EventTarget, h: Hist) {
+    let on_zoom = Closure::<dyn Fn(web_sys::CustomEvent)>::new(move |ev: web_sys::CustomEvent| {
+        let d = ev.detail();
+        let get = |k: &str| {
+            js_sys::Reflect::get(&d, &JsValue::from_str(k))
+                .ok()
+                .and_then(|v| v.as_f64())
+        };
+        if let (Some(from), Some(to)) = (get("from"), get("to")) {
+            h.zoom.set(Some((from as i64, to as i64)));
+        }
+    });
+    let on_unzoom = Closure::<dyn Fn()>::new(move || h.zoom.set(None));
+    let _ = target.add_event_listener_with_callback("dc-zoom", on_zoom.as_ref().unchecked_ref());
+    let _ =
+        target.add_event_listener_with_callback("dc-unzoom", on_unzoom.as_ref().unchecked_ref());
+    on_zoom.forget();
+    on_unzoom.forget();
+}
+
+/// The ranges, the zoom's chip and the live mark of a chart; the test ids
+/// start with `prefix`.
+#[component]
+pub(crate) fn RangeHead(prefix: &'static str) -> impl IntoView {
+    let h = expect_context::<Hist>();
+    let ranges = move || {
+        hist::RANGES
+            .iter()
+            .map(|&(label, secs)| {
+                view! {
+                    <button data-testid=format!("{prefix}-range") data-range=secs.to_string()
+                        class=move || if h.zoom.get().is_none() && h.range.get() == secs { "seg on" } else { "seg" }
+                        on:click=move |_| { h.zoom.set(None); h.range.set(secs); }>{label}</button>
+                }
+            })
+            .collect_view()
+    };
+    move || {
+        let zoom = h.zoom.get().map(|(a, b)| {
+            view! {
+                <button class="chip info" data-testid=format!("{prefix}-unzoom") on:click=move |_| h.zoom.set(None)>
+                    {format!("zoom {} – {} ✕", time_text(a), time_text(b))}
+                </button>
+            }
+        });
+        let live = (h.zoom.get().is_none() && h.range.get() <= 24 * 3600).then(
+            || view! { <span class="live" data-testid=format!("{prefix}-live")>"live"</span> },
+        );
+        view! {
+            <div class="seg-group">{ranges}</div>
+            {zoom}
+            {live}
+        }
+    }
+}
+
 #[component]
 pub fn LatencyPanel() -> impl IntoView {
     let h = expect_context::<Hist>();
@@ -333,62 +395,12 @@ pub fn LatencyPanel() -> impl IntoView {
         };
         if !wired.get_value() {
             wired.set_value(true);
-            let on_zoom =
-                Closure::<dyn Fn(web_sys::CustomEvent)>::new(move |ev: web_sys::CustomEvent| {
-                    let d = ev.detail();
-                    let get = |k: &str| {
-                        js_sys::Reflect::get(&d, &JsValue::from_str(k))
-                            .ok()
-                            .and_then(|v| v.as_f64())
-                    };
-                    if let (Some(from), Some(to)) = (get("from"), get("to")) {
-                        h.zoom.set(Some((from as i64, to as i64)));
-                    }
-                });
-            let on_unzoom = Closure::<dyn Fn()>::new(move || h.zoom.set(None));
-            let target: &web_sys::EventTarget = el.unchecked_ref();
-            let _ = target
-                .add_event_listener_with_callback("dc-zoom", on_zoom.as_ref().unchecked_ref());
-            let _ = target
-                .add_event_listener_with_callback("dc-unzoom", on_unzoom.as_ref().unchecked_ref());
-            on_zoom.forget();
-            on_unzoom.forget();
+            wire_zoom(el.unchecked_ref(), h);
         }
         if let Some(Ok(hd)) = data.filter(|d| d.as_ref().is_ok_and(|x| !x.flows.is_empty())) {
             chart_latency(el.unchecked_ref(), &hist::chart_json(&hd, 320));
         }
     });
-    let ranges = move || {
-        hist::RANGES
-            .iter()
-            .map(|&(label, secs)| {
-                view! {
-                    <button data-testid="lat-range" data-range=secs.to_string()
-                        class=move || if h.zoom.get().is_none() && h.range.get() == secs { "seg on" } else { "seg" }
-                        on:click=move |_| { h.zoom.set(None); h.range.set(secs); }>{label}</button>
-                }
-            })
-            .collect_view()
-    };
-    let head = move || {
-        let zoom = h.zoom.get().map(|(a, b)| {
-            let t = |s: i64| {
-                time_text(s)
-            };
-            view! {
-                <button class="chip info" data-testid="lat-unzoom" on:click=move |_| h.zoom.set(None)>
-                    {format!("zoom {} – {} ✕", t(a), t(b))}
-                </button>
-            }
-        });
-        let live = (h.zoom.get().is_none() && h.range.get() <= 24 * 3600)
-            .then(|| view! { <span class="live" data-testid="lat-live">"live"</span> });
-        view! {
-            <div class="seg-group">{ranges}</div>
-            {zoom}
-            {live}
-        }
-    };
     let figures = move || {
         let Some(name) = h.device.get() else {
             return ().into_any();
@@ -444,19 +456,19 @@ pub fn LatencyPanel() -> impl IntoView {
             <section class="panel grow" data-testid="lat-panel">
                 <header class="panel-head">
                     <b data-testid="lat-title">{move || h.device.get().map(|d| format!("Latency · {d}")).unwrap_or_default()}</b>
-                    {head}
+                    <RangeHead prefix="lat"/>
                     <button class="chip info" data-testid="lat-close" on:click=close>"✕"</button>
                 </header>
                 <div class="chart" node_ref=chart_ref data-testid="lat-chart"
                     style=move || if h.data.get().is_some_and(|d| d.is_ok_and(|x| !x.flows.is_empty())) { "" } else { "display:none" }></div>
-                <p class="muted small hint">"A vertical line with a number: late packets at that time. Drag across the chart to zoom in; double-click to zoom out."</p>
+                <p class="muted small hint">"Red bars at the bottom: late packets (not played) at that time. Drag across the chart to zoom in; double-click to zoom out."</p>
                 {figures}
                 <div style=move || if h.bridge.get().is_some_and(|b| !b.points.is_empty()) { "" } else { "display:none" }
                     data-testid="bridge-panel">
                     <h3 class="sub">"ASIO bridge"</h3>
                     {move || h.bridge.get().and_then(|b| b.points.last().cloned()).map(bridge_lines)}
                     <div class="chart" node_ref=bridge_ref data-testid="bridge-chart"></div>
-                    <p class="muted small hint">"How long the bridge holds a sample, from one card to the other. A vertical line with a number: underruns (blocks played as silence) at that time."</p>
+                    <p class="muted small hint">"How long the bridge holds a sample, from one card to the other. Red bars at the bottom: underruns (blocks played as silence) at that time."</p>
                     <details class="bridge-details" data-testid="bridge-details">
                         <summary>"Details"</summary>
                         {move || h.bridge.get().as_ref().and_then(hist::bridge_now).map(bridge_table)}
@@ -483,7 +495,7 @@ fn bridge_lines(p: dcontroller_api::BridgePoint) -> impl IntoView {
 }
 
 /// The bridge's figures now, and its underruns in the range (#108).
-fn bridge_table(n: hist::BridgeNow) -> impl IntoView {
+pub(crate) fn bridge_table(n: hist::BridgeNow) -> impl IntoView {
     let p = &n.last;
     let cause = |c: &str| match c {
         "none" => "–".to_owned(),
@@ -552,7 +564,7 @@ fn bridge_table(n: hist::BridgeNow) -> impl IntoView {
     }
 }
 
-fn source_row(color: String, s: &hist::SourceHistory, tier_s: i64) -> impl IntoView {
+pub(crate) fn source_row(color: String, s: &hist::SourceHistory, tier_s: i64) -> impl IntoView {
     let top = s.histogram.iter().copied().max().unwrap_or(0).max(1);
     // The bins are eighths of each flow's latency, then 1.5×, 2× and over:
     // the first eight are inside it.

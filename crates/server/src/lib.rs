@@ -212,6 +212,21 @@ async fn overview(
         })
 }
 
+async fn links(State(s): State<Shared>) -> Result<axum::Json<dcontroller_api::Links>, StatusCode> {
+    let now = history::unix_now();
+    tokio::task::spawn_blocking(move || s.history.links(now))
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "links: task failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .map(axum::Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "links: read failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
 /// `?from=&to=` of `/api/history`, unix seconds; `to` defaults to now and
 /// `from` to an hour before `to`.
 #[derive(Debug, Deserialize)]
@@ -379,6 +394,7 @@ pub fn app(web_dir: &Path, shared: Shared) -> Router {
         .route("/api/history/{device}", get(history_report))
         .route("/api/bridge/{device}", get(bridge_report))
         .route("/api/overview", get(overview))
+        .route("/api/links", get(links))
         .route("/api/meters/{device}", get(meter_report))
         .route("/api/levels", get(levels_report))
         .route("/api/mdns", get(mdns_report))

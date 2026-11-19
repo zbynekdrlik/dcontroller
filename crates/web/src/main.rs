@@ -20,6 +20,8 @@ mod devlist;
 mod flows;
 mod hist;
 mod lat;
+mod map;
+mod mappage;
 mod matrix;
 mod mdns;
 mod mtr;
@@ -79,6 +81,13 @@ fn App() -> impl IntoView {
         reads: StoredValue::new(hist::HistReads::default()),
     };
     provide_context(hst);
+    let mp = mappage::MapCtl {
+        links: RwSignal::new(None),
+        chosen: RwSignal::new(map::Sel::from_hash(
+            &window().location().hash().unwrap_or_default(),
+        )),
+    };
+    provide_context(mp);
     // The hash is the page's address: a link, back or forward moves the view
     // (and the chosen latency receiver) with it.
     {
@@ -86,6 +95,12 @@ fn App() -> impl IntoView {
             let v = View::from_hash();
             if view_now.get_untracked() != v {
                 view_now.set(v);
+            }
+            if v == View::Map {
+                let c = map::Sel::from_hash(&window().location().hash().unwrap_or_default());
+                if mp.chosen.get_untracked() != c {
+                    mp.chosen.set(c);
+                }
             }
             if v == View::Devices {
                 let d = hash_device("#devices/");
@@ -112,13 +127,13 @@ fn App() -> impl IntoView {
             hst.zoom.get(),
             view_now.get(),
         );
-        if v == View::Devices && hst.device.get().is_some() {
+        if matches!(v, View::Devices | View::Map) && hst.device.get().is_some() {
             pages::load_history(hst, false);
         }
     });
     let _ = set_interval_with_handle(
         move || {
-            if view_now.get_untracked() == View::Devices
+            if matches!(view_now.get_untracked(), View::Devices | View::Map)
                 && hst.device.get_untracked().is_some()
                 && hst.live()
             {
@@ -136,6 +151,20 @@ fn App() -> impl IntoView {
         move || {
             if matches!(view_now.get_untracked(), View::Overview | View::Devices) {
                 pages::load_overview(hst);
+            }
+        },
+        pages::OVERVIEW_POLL,
+    );
+    // The map's connections: at once on the page, then with the overview.
+    Effect::new(move |_| {
+        if view_now.get() == View::Map {
+            mappage::load_links(mp);
+        }
+    });
+    let _ = set_interval_with_handle(
+        move || {
+            if view_now.get_untracked() == View::Map {
+                mappage::load_links(mp);
             }
         },
         pages::OVERVIEW_POLL,
@@ -306,6 +335,7 @@ fn App() -> impl IntoView {
                         _ => String::new(),
                     }}</p>
                 }.into_any(),
+                (View::Map, _) => view! { <mappage::MapPage/> }.into_any(),
                 (View::Overview, _) => view! { <pages::OverviewPage/> }.into_any(),
                 // The latency panel stays mounted across the device poll
                 // (its chart keeps its zoom); only the list is rebuilt.
@@ -323,7 +353,7 @@ fn App() -> impl IntoView {
                         View::Meters => view! { <MeterView d=d/> }.into_any(),
                         View::Clock => view! { <ClockView d=d/> }.into_any(),
                         View::Network => view! { <NetworkView d=d/><MdnsView/> }.into_any(),
-                        View::Overview | View::Devices => ().into_any(),
+                        View::Map | View::Overview | View::Devices => ().into_any(),
                     },
                     _ => ().into_any(),
                 }).into_any(),
@@ -342,6 +372,7 @@ fn App() -> impl IntoView {
 /// The page's view, kept in the URL hash.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum View {
+    Map,
     Overview,
     Routing,
     Devices,
@@ -353,7 +384,8 @@ enum View {
 
 impl View {
     /// The views in the sidebar's order.
-    const ALL: [View; 7] = [
+    const ALL: [View; 8] = [
+        View::Map,
         View::Overview,
         View::Routing,
         View::Devices,
@@ -365,6 +397,7 @@ impl View {
 
     fn slug(self) -> &'static str {
         match self {
+            View::Map => "map",
             View::Overview => "overview",
             View::Routing => "routing",
             View::Devices => "devices",
@@ -377,6 +410,7 @@ impl View {
 
     fn title(self) -> &'static str {
         match self {
+            View::Map => "Map",
             View::Overview => "Overview",
             View::Routing => "Routing",
             View::Devices => "Devices",
@@ -408,13 +442,16 @@ impl View {
         View::ALL
             .into_iter()
             .find(|v| v.slug() == head)
-            .unwrap_or(View::Overview)
+            .unwrap_or(View::Map)
     }
 }
 
 /// The sidebar's icon for a view (inline SVG, stroke icons).
 fn icon(v: View) -> impl IntoView {
     let d = match v {
+        View::Map => {
+            "M3 4h6v5H3zM15 4h6v5h-6zM9 15h6v5H9zM9 6.5h6M6 9v3.5a2 2 0 0 0 2 2h1M18 9v3.5a2 2 0 0 1-2 2h-1"
+        }
         View::Overview => "M3 13h8V3H3zM13 21h8V11h-8zM3 21h8v-6H3zM13 9h8V3h-8z",
         View::Routing => {
             "M4 4h4v4H4zM16 4h4v4h-4zM4 16h4v4H4zM16 16h4v4h-4zM8 6h8M6 8v8M18 8v8M8 18h8"

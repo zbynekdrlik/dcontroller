@@ -270,13 +270,47 @@ struct Chart<'a> {
 /// drawn as marks on the same chart), and a dashed line per distinct flow
 /// latency, labelled with the sources whose flows run at it.
 pub fn chart_json(h: &History, height: u32) -> String {
+    chart_json_for(h, height, false)
+}
+
+/// `h` with only the flows from the source device `from` (the names' case
+/// aside): one connection of the receiver (#122).
+pub fn only_source(h: &History, from: &str) -> History {
+    let mut out = h.clone();
+    out.flows
+        .retain(|f| source_of(f).eq_ignore_ascii_case(from));
+    out
+}
+
+/// The chart of one connection: `from`'s flows into the receiver of `h`.
+pub fn link_chart_json(h: &History, from: &str, height: u32) -> String {
+    chart_json_for(&only_source(h, from), height, true)
+}
+
+/// The mean of a source's typical seconds over the range, µs.
+pub fn typical_us(s: &SourceHistory) -> Option<u32> {
+    let seen: Vec<u64> = s
+        .typical_us
+        .iter()
+        .flatten()
+        .map(|&v| u64::from(v))
+        .collect();
+    let n = u64::try_from(seen.len()).ok().filter(|&n| n > 0)?;
+    u32::try_from(seen.iter().sum::<u64>() / n).ok()
+}
+
+/// The line of a single connection's chart.
+pub const LINK_COLOR: &str = "#5b9dff";
+
+fn chart_json_for(h: &History, height: u32, one_link: bool) -> String {
     let groups = by_source(h);
     let sources: Vec<ChartSource> = groups
         .iter()
         .enumerate()
         .map(|(i, s)| ChartSource {
             label: s.source.clone(),
-            color: chart_color(i).to_owned(),
+            // One connection: the accent, since green and red are states.
+            color: if one_link { LINK_COLOR } else { chart_color(i) }.to_owned(),
             values: s
                 .typical_us
                 .iter()
@@ -296,13 +330,15 @@ pub fn chart_json(h: &History, height: u32) -> String {
                 .filter(|s| s.latencies.contains(&us))
                 .map(|s| s.source.as_str())
                 .collect();
-            let who = if lats.len() == 1 {
-                "all sources".to_owned()
+            let label = if one_link {
+                format!("latency {}: a later packet is not played", ms(us))
+            } else if lats.len() == 1 {
+                format!("latency {} · all sources", ms(us))
             } else {
-                at.join(", ")
+                format!("latency {} · {}", ms(us), at.join(", "))
             };
             Threshold {
-                label: format!("latency {} · {who}", ms(us)),
+                label,
                 color: "#f87171",
                 value: f64::from(us) / 1000.0,
             }
@@ -311,7 +347,11 @@ pub fn chart_json(h: &History, height: u32) -> String {
     let chart = Chart {
         t: &h.t,
         unit: "ms",
-        axis: "typical peak, ms",
+        axis: if one_link {
+            "how late packets arrive, ms"
+        } else {
+            "typical peak, ms"
+        },
         late_name: "late packets",
         floor: thresholds.first().map_or(0.0, |t| t.value * 1.05),
         sources,
@@ -378,6 +418,61 @@ pub fn bridge_lines(p: &BridgePoint) -> [(String, u32); 2] {
 /// has them, a gap where an older one did not), each side's new
 /// underruns as its late marks.
 pub fn bridge_chart_json(b: &Bridge, height: u32) -> String {
+    bridge_chart(b, height, None)
+}
+
+/// The chart of one way through the bridge (#122): to Dante, or to ASIO.
+pub fn bridge_dir_chart_json(b: &Bridge, to_dante: bool, height: u32) -> String {
+    bridge_chart(b, height, Some(to_dante))
+}
+
+/// One way through a bridge over a range.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeDir {
+    /// `SoundGrid → Dante`.
+    pub name: String,
+    /// Held in the bridge at the newest read and the most in the range, µs.
+    pub now_us: u32,
+    pub most_us: u32,
+    /// The device says it itself (card to card); else from its settings.
+    pub measured: bool,
+    /// Underruns in the range, and the newest one's cause.
+    pub underruns: u64,
+    pub cause: String,
+}
+
+/// The newest read of `b` one way and that way's range; `None` for a
+/// device that never answered.
+pub fn bridge_dir(b: &Bridge, to_dante: bool) -> Option<BridgeDir> {
+    let last = b.points.last()?;
+    let measured = last.card_us().is_some();
+    let us = |p: &BridgePoint| -> Option<u32> {
+        match (measured, to_dante) {
+            (true, true) => p.card_asio_to_dante_us,
+            (true, false) => p.card_dante_to_asio_us,
+            (false, true) => Some(p.asio_to_dante_us()),
+            (false, false) => Some(p.dante_to_asio_us()),
+        }
+    };
+    let [dante, asio] = bridge_lines(last);
+    let (name, now_us) = if to_dante { dante } else { asio };
+    // To Dante is what the bridge takes from ASIO: its from-ASIO side.
+    let (count, cause): (fn(&BridgePoint) -> u64, &str) = if to_dante {
+        (|p| p.from_asio_underruns, &last.from_asio_cause)
+    } else {
+        (|p| p.to_asio_underruns, &last.to_asio_cause)
+    };
+    Some(BridgeDir {
+        name,
+        now_us,
+        most_us: b.points.iter().filter_map(us).max().unwrap_or(now_us),
+        measured,
+        underruns: growth(&b.points, count).iter().sum(),
+        cause: cause.to_owned(),
+    })
+}
+
+fn bridge_chart(b: &Bridge, height: u32, only: Option<bool>) -> String {
     let t: Vec<i64> = b.points.iter().map(|p| p.t).collect();
     let card = b.points.last().is_some_and(|p| p.card_us().is_some());
     let labels = b.points.last().map(bridge_lines).map(|l| l.map(|(n, _)| n));
@@ -403,23 +498,34 @@ pub fn bridge_chart_json(b: &Bridge, height: u32) -> String {
             |p| Some(p.dante_to_asio_us()),
         )
     };
+    let mut sources = vec![
+        line(
+            to_dante,
+            chart_color(0),
+            &dante,
+            growth(&b.points, |p| p.from_asio_underruns),
+        ),
+        line(
+            to_asio,
+            chart_color(1),
+            &asio,
+            growth(&b.points, |p| p.to_asio_underruns),
+        ),
+    ];
+    match only {
+        Some(true) => sources.truncate(1),
+        Some(false) => {
+            sources.remove(0);
+        }
+        None => {}
+    }
+    if only.is_some() {
+        sources[0].color = LINK_COLOR.to_owned();
+    }
     let chart = Chart {
         t: &t,
         unit: "ms",
-        sources: vec![
-            line(
-                to_dante,
-                chart_color(0),
-                &dante,
-                growth(&b.points, |p| p.from_asio_underruns),
-            ),
-            line(
-                to_asio,
-                chart_color(1),
-                &asio,
-                growth(&b.points, |p| p.to_asio_underruns),
-            ),
-        ],
+        sources,
         thresholds: Vec::new(),
         late_name: "underruns",
         axis: if card {
@@ -545,6 +651,93 @@ mod tests {
         assert_eq!(v["thresholds"], serde_json::json!([]));
         assert_eq!(v["axis"], "path latency, ms");
         assert_eq!(v["lateName"], "underruns");
+    }
+
+    #[test]
+    fn one_connection_is_one_line_with_its_own_latency_named_plainly() {
+        let h = History {
+            t: vec![10, 20],
+            flows: vec![
+                from("player", 1, 1000, vec![Some(400), Some(600)], vec![0, 3]),
+                from("video", 2, 10_000, vec![Some(4000), None], vec![1, 0]),
+            ],
+            ..History::default()
+        };
+        let one = only_source(&h, "PLAYER");
+        assert_eq!(one.flows.len(), 1);
+        assert_eq!(one.t, h.t);
+        let v: serde_json::Value =
+            serde_json::from_str(&link_chart_json(&h, "Player", 300)).unwrap();
+        assert_eq!(v["sources"].as_array().unwrap().len(), 1);
+        assert_eq!(v["sources"][0]["label"], "player");
+        assert_eq!(v["sources"][0]["color"], LINK_COLOR);
+        assert_eq!(v["sources"][0]["late"], serde_json::json!([0, 3]));
+        assert_eq!(v["thresholds"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            v["thresholds"][0]["label"],
+            "latency 1.00 ms: a later packet is not played"
+        );
+        assert_eq!(v["axis"], "how late packets arrive, ms");
+        // A source that is not there: an empty chart, not another's line.
+        let none: serde_json::Value =
+            serde_json::from_str(&link_chart_json(&h, "nobody", 300)).unwrap();
+        assert_eq!(none["sources"], serde_json::json!([]));
+        let g = by_source(&one);
+        assert_eq!(
+            typical_us(&g[0]),
+            g[0].typical_us
+                .iter()
+                .flatten()
+                .copied()
+                .reduce(|a, b| (a + b) / 2)
+        );
+        assert_eq!(typical_us(&SourceHistory::default()), None);
+    }
+
+    #[test]
+    fn one_way_through_a_bridge_has_its_own_line_and_underruns() {
+        let card = |t: i64, to: u64, from: u64, us: u32| BridgePoint {
+            card_asio_to_dante_us: Some(us),
+            card_dante_to_asio_us: Some(us + 200),
+            driver: Some("SoundGrid".into()),
+            from_asio_cause: "driver".into(),
+            ..bp(t, 1, to, from)
+        };
+        let b = Bridge {
+            points: vec![
+                card(10, 0, 5, 7300),
+                card(20, 0, 6, 7400),
+                card(30, 2, 6, 7300),
+            ],
+            ..Bridge::default()
+        };
+        let up = bridge_dir(&b, true).unwrap();
+        assert_eq!(up.name, "SoundGrid → Dante");
+        assert_eq!((up.now_us, up.most_us, up.measured), (7300, 7400, true));
+        assert_eq!((up.underruns, up.cause.as_str()), (1, "driver"));
+        let down = bridge_dir(&b, false).unwrap();
+        assert_eq!(down.name, "Dante → SoundGrid");
+        assert_eq!((down.now_us, down.most_us, down.underruns), (7500, 7600, 2));
+        let v: serde_json::Value =
+            serde_json::from_str(&bridge_dir_chart_json(&b, false, 200)).unwrap();
+        assert_eq!(v["sources"].as_array().unwrap().len(), 1);
+        assert_eq!(v["sources"][0]["label"], "Dante → SoundGrid");
+        assert_eq!(v["sources"][0]["late"], serde_json::json!([0, 0, 2]));
+        assert_eq!(v["lateName"], "underruns");
+        let v: serde_json::Value =
+            serde_json::from_str(&bridge_dir_chart_json(&b, true, 200)).unwrap();
+        assert_eq!(v["sources"][0]["label"], "SoundGrid → Dante");
+        // From the settings when the device does not say.
+        let plain = Bridge {
+            points: vec![bp(10, 1, 0, 0)],
+            ..Bridge::default()
+        };
+        let d = bridge_dir(&plain, true).unwrap();
+        assert_eq!(
+            (d.name.as_str(), d.now_us, d.measured),
+            ("ASIO → Dante", 1834, false)
+        );
+        assert_eq!(bridge_dir(&Bridge::default(), true), None);
     }
 
     #[test]
