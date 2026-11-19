@@ -436,7 +436,7 @@ pub fn worst(g: &Graph) -> Option<&Edge> {
 /// its latency), equals in the graph's order.
 pub fn worst_first(g: &Graph) -> Vec<&Edge> {
     let mut all: Vec<&Edge> = g.edges.iter().collect();
-    all.sort_by(|a, b| (b.state, b.weight).cmp(&(a.state, a.weight)));
+    all.sort_by_key(|e| std::cmp::Reverse((e.state, e.weight)));
     all
 }
 
