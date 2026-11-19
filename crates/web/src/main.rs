@@ -28,6 +28,7 @@ mod mdns;
 mod mtr;
 mod net;
 mod pages;
+mod parts;
 mod settings;
 use matrix::{Grid, affected, cell, elsewhere, problems, tally};
 
@@ -397,7 +398,7 @@ fn App() -> impl IntoView {
                         View::Changes => view! { <ChangeLog/> }.into_any(),
                         View::Meters => view! { <MeterView d=d/> }.into_any(),
                         View::Clock => view! { <ClockView d=d/> }.into_any(),
-                        View::Network => view! { <NetworkView d=d/><MdnsView/> }.into_any(),
+                        View::Network => view! { <NetworkView d=d/> }.into_any(),
                         View::Map | View::Overview | View::Devices => ().into_any(),
                     },
                     _ => ().into_any(),
@@ -2158,12 +2159,114 @@ fn network_rows(ports: &[dcontroller_api::NetPort]) -> Vec<(&'static str, String
         .collect()
 }
 
-/// The network view: every device's interfaces, as Dante Controller's
-/// Network Status tab.
+/// One part of a page (#123): its state for the strip on top, and its body.
+struct Part {
+    id: &'static str,
+    title: &'static str,
+    /// `ok`, `warn`, `bad`, or `none` (nothing to say yet).
+    state: &'static str,
+    body: AnyView,
+}
+
+/// A page of parts: a chip per part on top (a click scrolls to it), then
+/// the parts, the ones in trouble first.
+fn parts_view(parts: Vec<Part>) -> AnyView {
+    let states: Vec<&str> = parts.iter().map(|p| p.state).collect();
+    let order = parts::order(&states);
+    let chips = parts
+        .iter()
+        .map(|p| {
+            let id = p.id;
+            view! {
+                <button class=format!("chip {}", p.state) data-testid="part-chip" data-part=id data-state=p.state
+                    title=format!("Show: {}", p.title)
+                    on:click=move |_| {
+                        if let Some(e) = document().get_element_by_id(&format!("part-{id}")) {
+                            e.scroll_into_view();
+                        }
+                    }>
+                    {p.title}<span class="chip-state">{parts::word(p.state)}</span>
+                </button>
+            }
+        })
+        .collect_view();
+    let mut slots: Vec<Option<Part>> = parts.into_iter().map(Some).collect();
+    let sections = order
+        .into_iter()
+        .filter_map(|i| slots[i].take())
+        .map(|p| {
+            view! {
+                <section class="part" id=format!("part-{}", p.id) data-testid="part" data-part=p.id data-state=p.state>
+                    <h2 class="sub">{p.title}</h2>
+                    {p.body}
+                </section>
+            }
+        })
+        .collect_view();
+    view! { <div class="parts" data-testid="parts">{chips}</div>{sections} }.into_any()
+}
+
+/// The network view: every device's interfaces and what the mDNS meter
+/// hears on the Dante leg, as parts, the ones in trouble first.
 #[component]
 fn NetworkView(d: Devices) -> impl IntoView {
-    let rows = net::rows(&d);
+    let md = expect_context::<MdnsNow>();
+    let (_, slow) = net::summary(&net::rows(&d));
+    // The parts' states: the page is laid out again only when one changes.
+    let states = Memo::new(move |_| {
+        md.0.with(|m| match m {
+            Some(m) => [
+                if mdns::summary(m).1 { "bad" } else { "ok" },
+                if mdns::browser_summary(m).1 {
+                    "warn"
+                } else {
+                    "ok"
+                },
+                if mdns::floor_summary(m).1 {
+                    "bad"
+                } else {
+                    "ok"
+                },
+            ],
+            None => ["none"; 3],
+        })
+    });
+    move || {
+        let [senders, browsers, floor] = states.get();
+        parts_view(vec![
+            Part {
+                id: "links",
+                title: "Interfaces",
+                state: if slow { "warn" } else { "ok" },
+                body: links_table(&d),
+            },
+            Part {
+                id: "mdns",
+                title: "mDNS senders",
+                state: senders,
+                body: view! { <MdnsSenders/> }.into_any(),
+            },
+            Part {
+                id: "browsers",
+                title: "96 s browsers",
+                state: browsers,
+                body: view! { <MdnsBrowsers/> }.into_any(),
+            },
+            Part {
+                id: "floor",
+                title: "dstack network floor",
+                state: floor,
+                body: view! { <MdnsFloor/> }.into_any(),
+            },
+        ])
+    }
+}
+
+/// Every device's interfaces, the slow or missing links first.
+fn links_table(d: &Devices) -> AnyView {
+    let rows = net::rows(d);
     let (line, warn) = net::summary(&rows);
+    let rows = parts::trouble_first(rows, |r| r.warn);
     let cell =
         |p: &Option<dcontroller_api::NetPort>| p.as_ref().map(net::port_text).unwrap_or_default();
     view! {
@@ -2200,6 +2303,7 @@ fn NetworkView(d: Devices) -> impl IntoView {
             </tbody>
         </table></div>
     }
+    .into_any()
 }
 
 /// A sender's row: `warn` over the cap.
@@ -2209,35 +2313,47 @@ fn row_class(per_s: f64, cap: f64) -> &'static str {
 
 /// The mDNS senders on the Dante leg: the last minute's loudest sources.
 #[component]
-fn MdnsView() -> impl IntoView {
+fn MdnsSenders() -> impl IntoView {
     let md = expect_context::<MdnsNow>();
     move || {
         let Some(m) = md.0.get() else {
             return view! { <p class="status" data-testid="mdns-summary">"Reading the mDNS meter…"</p> }.into_any();
         };
         let (line, warn) = mdns::summary(&m);
-        let (b_line, b_warn) = mdns::browser_summary(&m);
-        let (f_line, f_warn) = mdns::floor_summary(&m);
         let cap = m.cap_per_s as f64;
-        let below = m.below_floor.clone();
-        let (top, browsers) = m.minute.map(|x| (x.top, x.browsers)).unwrap_or_default();
+        let top = m.minute.map(|x| x.top).unwrap_or_default();
         view! {
-            <h2 class="sub">"mDNS senders"</h2>
             <p class=if warn { "status error" } else { "status" } data-testid="mdns-summary">{line}</p>
-            <div class="clock-wrap"><table class="clock" data-testid="mdns-table">
-                <thead><tr><th>"Source"</th><th>"Devices at that address"</th><th>"Datagrams/s"</th></tr></thead>
-                <tbody>
-                    {top.into_iter().map(|s| view! {
-                        <tr class=row_class(s.per_s, cap) data-testid="mdns-row" data-source=s.source.clone()>
-                            <td>{s.source.clone()}</td>
-                            <td>{s.devices.join(", ")}</td>
-                            <td data-testid="mdns-rate">{format!("{:.1}", s.per_s)}</td>
-                        </tr>
-                    }).collect_view()}
-                </tbody>
-            </table></div>
-            <h2 class="sub">"96 s browsers"</h2>
-            <p class=if b_warn { "status error" } else { "status" } data-testid="browser-summary">{b_line}</p>
+            {(!top.is_empty()).then(|| view! {
+                <div class="clock-wrap"><table class="clock" data-testid="mdns-table">
+                    <thead><tr><th>"Source"</th><th>"Devices at that address"</th><th>"Datagrams/s"</th></tr></thead>
+                    <tbody>
+                        {top.into_iter().map(|s| view! {
+                            <tr class=row_class(s.per_s, cap) data-testid="mdns-row" data-source=s.source.clone()>
+                                <td>{s.source.clone()}</td>
+                                <td>{s.devices.join(", ")}</td>
+                                <td data-testid="mdns-rate">{format!("{:.1}", s.per_s)}</td>
+                            </tr>
+                        }).collect_view()}
+                    </tbody>
+                </table></div>
+            })}
+        }.into_any()
+    }
+}
+
+/// The hosts that refresh Dante records on the 96 s cycle.
+#[component]
+fn MdnsBrowsers() -> impl IntoView {
+    let md = expect_context::<MdnsNow>();
+    move || {
+        let Some(m) = md.0.get() else {
+            return view! { <p class="status" data-testid="browser-summary">"Reading the mDNS meter…"</p> }.into_any();
+        };
+        let (line, warn) = mdns::browser_summary(&m);
+        let browsers = m.minute.map(|x| x.browsers).unwrap_or_default();
+        view! {
+            <p class=if warn { "status error" } else { "status" } data-testid="browser-summary">{line}</p>
             {(!browsers.is_empty()).then(|| view! {
                 <div class="clock-wrap"><table class="clock" data-testid="browser-table">
                     <thead><tr><th>"Host"</th><th>"Devices at that address"</th><th>"Cycle, s"</th></tr></thead>
@@ -2252,8 +2368,22 @@ fn MdnsView() -> impl IntoView {
                     </tbody>
                 </table></div>
             })}
-            <h2 class="sub">"dstack network floor"</h2>
-            <p class=if f_warn { "status error" } else { "status" } data-testid="floor-summary">{f_line}</p>
+        }.into_any()
+    }
+}
+
+/// The dstack devices and clients below the network floor.
+#[component]
+fn MdnsFloor() -> impl IntoView {
+    let md = expect_context::<MdnsNow>();
+    move || {
+        let Some(m) = md.0.get() else {
+            return view! { <p class="status" data-testid="floor-summary">"Reading the mDNS meter…"</p> }.into_any();
+        };
+        let (line, warn) = mdns::floor_summary(&m);
+        let below = m.below_floor.clone();
+        view! {
+            <p class=if warn { "status error" } else { "status" } data-testid="floor-summary">{line}</p>
             {(!below.is_empty()).then(|| view! {
                 <div class="clock-wrap"><table class="clock" data-testid="floor-table">
                     <thead><tr><th>"Device"</th><th>"Kind"</th><th>"Address"</th><th>"dstack"</th></tr></thead>
@@ -2273,13 +2403,63 @@ fn MdnsView() -> impl IntoView {
     }
 }
 
-/// The clock view: every device's PTP role and sync, as Dante Controller's
-/// Clock Status tab.
+/// The clock view: Dante's PTP as Dante Controller's Clock Status tab, the
+/// devices' dsync clocks and the PCs' dsync services, as parts, the ones
+/// in trouble first.
 #[component]
 fn ClockView(d: Devices) -> impl IntoView {
-    let dsync = d.clone();
-    let rows = clock::rows(&d);
+    let Clk(clk) = expect_context::<Clk>();
+    let (_, ptp_bad) = clock::summary(&clock::rows(&d));
+    // The parts' states: the page is laid out again only when one changes.
+    let states = Memo::new(move |_| {
+        clk.with(|c| match c {
+            Some(Ok(c)) => (
+                clock::dsync_state(c),
+                (!c.services.is_empty()).then(|| {
+                    if clock::service_summary(c).1 {
+                        "bad"
+                    } else {
+                        "ok"
+                    }
+                }),
+            ),
+            Some(Err(_)) => ("bad", None),
+            None => ("none", None),
+        })
+    });
+    move || {
+        let (dsync, services) = states.get();
+        let mut parts = vec![
+            Part {
+                id: "ptp",
+                title: "Dante PTP",
+                state: if ptp_bad { "bad" } else { "ok" },
+                body: ptp_table(&d),
+            },
+            Part {
+                id: "dsync",
+                title: "dsync in the devices",
+                state: dsync,
+                body: view! { <DsyncClocks d=d.clone()/> }.into_any(),
+            },
+        ];
+        if let Some(state) = services {
+            parts.push(Part {
+                id: "dsync-services",
+                title: "dsync service nodes",
+                state,
+                body: view! { <DsyncServices/> }.into_any(),
+            });
+        }
+        parts_view(parts)
+    }
+}
+
+/// Every device's PTP role and sync, the ones not in sync first.
+fn ptp_table(d: &Devices) -> AnyView {
+    let rows = clock::rows(d);
     let (line, warn) = clock::summary(&rows);
+    let rows = parts::trouble_first(rows, |r| r.warn);
     view! {
         <p class=if warn { "status error" } else { "status" } data-testid="clock-summary">{line}</p>
         <div class="clock-wrap"><table class="clock" data-testid="clock-table">
@@ -2315,63 +2495,69 @@ fn ClockView(d: Devices) -> impl IntoView {
                 }).collect_view()}
             </tbody>
         </table></div>
-        <DsyncClocks d=dsync/>
     }
+    .into_any()
 }
 
 /// The PCs' dsync clock services (#124), as each last answered its status
-/// over the LAN; nothing when the box's config names none.
-fn dsync_services(c: &dcontroller_api::Clocks) -> Option<impl IntoView + use<>> {
-    if c.services.is_empty() {
-        return None;
+/// over the LAN. The state chip carries the phase error, so the table
+/// holds what it does not say.
+#[component]
+fn DsyncServices() -> impl IntoView {
+    let Clk(clk) = expect_context::<Clk>();
+    move || {
+        let Some(Ok(c)) = clk.get() else {
+            return ().into_any();
+        };
+        let (line, bad) = clock::service_summary(&c);
+        let dash = || "–".to_owned();
+        let rows = clock::service_order(&c)
+            .into_iter()
+            .map(|n| {
+                let (state, why) = n.health();
+                let gm = match (&n.gm_uuid, &n.gm_source_ip) {
+                    (Some(id), Some(ip)) => format!("{id} · {ip}"),
+                    (Some(id), None) => id.clone(),
+                    (None, Some(ip)) => ip.clone(),
+                    (None, None) => dash(),
+                };
+                let heard = match (n.ptp_rx_pps, n.last_ptp_rx_age_s) {
+                    (Some(p), Some(a)) => format!("{p:.0}/s · last {a:.1} s ago"),
+                    (Some(p), None) => format!("{p:.0}/s"),
+                    (None, Some(a)) => format!("last {a:.1} s ago"),
+                    (None, None) => dash(),
+                };
+                view! {
+                    <tr class=if state == "bad" { "warn" } else { "" } data-testid="dsync-service" data-name=n.node.clone() data-state=state>
+                        <td title=n.node.clone()>{clock::node_label(&n.node).to_owned()}</td>
+                        <td><span class=format!("chip {state}") data-testid="dsync-service-state">{why}</span></td>
+                        <td>{n.mode.clone().unwrap_or_else(dash)}</td>
+                        <td data-testid="dsync-service-ptp">{heard}</td>
+                        <td class="mono">{gm}</td>
+                        <td class="num">{n.drift_ppm.map_or_else(dash, |d| format!("{d:+.2} ppm"))}</td>
+                        <td>{n.version.clone().unwrap_or_else(dash)}</td>
+                        <td class="num">{n.age_s.map_or_else(|| "never".to_owned(), |a| format!("{a} s ago"))}</td>
+                    </tr>
+                }
+            })
+            .collect_view();
+        view! {
+            <p class=if bad { "status error" } else { "status" } data-testid="dsync-service-summary">{line}</p>
+            <div class="clock-wrap"><table class="clock" data-testid="dsync-services">
+                <thead><tr>
+                    <th>"Node"</th><th>"Clock"</th><th>"Mode"</th><th>"PTP heard"</th>
+                    <th>"Grandmaster"</th><th>"Drift"</th><th>"dsync"</th><th>"Answered"</th>
+                </tr></thead>
+                <tbody>{rows}</tbody>
+            </table></div>
+        }
+        .into_any()
     }
-    let (line, bad) = clock::service_summary(c);
-    let dash = || "–".to_owned();
-    let rows = clock::service_order(c)
-        .into_iter()
-        .map(|n| {
-            let (state, why) = n.health();
-            let gm = match (&n.gm_uuid, &n.gm_source_ip) {
-                (Some(id), Some(ip)) => format!("{id} · {ip}"),
-                (Some(id), None) => id.clone(),
-                (None, Some(ip)) => ip.clone(),
-                (None, None) => dash(),
-            };
-            view! {
-                <tr class=if state == "bad" { "warn" } else { "" } data-testid="dsync-service" data-name=n.node.clone() data-state=state>
-                    <td>{n.node.clone()}</td>
-                    <td><span class=format!("chip {state}") data-testid="dsync-service-state">{why}</span></td>
-                    <td>{n.mode.clone().unwrap_or_else(dash)}</td>
-                    <td class="num">{n.ptp_phase_error_us.map_or_else(dash, |e| format!("{e:.1} µs"))}</td>
-                    <td class="num">{match n.last_ptp_rx_age_s {
-                        Some(a) => format!("{a:.1} s ago"),
-                        None => "never".to_owned(),
-                    }}</td>
-                    <td class="num">{n.ptp_rx_pps.map_or_else(dash, |p| format!("{p:.0}/s"))}</td>
-                    <td class="mono">{gm}</td>
-                    <td class="num">{n.drift_ppm.map_or_else(dash, |d| format!("{d:+.2} ppm"))}</td>
-                    <td>{n.version.clone().unwrap_or_else(dash)}</td>
-                    <td class="num">{n.age_s.map_or_else(|| "never".to_owned(), |a| format!("{a} s ago"))}</td>
-                </tr>
-            }
-        })
-        .collect_view();
-    Some(view! {
-        <h3 class="sub">"dsync service nodes"</h3>
-        <p class=if bad { "status error" } else { "status" } data-testid="dsync-service-summary">{line}</p>
-        <div class="clock-wrap"><table class="clock" data-testid="dsync-services">
-            <thead><tr>
-                <th>"Node"</th><th>"Clock"</th><th>"Mode"</th><th>"Phase error"</th><th>"Last PTP packet"</th>
-                <th>"PTP packets"</th><th>"Grandmaster"</th><th>"Drift"</th><th>"dsync"</th><th>"Answered"</th>
-            </tr></thead>
-            <tbody>{rows}</tbody>
-        </table></div>
-    })
 }
 
 /// The devices' dsync clocks (#124): what each dstack device says of its
-/// own time, the troubled ones on top; the devices that say nothing named
-/// in one line.
+/// own time, the troubled ones on top; the devices that say nothing are a
+/// count, their names one click away.
 #[component]
 fn DsyncClocks(d: Devices) -> impl IntoView {
     let Clk(clk) = expect_context::<Clk>();
@@ -2421,7 +2607,6 @@ fn DsyncClocks(d: Devices) -> impl IntoView {
             })
             .collect_view();
         view! {
-            <h3 class="sub">"dsync clocks"</h3>
             <p class=if bad { "status error" } else { "status" } data-testid="dsync-summary">{line}</p>
             {(!c.nodes.is_empty()).then(|| view! {
                 <div class="clock-wrap"><table class="clock" data-testid="dsync-table">
@@ -2433,11 +2618,15 @@ fn DsyncClocks(d: Devices) -> impl IntoView {
                 </table></div>
             })}
             {(!silent.is_empty()).then(|| view! {
-                <p class="muted small" data-testid="dsync-silent">
-                    {format!("No dsync figures from: {} (not a dstack device, or a dstack before v0.6.187).", silent.join(", "))}
-                </p>
+                <details class="muted small silent" data-testid="dsync-silent">
+                    <summary>{format!(
+                        "{} device{} no dsync figures (not a dstack device, or a dstack before v0.6.187)",
+                        silent.len(),
+                        if silent.len() == 1 { " gives" } else { "s give" },
+                    )}</summary>
+                    <p>{silent.join(", ")}</p>
+                </details>
             })}
-            {dsync_services(&c)}
         }
         .into_any()
     }

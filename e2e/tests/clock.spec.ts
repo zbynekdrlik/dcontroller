@@ -52,7 +52,17 @@ test("the clock tab lists every device's clock status as the server read it", as
   await expect(page.getByTestId("dsync-summary")).toContainText("dsync:");
   const answered = clocks.nodes.map((n: { device: string }) => n.device.toLowerCase());
   const silent = api.devices.filter((d: { name: string }) => !answered.includes(d.name.toLowerCase()));
-  if (silent.length > 0) await expect(page.getByTestId("dsync-silent")).toContainText(silent[0].name);
+  if (silent.length > 0) {
+    // The devices that say nothing are a count; their names one click away.
+    const quiet = page.getByTestId("dsync-silent");
+    await expect(quiet.locator("summary")).toHaveText(
+      new RegExp(`^${silent.length} devices? gives? no dsync figures \\(not a dstack device, or a dstack before v0\\.6\\.187\\)$`),
+    );
+    await expect(quiet.locator("p")).toBeHidden();
+    await quiet.locator("summary").click();
+    await expect(quiet.locator("p")).toBeVisible();
+    await expect(quiet.locator("p")).toContainText(silent[0].name);
+  }
 
   // dsync service nodes (#124): the PCs' clock services the box's config
   // names, asked `/status` over the LAN. One answers (a stand-in for
@@ -94,6 +104,41 @@ test("the clock tab lists every device's clock status as the server read it", as
   await expect(page.getByTestId("dsync-service-summary")).toHaveText(
     `1 of 2 service nodes locked · in trouble: ${DSYNC.down}`,
   );
+
+  // What the state chip says (the phase error) is not a column again, and
+  // the PTP figures are one.
+  await expect(up.getByTestId("dsync-service-ptp")).toHaveText(/^\d+\/s · last \d+\.\d s ago$/);
+  await expect(page.getByTestId("dsync-services").locator("thead th")).toHaveCount(8);
+
+  // The page's parts (#123): a chip per part on top; the part in trouble
+  // (the service node with nothing behind it) comes first, above the PTP
+  // table that is fine.
+  const chips = page.getByTestId("part-chip");
+  await expect(chips).toHaveCount(3);
+  await expect(page.locator('[data-testid="part-chip"][data-part="dsync-services"]')).toHaveAttribute("data-state", "bad");
+  await expect(page.locator('[data-testid="part-chip"][data-part="dsync-services"]')).toHaveText(
+    "dsync service nodesin trouble",
+  );
+  const parts = page.getByTestId("part");
+  const services = page.locator('[data-testid="part"][data-part="dsync-services"]');
+  await expect(services.locator("h2")).toHaveText("dsync service nodes");
+  // It is the page's third part by place; in trouble, it stands above the
+  // devices' dsync part, which is not.
+  await expect(page.locator('[data-testid="part"][data-part="dsync"]')).not.toHaveAttribute("data-state", "bad");
+  const placed = await parts.evaluateAll((els) => els.map((e) => e.getAttribute("data-part")));
+  expect(placed.indexOf("dsync-services")).toBeLessThan(placed.indexOf("dsync"));
+  expect(placed.slice().sort()).toEqual(["dsync", "dsync-services", "ptp"]);
+  const ranks = await parts.evaluateAll((els) =>
+    els.map((e) => ({ bad: 0, warn: 1 })[e.getAttribute("data-state") ?? ""] ?? 2),
+  );
+  expect(ranks).toEqual([...ranks].sort((a, b) => a - b));
+  // A chip leads to its part.
+  await page.setViewportSize({ width: 1280, height: 420 });
+  const ptp = page.locator('[data-testid="part"][data-part="ptp"]');
+  await page.locator('[data-testid="part-chip"][data-part="ptp"]').click();
+  await expect(ptp.locator("h2")).toBeInViewport();
+  await page.locator('[data-testid="part-chip"][data-part="dsync"]').click();
+  await expect(page.locator('[data-testid="part"][data-part="dsync"] h2')).toBeInViewport();
 
   // The view stays in the URL: a reload opens it again.
   await page.reload();

@@ -35,6 +35,28 @@ test("the network tab lists every device's interfaces as the server read them", 
   }
   await expect(page.getByTestId("network-summary")).toHaveText(/^\d+ devices? reports? (their|its) network · /);
 
+  // The page's parts (#123): a chip per part with its state, every part
+  // under a heading, the ones in trouble first.
+  await expect(page.getByTestId("part-chip")).toHaveText([
+    /^Interfaces(ok|check)$/,
+    /^mDNS senders(ok|in trouble|no data)$/,
+    /^96 s browsers(ok|check|no data)$/,
+    /^dstack network floor(ok|in trouble|no data)$/,
+  ]);
+  const parts = page.getByTestId("part");
+  await expect(parts).toHaveCount(4);
+  await expect(page.locator('[data-testid="part"][data-part="links"] h2')).toHaveText("Interfaces");
+  await expect(page.locator('[data-testid="part"][data-part="links"]').getByTestId("network-table")).toBeVisible();
+  const ranks = await parts.evaluateAll((els) =>
+    els.map((e) => ({ bad: 0, warn: 1 })[e.getAttribute("data-state") ?? ""] ?? 2),
+  );
+  expect(ranks).toEqual([...ranks].sort((a, b) => a - b));
+  // In a table the rows in trouble come first.
+  const warned = await page
+    .getByTestId("network-row")
+    .evaluateAll((rows) => rows.map((r) => (r.classList.contains("warn") ? 0 : 1)));
+  expect(warned).toEqual([...warned].sort((a, b) => a - b));
+
   // The device table shows the same interface.
   await page.getByTestId("tab-devices").click();
   const card = page.locator(`[data-testid="device"][data-name="${DEVICE}"]`);
