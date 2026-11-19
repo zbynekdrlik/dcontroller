@@ -15,6 +15,7 @@ use dcontroller_api::{
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+mod changes;
 mod clock;
 mod devlist;
 mod flows;
@@ -1436,40 +1437,150 @@ async fn fetch_changes() -> Result<Vec<ChangeEntry>, String> {
 }
 
 /// The changes log, newest first.
+/// One logged change or network alarm, as its own row.
+fn change_row(e: &ChangeEntry) -> AnyView {
+    let when = pages::time_text(e.at as i64);
+    let names = matches!(
+        e.kind.as_str(),
+        "rename" | "setting" | "multicast" | "status"
+    );
+    let cell = |n: &Option<String>, s: &Option<Source>| {
+        if names { name_text(n) } else { source_text(s) }
+    };
+    let class = if !e.ok {
+        "err"
+    } else if e.user == "outside dcontroller" {
+        "ext"
+    } else {
+        ""
+    };
+    let who = if e.user == "outside dcontroller" || e.user == "device status" {
+        view! { <span class="chip info">{e.user.clone()}</span> }.into_any()
+    } else {
+        e.user.clone().into_any()
+    };
+    view! {
+        <tr data-testid="change-row" data-kind=e.kind.clone() class=class>
+            <td>{when}</td>
+            <td>{who}</td>
+            <td>{change_target(e)}</td>
+            <td>{cell(&e.name_before, &e.before)}</td>
+            <td>{cell(&e.name_asked, &e.requested)}</td>
+            <td>{cell(&e.name_after, &e.after)}</td>
+            <td>{e.message.clone()}</td>
+        </tr>
+    }
+    .into_any()
+}
+
+/// One connection's outage as one row (#123): from its stop to its return.
+fn outage_row(o: &changes::Outage) -> AnyView {
+    let time = |t: u64| pages::time_text(t as i64);
+    let when = time(o.start.or(o.end).unwrap_or(0));
+    let link = map::Sel::Link {
+        from: o.from.clone(),
+        to: o.to.clone(),
+    }
+    .hash();
+    let why = o.reasons.join(", ");
+    let (detail, result) = match (o.start, o.end) {
+        (Some(a), Some(b)) => (
+            format!("not receiving {} – {}", time(a), time(b)),
+            format!(
+                "received again after {} · was: {why}",
+                changes::span(o.seconds().unwrap_or(0))
+            ),
+        ),
+        (Some(a), None) => (
+            format!("not receiving since {}", time(a)),
+            format!("stopped receiving: {why}"),
+        ),
+        (None, _) => (
+            "its stop is no longer in the log".to_owned(),
+            "receiving again".to_owned(),
+        ),
+    };
+    let open = o.end.is_none();
+    view! {
+        <tr data-testid="change-row" data-kind="status" data-outage=if open { "open" } else { "over" }
+            class=if open { "err" } else { "" }>
+            <td>{when}</td>
+            <td><span class="chip info">"device status"</span></td>
+            <td>
+                <a class="strong" href=link>{format!("{} \u{2192} {}", o.from, o.to)}</a>
+                <br/><span class="muted small">{o.channels.join(", ")}</span>
+            </td>
+            <td colspan="3">{detail}</td>
+            <td>{result}</td>
+        </tr>
+    }
+    .into_any()
+}
+
+/// How many rows the Changes page shows before "show older".
+const CHANGES_PAGE: usize = 100;
+
 #[component]
 fn ChangeLog() -> impl IntoView {
     let list = RwSignal::new(None::<Result<Vec<ChangeEntry>, String>>);
     spawn_local(async move { list.set(Some(fetch_changes().await)) });
+    // 0: everything, 1: changes made, 2: what devices did.
+    let filter = RwSignal::new(0u8);
+    let limit = RwSignal::new(CHANGES_PAGE);
     move || {
         match list.get() {
         None => view! { <p class="status">"Loading…"</p> }.into_any(),
         Some(Err(e)) => view! { <p class="status error">{format!("Changes not readable: {e}")}</p> }.into_any(),
         Some(Ok(v)) if v.is_empty() => view! { <p class="status" data-testid="changes-empty">"No changes yet. Changes made here, and changes seen on the network (made in Dante Controller, on a mixer or a device itself), show up in this list."</p> }.into_any(),
-        Some(Ok(v)) => view! {
-            <table class="changes">
-                <thead><tr><th>"When"</th><th>"Who"</th><th>"Channel"</th><th>"Before"</th><th>"Asked"</th><th>"After"</th><th>"Result"</th></tr></thead>
-                <tbody>
-                    {v.into_iter().map(|e| {
-                        let when = pages::time_text(e.at as i64);
-                        view! {
-                            <tr data-testid="change-row" data-kind=e.kind.clone() class=if !e.ok { "err" } else if e.user == "outside dcontroller" { "ext" } else { "" }>
-                                <td>{when}</td>
-                                <td>{if e.user == "outside dcontroller" || e.user == "device status" {
-                                    view! { <span class="chip info">{e.user.clone()}</span> }.into_any()
-                                } else {
-                                    e.user.clone().into_any()
-                                }}</td>
-                                <td>{change_target(&e)}</td>
-                                <td>{if matches!(e.kind.as_str(), "rename" | "setting" | "multicast" | "status") { name_text(&e.name_before) } else { source_text(&e.before) }}</td>
-                                <td>{if matches!(e.kind.as_str(), "rename" | "setting" | "multicast" | "status") { name_text(&e.name_asked) } else { source_text(&e.requested) }}</td>
-                                <td>{if matches!(e.kind.as_str(), "rename" | "setting" | "multicast" | "status") { name_text(&e.name_after) } else { source_text(&e.after) }}</td>
-                                <td>{e.message.clone()}</td>
-                            </tr>
-                        }
-                    }).collect_view()}
-                </tbody>
-            </table>
-        }.into_any(),
+        Some(Ok(v)) => {
+            let items = changes::fold(&v);
+            let made = items.iter().filter(|i| !i.is_status()).count();
+            let status = items.len() - made;
+            let f = filter.get();
+            let visible: Vec<&changes::Item> = items
+                .iter()
+                .filter(|i| match f {
+                    1 => !i.is_status(),
+                    2 => i.is_status(),
+                    _ => true,
+                })
+                .collect();
+            let (total, max) = (visible.len(), limit.get());
+            let rows = visible
+                .into_iter()
+                .take(max)
+                .map(|i| match i {
+                    changes::Item::Change(e) | changes::Item::Alarm(e) => change_row(e),
+                    changes::Item::Outage(o) => outage_row(o),
+                })
+                .collect_view();
+            let seg = move |k: u8, label: String, id: &'static str| {
+                view! {
+                    <button data-testid=id class=move || if filter.get() == k { "seg on" } else { "seg" }
+                        on:click=move |_| { limit.set(CHANGES_PAGE); filter.set(k); }>{label}</button>
+                }
+            };
+            let older = (total > max).then(|| view! {
+                <button class="act" data-testid="changes-older" on:click=move |_| limit.update(|l| *l += CHANGES_PAGE)>
+                    {format!("Show older ({} more)", total - max)}
+                </button>
+            });
+            view! {
+                <div class="bar">
+                    <div class="seg-group" data-testid="changes-filter">
+                        {seg(0, format!("All {}", items.len()), "changes-all")}
+                        {seg(1, format!("Changes made {made}"), "changes-made")}
+                        {seg(2, format!("Device status {status}"), "changes-status")}
+                    </div>
+                    <span class="muted small">"A connection that stopped and received again is one line, with how long it took."</span>
+                </div>
+                <table class="changes" data-testid="changes-table">
+                    <thead><tr><th>"When"</th><th>"Who"</th><th>"What"</th><th>"Before"</th><th>"Asked"</th><th>"After"</th><th>"Result"</th></tr></thead>
+                    <tbody>{rows}</tbody>
+                </table>
+                {older}
+            }.into_any()
+        }
     }
     }
 }

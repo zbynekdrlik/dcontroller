@@ -322,8 +322,8 @@ svg.map.has-sel .node.rel rect { stroke: var(--accent); }
 .fig .v { font-size: 1.45rem; font-weight: 650; font-variant-numeric: tabular-nums; }
 .fig .s { font-size: 0.78rem; color: var(--muted); }
 .fig.bad .v { color: var(--bad); }
-a.act { display: inline-block; background: var(--surface-3); border: 1px solid var(--border); border-radius: var(--radius-s); padding: 0.3rem 0.7rem; font-size: 0.82rem; text-decoration: none; margin: 0.6rem 0.4rem 0 0; }
-a.act:hover { border-color: var(--accent); }
+.act { display: inline-block; color: inherit; font-family: inherit; cursor: pointer; background: var(--surface-3); border: 1px solid var(--border); border-radius: var(--radius-s); padding: 0.3rem 0.7rem; font-size: 0.82rem; text-decoration: none; margin: 0.6rem 0.4rem 0 0; }
+.act:hover { border-color: var(--accent); }
 svg.map.dense .edge path.line { stroke-width: 1.6; }
 svg.map.dense .edge:hover path.line, svg.map.dense .edge.sel path.line { stroke-width: 4; }
 svg.map .edge.quiet .lbl { display: none; }
