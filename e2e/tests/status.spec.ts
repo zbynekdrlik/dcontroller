@@ -73,9 +73,12 @@ test("a subscription that stops and receives again shows in Changes with its tim
   expect(stop.ok).toBe(false);
   expect(stop.message).toMatch(/^stopped receiving: /);
 
-  // Left alone, it receives again; the next read logs that.
-  await expect.poll(async () => (await recoveries()).length, { timeout: 75_000 }).toBe(1);
-  const [back] = await recoveries();
+  // Left alone, it receives again; the next read logs that. Only a return
+  // after this stop counts: the return of an earlier stop (a spec before
+  // this one) can be logged in the very second `since` was taken.
+  const after = async () => (await recoveries()).filter((e) => e.at >= stop.at);
+  await expect.poll(async () => (await after()).length, { timeout: 75_000 }).toBe(1);
+  const [back] = await after();
   expect(back.at).toBeGreaterThanOrEqual(stop.at);
   expect(back).toMatchObject({ ok: true, message: "receiving again" });
 
