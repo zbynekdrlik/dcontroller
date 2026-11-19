@@ -187,6 +187,21 @@
     return new uPlot(opts, chartData(d), el);
   }
 
+  // The width a chart gets: its element's, or, while that is still hidden
+  // (its panel shows a moment later), the room inside its nearest shown
+  // ancestor. A fixed fallback made a 600 px chart on a 390 px phone and
+  // the page scrolled sideways until the resize caught up (#123).
+  function roomFor(el) {
+    if (el.clientWidth > 0) return el.clientWidth;
+    for (let p = el.parentElement; p; p = p.parentElement) {
+      if (p.clientWidth > 0) {
+        const cs = getComputedStyle(p);
+        return Math.max(120, p.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight));
+      }
+    }
+    return 600;
+  }
+
   window.dcChart = {
     latency(el, json) {
       const d = JSON.parse(json);
@@ -200,7 +215,7 @@
       }
       if (el._dc) el._dc.destroy();
       el.textContent = "";
-      const u = build(el, d, el.clientWidth || 600);
+      const u = build(el, d, roomFor(el));
       u.over.addEventListener("dblclick", () => el.dispatchEvent(new CustomEvent("dc-unzoom")));
       el._dc = u;
       el._dcShape = shape;

@@ -195,7 +195,20 @@ test("on a phone the map opens on the connections' table and no page scrolls sid
   });
   page.on("pageerror", (e) => msgs.push(`pageerror: ${e.message}`));
   await page.setViewportSize({ width: 390, height: 844 });
-  const fits = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+  // What reaches past the window's right edge (nothing, when the page
+  // does not scroll sideways): named, so a failure says what to fix.
+  const wide = () =>
+    page.evaluate(() => {
+      const w = window.innerWidth;
+      if (document.documentElement.scrollWidth <= w) return [];
+      return Array.from(document.querySelectorAll("body *"))
+        .filter((e) => e.getBoundingClientRect().right > w + 1)
+        .slice(0, 6)
+        .map((e) => {
+          const h = e as HTMLElement;
+          return `${h.tagName.toLowerCase()}.${String(h.className).replace(/\s+/g, ".")}[${h.dataset.testid ?? ""}] right=${Math.round(h.getBoundingClientRect().right)}`;
+        });
+    });
 
   // One column of the schema fits a phone: the Links table shows first, the
   // schema one tap away (#123).
@@ -206,18 +219,18 @@ test("on a phone the map opens on the connections' table and no page scrolls sid
   // The health tiles sit two to a row: all of them within the first screen.
   const tiles = page.getByTestId("map-tiles-top");
   expect((await tiles.boundingBox())!.height).toBeLessThan(420);
-  expect(await fits()).toBe(true);
+  expect(await wide()).toEqual([]);
   await page.getByTestId("map-view-schema").click();
   await expect(page.getByTestId("map").locator("svg.map")).toBeVisible();
   // The schema scrolls inside its box, not the page.
-  expect(await fits()).toBe(true);
+  expect(await wide()).toEqual([]);
 
   // The wide tables scroll inside their boxes too.
   for (const view of ["changes", "routing", "clock", "network"]) {
     await page.goto(`/#${view}`);
     await expect(page.locator(".page-head h1")).not.toBeEmpty();
     await page.waitForTimeout(500);
-    expect(await fits(), `${view} fits the phone's width`).toBe(true);
+    expect(await wide(), `${view} fits the phone's width`).toEqual([]);
   }
   expect(msgs).toEqual([]);
 });
