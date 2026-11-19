@@ -644,14 +644,41 @@ pub fn MapPage() -> impl IntoView {
         } else {
             sub
         };
+        let day = m
+            .links
+            .with(|l| {
+                l.as_ref()
+                    .and_then(|r| r.as_ref().ok())
+                    .map(map::underruns_24h)
+            })
+            .unwrap_or(0);
+        let mdns = expect_context::<crate::MdnsNow>().0.with(|x| {
+            x.as_ref().map(|x| {
+                let (value, sub, class) = crate::mdns::tile(x);
+                pages::tile(
+                    "tile-mdns",
+                    "mDNS",
+                    value,
+                    sub,
+                    class,
+                    "#network".to_owned(),
+                )
+            })
+        });
         let bridges = (hl.bridges > 0).then(|| {
             pages::tile(
                 "tile-bridges",
                 "Bridge underruns · 1 h",
                 map::num(hl.underruns),
-                match hl.bridges {
-                    1 => "1 bridge, blocks played as silence".to_owned(),
-                    n => format!("{n} bridges, blocks played as silence"),
+                {
+                    let who = match hl.bridges {
+                        1 => "1 bridge".to_owned(),
+                        n => format!("{n} bridges"),
+                    };
+                    format!(
+                        "{who} · {} in 24 h, blocks played as silence",
+                        map::num(day)
+                    )
                 },
                 if hl.underruns > 0 { "bad" } else { "ok" },
                 "#map".to_owned(),
@@ -665,6 +692,7 @@ pub fn MapPage() -> impl IntoView {
                 {subs}
                 {clock}
                 {network}
+                {mdns}
             </section>
         }
         .into_any()

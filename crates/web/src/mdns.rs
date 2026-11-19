@@ -135,6 +135,56 @@ pub fn summary(m: &Mdns) -> (String, bool) {
     }
 }
 
+/// The mDNS tile of the Map (#142): a word, a line and the tile's class
+/// (`ok`, `warn`, `bad`). A flood, a 96 s browser or a binary below the
+/// floor is `bad`, in that order; a meter that does not run is `warn`.
+pub fn tile(m: &Mdns) -> (String, String, &'static str) {
+    let Some(min) = &m.minute else {
+        return if m.running {
+            (
+                "counting".into(),
+                "the first minute is not over yet".into(),
+                "ok",
+            )
+        } else {
+            (
+                "not counted".into(),
+                m.error.clone().unwrap_or_else(|| "not started".into()),
+                "warn",
+            )
+        };
+    };
+    if let Some(s) = min.over_cap.first() {
+        let more = match min.over_cap.len() {
+            1 => String::new(),
+            n => format!(" and {} more", n - 1),
+        };
+        return (
+            "flood".into(),
+            format!("{}{more} over the cap of {}/s", sender_text(s), m.cap_per_s),
+            "bad",
+        );
+    }
+    if let Some(b) = min.browsers.first() {
+        return ("96 s browsing".into(), browser_text(b), "bad");
+    }
+    if let Some(b) = m.below_floor.first() {
+        return (
+            "old dstack".into(),
+            format!("{} below {}", below_text(b), m.floor),
+            "bad",
+        );
+    }
+    (
+        "quiet".into(),
+        format!(
+            "{:.1}/s last minute · cap {}/s a sender",
+            min.per_s, m.cap_per_s
+        ),
+        "ok",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,6 +212,66 @@ mod tests {
             }),
             ..Mdns::default()
         }
+    }
+
+    #[test]
+    fn the_map_tile_names_the_worst_mdns_trouble_first() {
+        assert_eq!(
+            tile(&mdns(Vec::new())),
+            (
+                "quiet".to_owned(),
+                "85.5/s last minute · cap 50/s a sender".to_owned(),
+                "ok"
+            )
+        );
+        let mut m = mdns(vec![
+            sender("10.0.0.7", &["mixer"], 80.5),
+            sender("10.0.0.8", &[], 60.0),
+        ]);
+        if let Some(min) = m.minute.as_mut() {
+            min.browsers.push(MdnsBrowser {
+                source: "10.0.0.5".into(),
+                devices: Vec::new(),
+                period_s: 96.0,
+            });
+        }
+        assert_eq!(
+            tile(&m),
+            (
+                "flood".to_owned(),
+                "10.0.0.7 (mixer) 80.5/s and 1 more over the cap of 50/s".to_owned(),
+                "bad"
+            )
+        );
+        if let Some(min) = m.minute.as_mut() {
+            min.over_cap.clear();
+        }
+        assert_eq!(
+            tile(&m),
+            (
+                "96 s browsing".to_owned(),
+                "10.0.0.5 every 96.0 s".to_owned(),
+                "bad"
+            )
+        );
+        let off = Mdns {
+            running: false,
+            error: Some("no Dante address".into()),
+            ..Mdns::default()
+        };
+        assert_eq!(
+            tile(&off),
+            (
+                "not counted".to_owned(),
+                "no Dante address".to_owned(),
+                "warn"
+            )
+        );
+        let starting = Mdns {
+            running: true,
+            ..Mdns::default()
+        };
+        assert_eq!(tile(&starting).2, "ok");
     }
 
     #[test]

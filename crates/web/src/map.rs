@@ -515,6 +515,14 @@ pub struct Health {
     pub underruns: u64,
 }
 
+/// Every bridge's underruns in the last 24 hours, both ways (#142).
+pub fn underruns_24h(l: &Links) -> u64 {
+    l.bridges
+        .iter()
+        .map(|b| b.to_asio_underruns_24h + b.from_asio_underruns_24h)
+        .sum()
+}
+
 pub fn health(g: &Graph) -> Health {
     let mut h = Health::default();
     for e in worst_first(g) {
@@ -1194,8 +1202,16 @@ mod tests {
                 },
                 to_asio_underruns_1h: 2,
                 from_asio_underruns_1h: 0,
+                to_asio_underruns_24h: 5,
+                from_asio_underruns_24h: 1,
             }],
         }
+    }
+
+    #[test]
+    fn a_days_underruns_sum_every_bridge_both_ways() {
+        assert_eq!(underruns_24h(&links()), 6);
+        assert_eq!(underruns_24h(&Links::default()), 0);
     }
 
     fn edge<'a>(g: &'a Graph, from: &str, to: &str) -> &'a Edge {

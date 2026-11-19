@@ -79,6 +79,12 @@ test("the map is the start page: every device a box, every connection a line, a 
   await expect(top.getByTestId("tile-clock")).toContainText(`dsync not locked: ${DSYNC.down}`, { timeout: 30_000 });
   await expect(top.getByTestId("tile-clock")).toHaveClass(/\bbad\b/);
   await expect(top.getByTestId("tile-network")).toContainText("links");
+  // As in the mockup (#142): the bridge's day, and the mDNS meter's word.
+  await expect(top.getByTestId("tile-bridges")).toContainText(/\d+ in 24 h/);
+  const md = top.getByTestId("tile-mdns");
+  await expect(md.locator(".tile-value")).toHaveText(/^(counting|quiet)$/, { timeout: 30_000 });
+  await expect(md).toContainText("mDNS");
+  await expect(md).toHaveAttribute("href", "#network");
 
   // Links: every connection in one table, the worst first; a row is a click
   // on its line.
@@ -273,6 +279,8 @@ test("on a phone the map opens on the connections' table and no page scrolls sid
   await expect(page.getByTestId("map-panel")).toBeHidden();
   // The health tiles sit two to a row: all of them within the first screen.
   const tiles = page.getByTestId("map-tiles-top");
+  // Every tile in, the mDNS one last (it waits on its own poll).
+  await expect(tiles.getByTestId("tile-mdns")).toBeVisible({ timeout: 30_000 });
   expect((await tiles.boundingBox())!.height).toBeLessThan(420);
   expect(await wide()).toEqual([]);
   await page.getByTestId("map-view-schema").click();

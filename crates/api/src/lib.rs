@@ -729,6 +729,11 @@ pub struct BridgeSummary {
     pub last: BridgePoint,
     pub to_asio_underruns_1h: u64,
     pub from_asio_underruns_1h: u64,
+    /// The same over the last 24 hours (#142).
+    #[serde(default)]
+    pub to_asio_underruns_24h: u64,
+    #[serde(default)]
+    pub from_asio_underruns_24h: u64,
 }
 
 /// The most buckets a history answer has.
