@@ -82,12 +82,30 @@ test("a subscription that stops and receives again shows in Changes with its tim
   expect(back.at).toBeGreaterThanOrEqual(stop.at);
   expect(back).toMatchObject({ ok: true, message: "receiving again" });
 
-  // The Changes tab lists both, the stop as an error row.
+  // The Changes tab folds the stop and the return into one line for the
+  // connection (#123): how long it did not receive, and why.
   await page.reload();
-  const rows = page.locator('[data-testid="change-row"][data-kind="status"]').filter({ hasText: `Stage L @ ${DEVICE}` });
-  await expect(rows.first()).toContainText("receiving again");
-  await expect(rows.first()).toContainText("device status");
-  await expect(rows.nth(1)).toContainText("stopped receiving");
-  await expect(rows.nth(1)).toHaveClass(/err/);
+  const rows = page
+    .locator('[data-testid="change-row"][data-kind="status"]')
+    .filter({ hasText: "Stage L \u2190" });
+  // The newest outage of this connection is this one (a spec before this
+  // one may have left an older one).
+  const row = rows.first();
+  await expect(row).toHaveAttribute("data-outage", "over");
+  await expect(row).toContainText(`${DEVICE} \u2192 ${DEVICE}`);
+  await expect(row).toContainText("device status");
+  await expect(row).toContainText("not receiving");
+  await expect(row).toContainText(/received again after \d+ (s|min)/);
+  await expect(row).not.toHaveClass(/err/);
+  await expect(row.getByRole("link")).toHaveAttribute("href", `#map/link/${DEVICE}/${DEVICE}`);
+  // One line per outage, not one per channel flip: fewer rows than the
+  // log's entries for this channel.
+  const flips = (await stageL(page, 0)).length;
+  expect(await rows.count()).toBeLessThan(flips);
+  // The filter: device status only, then the changes made only.
+  await page.getByTestId("changes-status").click();
+  await expect(rows.first()).toBeVisible();
+  await page.getByTestId("changes-made").click();
+  await expect(rows).toHaveCount(0);
   expect(msgs).toEqual([]);
 });
