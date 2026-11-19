@@ -988,6 +988,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn status_flips_do_not_push_the_changes_people_made_out_of_the_list() {
+        // A night of a flapping connection: far more status entries than
+        // the list holds (dcontroller #123, seen live: 198 of 200).
+        let dir = tempfile::tempdir().unwrap();
+        let changes = Changes::new(dir.path().join("changes.jsonl"));
+        let made = api::ChangeEntry {
+            at: 1,
+            user: "owner".into(),
+            kind: "rename".into(),
+            ok: true,
+            ..api::ChangeEntry::default()
+        };
+        changes.append(&made).unwrap();
+        for i in 0..(LIST as u64 + 50) {
+            changes
+                .append(&api::ChangeEntry {
+                    at: 10 + i,
+                    user: "device status".into(),
+                    kind: "status".into(),
+                    ..api::ChangeEntry::default()
+                })
+                .unwrap();
+        }
+        let list = changes.list().unwrap();
+        assert!(
+            list.contains(&made),
+            "the rename is still listed after {} status entries",
+            LIST + 50
+        );
+        // Newest first, and no more status entries than the list holds.
+        assert!(list.windows(2).all(|w| w[0].at >= w[1].at));
+        assert_eq!(list.iter().filter(|e| e.kind == "status").count(), LIST);
+    }
+
+    #[test]
     fn settings_are_checked_against_what_the_device_reports() {
         let set = api::Settings {
             latency_min_us: Some(150),
