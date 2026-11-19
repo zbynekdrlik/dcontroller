@@ -135,12 +135,18 @@ pub(crate) fn summary_of<'a>(
 /// A small sparkline of a receiver's last hour (typical peak as a share of
 /// the latency, the measure the chart draws).
 pub(crate) fn spark(r: Option<&ReceiverSummary>, class: &'static str) -> AnyView {
-    let path = r
-        .map(|r| hist::spark_path(&r.spark, 120.0, 28.0, 1000))
-        .unwrap_or_default();
+    spark_of(r.map_or(&[], |r| r.spark.as_slice()), class)
+}
+
+/// A sparkline of an hour's typical seconds, per mille of the latency.
+pub(crate) fn spark_of(values: &[Option<u32>], class: &'static str) -> AnyView {
+    let path = hist::spark_path(values, 120.0, 28.0, 1000);
     // The latency line sits at 1000 per mille unless a peak passed it.
-    let top = r
-        .and_then(|r| r.spark.iter().flatten().copied().max())
+    let top = values
+        .iter()
+        .flatten()
+        .copied()
+        .max()
         .unwrap_or(0)
         .max(1000);
     let limit = 28.0 - 28.0 * 1000.0 / f64::from(top);

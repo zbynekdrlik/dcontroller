@@ -330,3 +330,12 @@ svg.map .edge.quiet:hover .lbl, svg.map .edge.quiet.sel .lbl, svg.map .edge.quie
 svg.map.focus-on .edge:not(.focus):not(.sel) { opacity: 0.12; }
 svg.map.focus-on .edge.focus { opacity: 1; }
 svg.map.focus-on .edge.focus path.line { stroke-width: 3.2; }
+svg.map .node.sel rect { stroke: var(--accent); stroke-width: 2.4; }
+svg.map.has-device .edge:not(.of) { opacity: 0.12; }
+svg.map.has-device .edge.of { opacity: 1; }
+svg.map.has-device .edge.of path.line { stroke-width: 3; }
+svg.map .edge.quiet.of .lbl { display: inline; }
+table.grid tr.click { cursor: pointer; }
+.map-device { margin-top: 0.4rem; padding: 0.2rem 0 0.8rem; }
+.map-device > :not(summary) { margin: 0.8rem 1rem; }
+.device details > table.rx, .map-device > table.rx { width: calc(100% - 2rem); }
