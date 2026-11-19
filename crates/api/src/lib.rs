@@ -528,8 +528,14 @@ pub const DSYNC_PHASE_ALARM_US: f64 = 50.0;
 
 impl DsyncNode {
     /// `ok`, `warn` or `bad`, and why, from what the node says and dsync's
-    /// own alarm line.
+    /// own alarm line; `none` for a travelling node that is away.
     pub fn health(&self) -> (&'static str, String) {
+        if self.error.is_some() && self.may_be_off {
+            return (
+                "none",
+                "not there (a travelling node, may be off)".to_owned(),
+            );
+        }
         if let Some(e) = &self.error {
             return ("bad", format!("no answer: {e}"));
         }

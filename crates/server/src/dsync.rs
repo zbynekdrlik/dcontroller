@@ -154,7 +154,7 @@ pub fn snapshot(latest: &Latest, now: Instant) -> Vec<api::DsyncNode> {
 
 /// Starts the reader thread; nothing runs without configured nodes.
 pub fn start(nodes: &[String], latest: Latest, stop: Arc<AtomicBool>) {
-    let nodes: Vec<String> = nodes.iter().map(|n| address(n)).collect();
+    let nodes: Vec<(String, bool)> = nodes.iter().map(|n| named(n)).collect();
     if nodes.is_empty() {
         info!("dsync: no service node configured (`dsync_nodes`), none asked");
         return;
@@ -162,17 +162,19 @@ pub fn start(nodes: &[String], latest: Latest, stop: Arc<AtomicBool>) {
     info!(nodes = ?nodes, "dsync: asking the service nodes");
     *latest.write().unwrap_or_else(|e| e.into_inner()) = nodes
         .iter()
-        .map(|n| {
+        .map(|(n, may_be_off)| {
             (
                 api::DsyncNode {
                     node: n.clone(),
                     error: Some("not asked yet".to_owned()),
+                    may_be_off: *may_be_off,
                     ..api::DsyncNode::default()
                 },
                 None,
             )
         })
         .collect();
+    let nodes: Vec<String> = nodes.into_iter().map(|(n, _)| n).collect();
     std::thread::Builder::new()
         .name("dsync".into())
         .spawn(move || run(&nodes, &latest, &stop))
@@ -182,10 +184,14 @@ pub fn start(nodes: &[String], latest: Latest, stop: Arc<AtomicBool>) {
 /// A name's addresses, looked up.
 type Lookup = Arc<dyn Fn(&str) -> std::io::Result<Vec<std::net::SocketAddr>> + Send + Sync>;
 
-/// The reader's name resolver.
+/// The reader's name resolver: a name is looked up once and its addresses
+/// kept, since a lookup on every ask (every 5 s per node) timed out now
+/// and then on the LAN's DNS and read as a failed ask. A failed ask
+/// forgets the name, so a node that moved is found again.
 #[derive(Clone)]
 pub struct Names {
     lookup: Lookup,
+    kept: Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<std::net::SocketAddr>>>>,
 }
 
 impl Default for Names {
@@ -194,26 +200,41 @@ impl Default for Names {
             lookup: Arc::new(|netloc| {
                 std::net::ToSocketAddrs::to_socket_addrs(netloc).map(Iterator::collect)
             }),
+            kept: Arc::default(),
         }
     }
 }
 
 impl Names {
     /// Drops what is kept for `netloc`.
-    pub fn forget(&self, _netloc: &str) {}
+    pub fn forget(&self, netloc: &str) {
+        self.kept
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(netloc);
+    }
 }
 
 impl ureq::Resolver for Names {
     fn resolve(&self, netloc: &str) -> std::io::Result<Vec<std::net::SocketAddr>> {
-        (self.lookup)(netloc)
+        if let Some(found) = self
+            .kept
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(netloc)
+        {
+            return Ok(found.clone());
+        }
+        let found = (self.lookup)(netloc)?;
+        self.kept
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(netloc.to_owned(), found.clone());
+        Ok(found)
     }
 }
 
 /// The HTTP client of the reader.
-fn agent() -> ureq::Agent {
-    agent_with(Names::default())
-}
-
 fn agent_with(names: Names) -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout(WAIT)
@@ -240,7 +261,9 @@ pub fn take(
 ) {
     match read {
         Ok(n) => {
-            *slot = n;
+            // What the config says of the node stays.
+            let may_be_off = slot.may_be_off;
+            *slot = api::DsyncNode { may_be_off, ..n };
             *at = Some(now);
             *misses = 0;
         }
@@ -257,7 +280,8 @@ pub fn take(
 }
 
 fn run(nodes: &[String], latest: &Latest, stop: &AtomicBool) {
-    let agent = agent();
+    let names = Names::default();
+    let agent = agent_with(names.clone());
     let mut misses = vec![0u32; nodes.len()];
     while !stop.load(Ordering::Relaxed) {
         for (i, node) in nodes.iter().enumerate() {
@@ -265,6 +289,10 @@ fn run(nodes: &[String], latest: &Latest, stop: &AtomicBool) {
                 break;
             }
             let read = ask(&agent, node);
+            if read.is_err() {
+                // Looked up again on the next ask.
+                names.forget(node);
+            }
             let mut all = latest.write().unwrap_or_else(|e| e.into_inner());
             let Some((slot, at)) = all.get_mut(i) else {
                 continue;
@@ -377,7 +405,7 @@ mod tests {
         // Seen live: a node answering curl at once read "Network Error" on
         // every other ask (a kept connection the node had closed).
         let node = closing_server(3);
-        let agent = agent();
+        let agent = agent_with(Names::default());
         for round in 1..=3 {
             let n = ask(&agent, &node).unwrap_or_else(|e| panic!("ask {round}: {e}"));
             assert_eq!(n.mode.as_deref(), Some("LOCK"), "ask {round}");
