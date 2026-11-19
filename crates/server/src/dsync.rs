@@ -20,6 +20,9 @@ use tracing::{info, warn};
 pub const READ_EVERY: Duration = Duration::from_secs(5);
 /// How long one ask waits.
 pub const WAIT: Duration = Duration::from_secs(2);
+/// Unanswered asks in a row after which an answering node is taken as
+/// silent (one lost ask is no outage).
+pub const MISSES: u32 = 3;
 /// dsync's status port, when the config names a host alone.
 pub const PORT: u16 = 8898;
 
@@ -159,8 +162,41 @@ pub fn start(nodes: &[String], latest: Latest, stop: Arc<AtomicBool>) {
         .expect("spawn the dsync reader");
 }
 
+/// The HTTP client of the reader.
+fn agent() -> ureq::Agent {
+    ureq::AgentBuilder::new().timeout(WAIT).build()
+}
+
+/// Whether a node's state changed between two reads: worth a log line.
+pub fn turned(before: &api::DsyncNode, after: &api::DsyncNode) -> bool {
+    before.health() != after.health()
+}
+
+/// Takes one ask's outcome into a node's slot: an answer replaces it; a
+/// failed ask leaves the last answer's fields under the error.
+pub fn take(
+    slot: &mut api::DsyncNode,
+    at: &mut Option<Instant>,
+    misses: &mut u32,
+    read: Result<api::DsyncNode, String>,
+    now: Instant,
+) {
+    match read {
+        Ok(n) => {
+            *slot = n;
+            *at = Some(now);
+            *misses = 0;
+        }
+        Err(e) => {
+            *misses += 1;
+            slot.error = Some(e);
+        }
+    }
+}
+
 fn run(nodes: &[String], latest: &Latest, stop: &AtomicBool) {
-    let agent = ureq::AgentBuilder::new().timeout(WAIT).build();
+    let agent = agent();
+    let mut misses = vec![0u32; nodes.len()];
     while !stop.load(Ordering::Relaxed) {
         for (i, node) in nodes.iter().enumerate() {
             if stop.load(Ordering::Relaxed) {
@@ -171,18 +207,11 @@ fn run(nodes: &[String], latest: &Latest, stop: &AtomicBool) {
             let Some((slot, at)) = all.get_mut(i) else {
                 continue;
             };
-            let before = slot.health();
-            match read {
-                Ok(n) => {
-                    *slot = n;
-                    *at = Some(Instant::now());
-                }
-                // The last answer's fields stay, under the error.
-                Err(e) => slot.error = Some(e),
-            }
+            let was = slot.clone();
+            take(slot, at, &mut misses[i], read, Instant::now());
             let after = slot.health();
-            // A change of health is the event worth a line.
-            if before != after {
+            // A change of state is the event worth a line.
+            if turned(&was, slot) {
                 if after.0 == "ok" {
                     info!(node = %node, state = after.0, why = %after.1, "dsync: node state changed");
                 } else {
@@ -253,6 +282,116 @@ mod tests {
         assert_eq!(bare.health().0, "warn");
         assert!(parse("pc:8898", "<html>").is_err());
         assert!(parse("pc:8898", "[1]").is_err());
+    }
+
+    /// A node as dsync's own server behaves on some PCs: it answers one
+    /// request and closes the connection without saying so.
+    fn closing_server(answers: usize) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            for _ in 0..answers {
+                let Ok((mut c, _)) = listener.accept() else {
+                    return;
+                };
+                let mut buf = [0u8; 2048];
+                let _ = c.read(&mut buf);
+                let body = STATUS.as_bytes();
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                let _ = c.write_all(head.as_bytes());
+                let _ = c.write_all(body);
+                // Closed here, with no `Connection: close` sent.
+            }
+        });
+        addr
+    }
+
+    #[test]
+    fn a_node_that_closes_after_each_answer_is_read_every_time() {
+        // Seen live: a node answering curl at once read "Network Error" on
+        // every other ask (a kept connection the node had closed).
+        let node = closing_server(3);
+        let agent = agent();
+        for round in 1..=3 {
+            let n = ask(&agent, &node).unwrap_or_else(|e| panic!("ask {round}: {e}"));
+            assert_eq!(n.mode.as_deref(), Some("LOCK"), "ask {round}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn one_unanswered_ask_does_not_make_an_answering_node_silent() {
+        // Seen live: about one ask in twenty to a healthy node fails with a
+        // network error (the node serves one client at a time), and each
+        // one turned the node red for five seconds.
+        let now = Instant::now();
+        let mut slot = parse("pc:8898", STATUS).unwrap();
+        let (mut at, mut misses) = (Some(now), 0);
+        for _ in 1..MISSES {
+            take(
+                &mut slot,
+                &mut at,
+                &mut misses,
+                Err("Network Error".into()),
+                now,
+            );
+            assert_eq!(slot.error, None, "still taken as answering");
+            assert_eq!(slot.health().0, "ok");
+        }
+        take(
+            &mut slot,
+            &mut at,
+            &mut misses,
+            Err("Network Error".into()),
+            now,
+        );
+        assert_eq!(slot.error.as_deref(), Some("Network Error"));
+        // An answer clears it and the count.
+        take(
+            &mut slot,
+            &mut at,
+            &mut misses,
+            parse("pc:8898", STATUS),
+            now,
+        );
+        assert_eq!((slot.error.clone(), misses), (None, 0));
+        // A node that never answered says why at once.
+        let mut fresh = api::DsyncNode {
+            node: "new:8898".into(),
+            error: Some("not asked yet".into()),
+            ..api::DsyncNode::default()
+        };
+        let (mut at, mut misses) = (None, 0);
+        take(
+            &mut fresh,
+            &mut at,
+            &mut misses,
+            Err("connection refused".into()),
+            now,
+        );
+        assert_eq!(fresh.error.as_deref(), Some("connection refused"));
+    }
+
+    #[test]
+    fn a_new_reading_of_the_same_state_is_no_change() {
+        let a = parse("pc:8898", STATUS).unwrap();
+        let mut b = a.clone();
+        b.ptp_phase_error_us = Some(-0.4);
+        // The phase error moves on every read: the state did not.
+        assert!(!turned(&a, &b));
+        b.ptp_phase_locked = Some(false);
+        assert!(turned(&a, &b));
+        let mut gone = a.clone();
+        gone.error = Some("timed out".into());
+        assert!(turned(&a, &gone));
+        // Still not answering, for another reason: still bad, no new line.
+        let mut still = gone.clone();
+        still.error = Some("connection refused".into());
+        assert!(!turned(&gone, &still));
     }
 
     #[test]
