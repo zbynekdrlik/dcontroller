@@ -156,10 +156,68 @@ pub fn dsync_summary(c: &Clocks) -> (String, bool) {
     (line, !bad.is_empty())
 }
 
+/// The dsync service nodes with the troubled ones on top, each group in
+/// the config's order.
+pub fn service_order(c: &Clocks) -> Vec<&dcontroller_api::DsyncNode> {
+    let rank = |n: &dcontroller_api::DsyncNode| match n.health().0 {
+        "bad" => 0,
+        "warn" => 1,
+        _ => 2,
+    };
+    let mut v: Vec<&dcontroller_api::DsyncNode> = c.services.iter().collect();
+    v.sort_by_key(|n| rank(n));
+    v
+}
+
+/// One line for the service nodes: how many are locked, who is not.
+pub fn service_summary(c: &Clocks) -> (String, bool) {
+    let bad: Vec<&str> = c
+        .services
+        .iter()
+        .filter(|n| n.health().0 == "bad")
+        .map(|n| n.node.as_str())
+        .collect();
+    let good = c.services.iter().filter(|n| n.health().0 == "ok").count();
+    let mut line = format!("{good} of {} service nodes locked", c.services.len());
+    if !bad.is_empty() {
+        line.push_str(&format!(" · in trouble: {}", bad.join(", ")));
+    }
+    (line, !bad.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use dcontroller_api::Device;
+
+    #[test]
+    fn service_nodes_read_troubles_first_in_the_configs_order() {
+        use dcontroller_api::DsyncNode;
+        let node = |name: &str, locked: bool| DsyncNode {
+            node: name.into(),
+            ptp_phase_locked: Some(locked),
+            ptp_phase_error_us: Some(2.0),
+            mode: Some("LOCK".into()),
+            ..DsyncNode::default()
+        };
+        let c = Clocks {
+            services: vec![
+                node("b:8898", true),
+                node("a:8898", true),
+                node("lost:8898", false),
+            ],
+            ..Clocks::default()
+        };
+        let order: Vec<&str> = service_order(&c).iter().map(|n| n.node.as_str()).collect();
+        assert_eq!(order, ["lost:8898", "b:8898", "a:8898"]);
+        assert_eq!(
+            service_summary(&c),
+            (
+                "2 of 3 service nodes locked · in trouble: lost:8898".to_owned(),
+                true
+            )
+        );
+    }
 
     #[test]
     fn dsync_nodes_read_troubles_first_and_name_the_silent_devices() {
@@ -184,6 +242,7 @@ mod tests {
                 node("limp", true, true),
                 node("lost", false, false),
             ],
+            services: Vec::new(),
         };
         let order: Vec<&str> = dsync_order(&c).iter().map(|n| n.device.as_str()).collect();
         assert_eq!(order, ["lost", "limp", "a-good", "b-good"]);

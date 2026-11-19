@@ -1,7 +1,43 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { copyFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { run, root, routed } from "./env";
+import { createServer, type Server } from "node:http";
+import { DSYNC, run, root, routed } from "./env";
+
+// The stand-in dsync service node: its status, as dsync's contract names
+// the fields (the ones it says are no health, `offset_ns` and `settled`,
+// included: the server must not read them).
+function startDsync(): Promise<Server> {
+  const status = {
+    schema: 1,
+    version: "0.9.4",
+    mode: "LOCK",
+    ptp_phase_error_us: 3.25,
+    ptp_phase_locked: true,
+    last_ptp_rx_age_s: 0.4,
+    ptp_rx_pps: 8,
+    gm_uuid: [0, 29, 193, 170, 187, 204],
+    gm_source_ip: "10.199.0.200",
+    drift_ppm: -1.75,
+    fallback_role: "none",
+    clock_alarm: { active: false, since: null, reason: "" },
+    offset_ns: 123456789012,
+    settled: true,
+  };
+  const [host, port] = DSYNC.up.split(":");
+  return new Promise((ok, fail) => {
+    const server = createServer((req, res) => {
+      if (req.url === "/status") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(status));
+      } else {
+        res.writeHead(404).end();
+      }
+    });
+    server.once("error", fail);
+    server.listen(Number(port), host, () => ok(server));
+  });
+}
 
 // A real Dante device (dstack's dstack-dev) on the routed address, so
 // the server discovers and reads it like any device on the Dante network.
@@ -56,7 +92,9 @@ export default async function globalSetup() {
   }
   child.removeAllListeners("exit");
   const bridge = await startBridge();
+  const dsync = await startDsync();
   return async () => {
+    await new Promise((done) => dsync.close(done));
     for (const [c, what] of [
       [child, "dstack-dev"],
       [bridge, "bridge_device"],

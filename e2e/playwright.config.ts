@@ -2,7 +2,7 @@ import { defineConfig } from "@playwright/test";
 import { rmSync, writeFileSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { resolve } from "node:path";
-import { root, routed, run } from "./env";
+import { DSYNC, root, routed, run } from "./env";
 
 // The suite sends real Dante and mDNS packets (a test device, fake dstack
 // peers, floods, 96 s browsers): only inside isolated.sh's network
@@ -25,7 +25,7 @@ rmSync(changes, { force: true });
 for (const f of [history, `${history}-wal`, `${history}-shm`]) rmSync(f, { force: true });
 writeFileSync(
   config,
-  `bind = "127.0.0.1:${port}"\nweb_dir = "${resolve(root, "crates/web/dist")}"\ndante_interface = "${routed.iface}"\nchanges_log = "${changes}"\nhistory_db = "${history}"\n`,
+  `bind = "127.0.0.1:${port}"\nweb_dir = "${resolve(root, "crates/web/dist")}"\ndante_interface = "${routed.iface}"\nchanges_log = "${changes}"\nhistory_db = "${history}"\ndsync_nodes = ["${DSYNC.up}", "${DSYNC.down}"]\n`,
 );
 
 export default defineConfig({

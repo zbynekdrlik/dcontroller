@@ -1,4 +1,5 @@
 import { test, expect, type ConsoleMessage } from "@playwright/test";
+import { DSYNC } from "../env";
 
 // The device global-setup.ts runs: dstack's own Dante device binary. It has
 // no PTP clock of its own and answers no clock status, so its row says so.
@@ -52,6 +53,47 @@ test("the clock tab lists every device's clock status as the server read it", as
   const answered = clocks.nodes.map((n: { device: string }) => n.device.toLowerCase());
   const silent = api.devices.filter((d: { name: string }) => !answered.includes(d.name.toLowerCase()));
   if (silent.length > 0) await expect(page.getByTestId("dsync-silent")).toContainText(silent[0].name);
+
+  // dsync service nodes (#124): the PCs' clock services the box's config
+  // names, asked `/status` over the LAN. One answers (a stand-in for
+  // dsync, global-setup.ts), one has nothing behind it.
+  await expect
+    .poll(
+      async () =>
+        (await page.request.get("/api/clocks").then((r) => r.json())).services.find(
+          (s: { node: string }) => s.node === DSYNC.up,
+        )?.mode,
+      { timeout: 30_000 },
+    )
+    .toBe("LOCK");
+  const svc = (await page.request.get("/api/clocks").then((r) => r.json())).services;
+  expect(svc.map((s: { node: string }) => s.node)).toEqual([DSYNC.up, DSYNC.down]);
+  expect(svc[0]).toMatchObject({
+    error: null,
+    version: "0.9.4",
+    ptp_phase_locked: true,
+    ptp_phase_error_us: 3.25,
+    gm_uuid: "00:1d:c1:aa:bb:cc",
+    gm_source_ip: "10.199.0.200",
+    alarm: null,
+  });
+  // What dsync says is no health is not passed on.
+  expect(svc[0]).not.toHaveProperty("offset_ns");
+  expect(svc[0]).not.toHaveProperty("settled");
+  expect(svc[1].error).toBeTruthy();
+  const up = page.locator(`[data-testid="dsync-service"][data-name="${DSYNC.up}"]`);
+  const down = page.locator(`[data-testid="dsync-service"][data-name="${DSYNC.down}"]`);
+  await expect(up).toHaveAttribute("data-state", "ok", { timeout: 20_000 });
+  await expect(up.getByTestId("dsync-service-state")).toHaveText("locked · phase error 3.2 µs");
+  await expect(up).toContainText("LOCK");
+  await expect(up).toContainText("00:1d:c1:aa:bb:cc · 10.199.0.200");
+  await expect(down).toHaveAttribute("data-state", "bad");
+  await expect(down.getByTestId("dsync-service-state")).toContainText("no answer");
+  // The one in trouble reads first.
+  await expect(page.getByTestId("dsync-service").first()).toHaveAttribute("data-name", DSYNC.down);
+  await expect(page.getByTestId("dsync-service-summary")).toHaveText(
+    `1 of 2 service nodes locked · in trouble: ${DSYNC.down}`,
+  );
 
   // The view stays in the URL: a reload opens it again.
   await page.reload();

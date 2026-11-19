@@ -479,11 +479,77 @@ pub const SPARK_POINTS: i64 = 60;
 /// follower in the device and its view of the PC's dsync service), as last
 /// read with dstack's clock figures request (dcontroller #124, dstack #429).
 /// A device that does not answer the request is not listed.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Clocks {
     /// Unix seconds.
     pub now: i64,
     pub nodes: Vec<ClockNode>,
+    /// The dsync service nodes the box's config names, each as it last
+    /// answered `:8898/status` over the LAN.
+    #[serde(default)]
+    pub services: Vec<DsyncNode>,
+}
+
+/// One dsync service node (a PC's clock service): the health fields of its
+/// status, as dsync names them. `offset_ns` and `settled` are not here:
+/// dsync says they are no measure of health.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DsyncNode {
+    /// As the box's config names it (`host:port`).
+    pub node: String,
+    /// Seconds since its last answer; `None` when it never answered.
+    pub age_s: Option<i64>,
+    /// Why the last ask failed; `None` when it answered.
+    pub error: Option<String>,
+    pub version: Option<String>,
+    /// ACQ, PROD, LOCK, NANO, NTP-only, FALLBACK.
+    pub mode: Option<String>,
+    pub ptp_phase_locked: Option<bool>,
+    /// The lock's quality, µs (dsync alarms at 50).
+    pub ptp_phase_error_us: Option<f64>,
+    /// Seconds since the last PTP packet; `None`: never.
+    pub last_ptp_rx_age_s: Option<f64>,
+    pub ptp_rx_pps: Option<f64>,
+    /// The grandmaster's id, `aa:bb:cc:dd:ee:ff`, and where it was heard.
+    pub gm_uuid: Option<String>,
+    pub gm_source_ip: Option<String>,
+    pub drift_ppm: Option<f64>,
+    pub fallback_role: Option<String>,
+    /// The clock alarm's reason while it is active.
+    pub alarm: Option<String>,
+}
+
+/// dsync's own line for the phase error, µs: at or over it, it alarms.
+pub const DSYNC_PHASE_ALARM_US: f64 = 50.0;
+
+impl DsyncNode {
+    /// `ok`, `warn` or `bad`, and why, from what the node says and dsync's
+    /// own alarm line.
+    pub fn health(&self) -> (&'static str, String) {
+        if let Some(e) = &self.error {
+            return ("bad", format!("no answer: {e}"));
+        }
+        if let Some(a) = &self.alarm {
+            return ("bad", format!("clock alarm: {a}"));
+        }
+        let mode = self.mode.as_deref().unwrap_or("?");
+        if self.ptp_phase_locked == Some(false) {
+            return ("bad", format!("PTP not locked (mode {mode})"));
+        }
+        if let Some(e) = self.ptp_phase_error_us
+            && e.abs() >= DSYNC_PHASE_ALARM_US
+        {
+            return ("bad", format!("phase error {e:.1} µs (dsync alarms at 50)"));
+        }
+        if matches!(mode, "FALLBACK" | "NTP-only") {
+            return ("warn", format!("mode {mode}: not on PTP"));
+        }
+        match (self.ptp_phase_locked, self.ptp_phase_error_us) {
+            (Some(true), Some(e)) => ("ok", format!("locked · phase error {e:.1} µs")),
+            (Some(true), None) => ("ok", "locked".to_owned()),
+            _ => ("warn", "its answer names no lock state".to_owned()),
+        }
+    }
 }
 
 /// One device's clock, as it says itself.
@@ -671,6 +737,39 @@ impl RxChannel {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_dsync_nodes_health_follows_its_alarm_lock_and_phase_error() {
+        let node = |locked: Option<bool>, err: Option<f64>, mode: &str| DsyncNode {
+            node: "pc:8898".into(),
+            ptp_phase_locked: locked,
+            ptp_phase_error_us: err,
+            mode: Some(mode.into()),
+            ..DsyncNode::default()
+        };
+        assert_eq!(
+            node(Some(true), Some(3.25), "LOCK").health(),
+            ("ok", "locked · phase error 3.2 µs".to_owned())
+        );
+        assert_eq!(node(Some(false), Some(3.0), "ACQ").health().0, "bad");
+        // dsync's own alarm line, either sign.
+        assert_eq!(node(Some(true), Some(-50.0), "LOCK").health().0, "bad");
+        assert_eq!(node(Some(true), Some(49.9), "LOCK").health().0, "ok");
+        assert_eq!(node(Some(true), Some(1.0), "FALLBACK").health().0, "warn");
+        assert_eq!(node(None, None, "LOCK").health().0, "warn");
+        let mut alarmed = node(Some(true), Some(1.0), "LOCK");
+        alarmed.alarm = Some("no PTP for 10 s".into());
+        assert_eq!(
+            alarmed.health(),
+            ("bad", "clock alarm: no PTP for 10 s".to_owned())
+        );
+        // Not reachable beats everything.
+        alarmed.error = Some("connection refused".into());
+        assert_eq!(
+            alarmed.health(),
+            ("bad", "no answer: connection refused".to_owned())
+        );
+    }
 
     #[test]
     fn a_clock_nodes_health_reads_what_the_device_says() {
