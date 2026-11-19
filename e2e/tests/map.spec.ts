@@ -1,4 +1,5 @@
 import { test, expect, type ConsoleMessage } from "@playwright/test";
+import { DSYNC } from "../env";
 
 // The Map (#122): the schema of what is connected to what, and the chart
 // of the connection the user clicks. The test device receives its own TX
@@ -55,6 +56,10 @@ test("the map is the start page: every device a box, every connection a line, a 
   await expect(top.getByTestId("tile-devices").locator(".tile-value")).toHaveText(String(devices.devices.length));
   await expect(top.getByTestId("tile-subs")).toContainText("Subscriptions");
   await expect(top.getByTestId("tile-clock")).toContainText("Clock");
+  // The clock tile counts the dsync clocks too (#124): the suite's second
+  // dsync node has nothing behind it, so the rig's clock is in trouble.
+  await expect(top.getByTestId("tile-clock")).toContainText(`dsync not locked: ${DSYNC.down}`, { timeout: 30_000 });
+  await expect(top.getByTestId("tile-clock")).toHaveClass(/\bbad\b/);
   await expect(top.getByTestId("tile-network")).toContainText("links");
 
   // Links: every connection in one table, the worst first; a row is a click

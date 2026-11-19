@@ -193,7 +193,11 @@ fn App() -> impl IntoView {
     let clk = Clk(RwSignal::new(None));
     provide_context(clk);
     let load_clocks = move || {
-        if view_now.get_untracked() == View::Clock {
+        // The clock page, and the pages whose clock tile counts dsync too.
+        if matches!(
+            view_now.get_untracked(),
+            View::Clock | View::Map | View::Overview
+        ) {
             spawn_local(async move {
                 clk.0.set(Some(
                     pages::get_json::<dcontroller_api::Clocks>("/api/clocks").await,
