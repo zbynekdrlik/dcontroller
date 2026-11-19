@@ -244,10 +244,21 @@ pub(crate) fn device_tiles(d: &Devices, dsync: Option<&dcontroller_api::Clocks>)
             "tile-devices",
             "Devices",
             format!("{}", d.devices.len()),
-            if failing > 0 {
-                format!("{read} read · {failing} not answering")
-            } else {
-                format!("{read} read, all answering")
+            {
+                // As in the mockup (#142): since when the list is as it is.
+                let since = match crate::devlist::all_since(d) {
+                    crate::devlist::Joined::AtStart => {
+                        "all there since dcontroller started".to_owned()
+                    }
+                    crate::devlist::Joined::At(t) => {
+                        format!("all there since {}", time_text(t as i64))
+                    }
+                };
+                if failing > 0 {
+                    format!("{read} read · {failing} not answering · {since}")
+                } else {
+                    format!("{read} read, all answering · {since}")
+                }
             },
             if failing > 0 { "warn" } else { "ok" },
             "#devices".to_owned(),

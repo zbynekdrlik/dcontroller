@@ -25,6 +25,19 @@ pub fn joined(dev: &Device, d: &Devices) -> Joined {
     }
 }
 
+/// Since when every device listed now is there (#142): the latest join, or
+/// `AtStart` when all of them were there at discovery's start.
+pub fn all_since(d: &Devices) -> Joined {
+    d.devices
+        .iter()
+        .filter_map(|dev| match joined(dev, d) {
+            Joined::At(t) => Some(t),
+            Joined::AtStart => None,
+        })
+        .max()
+        .map_or(Joined::AtStart, Joined::At)
+}
+
 /// The devices by name (the server's order), or newest first (latest
 /// joined, then by name).
 pub fn order(d: &Devices, newest: bool) -> Vec<Device> {
@@ -42,6 +55,15 @@ pub fn order(d: &Devices, newest: bool) -> Vec<Device> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_device_is_there_since_the_latest_join_or_the_start() {
+        assert_eq!(all_since(&d()), Joined::At(5000));
+        let mut early = d();
+        early.devices.retain(|x| x.seen_at < 2000);
+        assert_eq!(all_since(&early), Joined::AtStart);
+        assert_eq!(all_since(&Devices::default()), Joined::AtStart);
+    }
 
     fn d() -> Devices {
         let dev = |name: &str, seen_at: u64| Device {
