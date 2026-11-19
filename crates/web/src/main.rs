@@ -1485,7 +1485,14 @@ fn outage_row(o: &changes::Outage) -> AnyView {
     let why = o.reasons.join(", ");
     let (detail, result) = match (o.start, o.end) {
         (Some(a), Some(b)) => (
-            format!("not receiving {} – {}", time(a), time(b)),
+            // The end's date only when it is another day.
+            format!("not receiving {} – {}", time(a), {
+                let (ta, tb) = (time(a), time(b));
+                match (ta.rsplit_once(' '), tb.rsplit_once(' ')) {
+                    (Some((da, _)), Some((db, clock))) if da == db => clock.to_owned(),
+                    _ => tb,
+                }
+            }),
             format!(
                 "received again after {} · was: {why}",
                 changes::span(o.seconds().unwrap_or(0))

@@ -344,3 +344,4 @@ table.grid tr.click { cursor: pointer; }
 .bar .status { margin: 0; }
 table.grid tr.sel td { background: var(--accent-soft); }
 .mono { font-family: var(--mono); font-size: 0.82rem; }
+table.changes td:first-child { white-space: nowrap; }

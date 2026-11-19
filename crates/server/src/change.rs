@@ -21,7 +21,8 @@ use tracing::{info, warn};
 
 use crate::dante::{self, Shared};
 
-/// How many entries `GET /api/changes` lists.
+/// How many entries of each kind (status, and everything else)
+/// `GET /api/changes` lists.
 pub const LIST: usize = 200;
 
 /// The changes log (JSON lines) and the lock that runs changes one at a time.
@@ -71,8 +72,11 @@ impl Changes {
         }
     }
 
-    /// The last [`LIST`] entries, newest first. A line that does not parse is
-    /// skipped and logged.
+    /// The log, newest first: the last [`LIST`] status entries (what devices
+    /// did) and the last [`LIST`] of everything else (the changes people
+    /// made), each kind with its own room, so a flapping connection cannot
+    /// push the changes out (#123). A line that does not parse is skipped
+    /// and logged.
     pub fn list(&self) -> Result<Vec<api::ChangeEntry>, String> {
         let f = match std::fs::File::open(&self.path) {
             Ok(f) => f,
@@ -90,7 +94,16 @@ impl Changes {
             }
         }
         out.reverse();
-        out.truncate(LIST);
+        let (mut status, mut made) = (0usize, 0usize);
+        out.retain(|e| {
+            let n = if e.kind == dante::STATUS {
+                &mut status
+            } else {
+                &mut made
+            };
+            *n += 1;
+            *n <= LIST
+        });
         Ok(out)
     }
 
@@ -986,6 +999,41 @@ impl Changes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_flips_do_not_push_the_changes_people_made_out_of_the_list() {
+        // A night of a flapping connection: far more status entries than
+        // the list holds (dcontroller #123, seen live: 198 of 200).
+        let dir = tempfile::tempdir().unwrap();
+        let changes = Changes::new(dir.path().join("changes.jsonl"));
+        let made = api::ChangeEntry {
+            at: 1,
+            user: "owner".into(),
+            kind: "rename".into(),
+            ok: true,
+            ..api::ChangeEntry::default()
+        };
+        changes.append(&made).unwrap();
+        for i in 0..(LIST as u64 + 50) {
+            changes
+                .append(&api::ChangeEntry {
+                    at: 10 + i,
+                    user: "device status".into(),
+                    kind: "status".into(),
+                    ..api::ChangeEntry::default()
+                })
+                .unwrap();
+        }
+        let list = changes.list().unwrap();
+        assert!(
+            list.contains(&made),
+            "the rename is still listed after {} status entries",
+            LIST + 50
+        );
+        // Newest first, and no more status entries than the list holds.
+        assert!(list.windows(2).all(|w| w[0].at >= w[1].at));
+        assert_eq!(list.iter().filter(|e| e.kind == "status").count(), LIST);
+    }
 
     #[test]
     fn settings_are_checked_against_what_the_device_reports() {
