@@ -699,7 +699,7 @@ pub fn MapPage() -> impl IntoView {
                         <td>{clock}</td>
                         <td class="mono">{dev.address.clone()}</td>
                         <td class="muted">{joined}</td>
-                        <td>{if count == 0 { "none".to_owned() } else { count.to_string() }}" "{state}</td>
+                        <td>{if count == 0 { "none".to_owned() } else { format!("{count} · ") }}{state}</td>
                     </tr>
                 }
             })
