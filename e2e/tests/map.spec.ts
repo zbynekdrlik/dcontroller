@@ -48,6 +48,24 @@ test("the map is the start page: every device a box, every connection a line, a 
   await expect(line).not.toHaveAttribute("data-state", "unknown", { timeout: 40_000 });
   await expect(line.locator(".lbl text")).toContainText("10.00 ms");
 
+  // #142: the colours speak of a window, 1 h by default; the switch moves
+  // them to 3 h or 24 h, and the line's state follows /api/links for it.
+  await expect(page.getByTestId("map-span-1h")).toHaveClass(/\bon\b/);
+  const sum = (await page.request.get("/api/links").then((r) => r.json())).links.find(
+    (l: any) => l.from === DEVICE && l.to === DEVICE,
+  );
+  const want = (late: number, peak: number, lat: number) =>
+    late > 0 ? "bad" : lat > 0 && peak * 10 >= lat * 9 ? "warn" : "ok";
+  await page.getByTestId("map-span-24h").click();
+  await expect(page.getByTestId("map-span-24h")).toHaveClass(/\bon\b/);
+  await expect(line).toHaveAttribute(
+    "data-state",
+    new RegExp(`^(${want(sum.late_24h, sum.peak_24h_us, sum.latency_24h_us)}|bad)$`),
+  );
+  await expect(page.locator(".legend")).toContainText("in the last 24 hours");
+  await page.getByTestId("map-span-1h").click();
+  await expect(page.locator(".legend")).toContainText("in the last hour");
+
   // The network's hour at a glance: connections, the bridge, and the
   // tiles the overview has.
   const top = page.getByTestId("map-tiles-top");

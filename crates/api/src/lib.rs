@@ -677,6 +677,19 @@ pub struct LinkSummary {
     /// Late packets in the last hour and the last day.
     pub late_1h: u64,
     pub late_24h: u64,
+    /// The last 3 hours and the last day as the hour's figures say it
+    /// (#142): late packets, and the peak closest to its flow's latency
+    /// with that latency. The Map colours a connection by the window shown.
+    #[serde(default)]
+    pub late_3h: u64,
+    #[serde(default)]
+    pub peak_3h_us: u32,
+    #[serde(default)]
+    pub latency_3h_us: u32,
+    #[serde(default)]
+    pub peak_24h_us: u32,
+    #[serde(default)]
+    pub latency_24h_us: u32,
     /// The last hour as [`ReceiverSummary::spark`], of this connection.
     pub spark: Vec<Option<u32>>,
     /// Seconds since the last sample.

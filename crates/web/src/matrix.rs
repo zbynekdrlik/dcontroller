@@ -69,7 +69,7 @@ impl Cell {
 pub type LinkStates = Vec<(String, String, State)>;
 
 /// Every connection's state from `links`.
-pub fn link_states(links: Option<&Links>) -> LinkStates {
+pub fn link_states(links: Option<&Links>, span: map::Span) -> LinkStates {
     let mut v: LinkStates = links
         .map(|l| {
             l.links
@@ -78,7 +78,7 @@ pub fn link_states(links: Option<&Links>) -> LinkStates {
                     (
                         l.from.to_lowercase(),
                         l.to.to_lowercase(),
-                        map::link_state(l),
+                        map::link_state(l, span),
                     )
                 })
                 .collect()
@@ -114,7 +114,7 @@ pub fn point(cell: Cell, link: Option<State>) -> (&'static str, String) {
     };
     let (rank, past) = match link {
         Some(State::Bad) => (2, "late packets in the last hour"),
-        Some(State::Warn) => (1, "close to the latency, or late earlier today"),
+        Some(State::Warn) => (1, "peak close to the latency"),
         Some(State::Ok) => (0, "no late packets"),
         Some(State::Unknown) | None => (0, "latency not measured"),
     };
@@ -397,13 +397,16 @@ mod tests {
             ],
             ..Links::default()
         };
-        let states = link_states(Some(&links));
+        let states = link_states(Some(&links), map::Span::H1);
         // Names compare case aside, as Dante's do.
         assert_eq!(link_of(&states, "DESK", "Amp"), Some(State::Bad));
-        assert_eq!(link_of(&states, "desk", "rec"), Some(State::Warn));
+        // Late earlier than the hour is no colour in the hour (#142).
+        assert_eq!(link_of(&states, "desk", "rec"), Some(State::Ok));
+        let day = link_states(Some(&links), map::Span::H24);
+        assert_eq!(link_of(&day, "desk", "rec"), Some(State::Bad));
         assert_eq!(link_of(&states, "desk", "pa"), Some(State::Ok));
         assert_eq!(link_of(&states, "desk", "none"), None);
-        assert!(link_states(None).is_empty());
+        assert!(link_states(None, map::Span::H1).is_empty());
 
         // All receiving now, late packets in the last hour: red, in words.
         assert_eq!(

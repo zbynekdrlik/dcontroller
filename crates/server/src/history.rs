@@ -623,6 +623,17 @@ impl Store {
     /// samples in the last hour before `now`, and every bridge device read
     /// in the last five minutes (dcontroller #122).
     pub fn links(&self, now: i64) -> Result<api::Links, String> {
+        // Keeps the peak closest to its latency: (share in ‰, peak, latency).
+        fn keep_best(best: &mut Option<(u32, u32, u32)>, peak: u32, lat: u32) {
+            let share = if lat > 0 {
+                u32::try_from(u64::from(peak) * 1000 / u64::from(lat)).unwrap_or(u32::MAX)
+            } else {
+                0
+            };
+            if best.is_none_or(|(s, p, _)| (share, peak) > (s, p)) {
+                *best = Some((share, peak, lat));
+            }
+        }
         let hour = now - 3600;
         // Whole minutes older than the hour come from the minute tier.
         let hour_floor = hour - hour.rem_euclid(60);
@@ -662,8 +673,11 @@ impl Store {
             .map_err(|e| e.to_string())?;
         let mut older = db
             .prepare_cached(&format!(
-                "SELECT COALESCE(f.sources, '[]'), SUM(x.late) FROM minute x {FLOW}
-                 WHERE x.device = ?1 AND x.t >= ?2 AND x.t < ?3 GROUP BY f.sources"
+                "SELECT COALESCE(f.sources, '[]'), COALESCE(f.latency_us, 0), x.t >= ?4 AS recent,
+                        SUM(x.late), MAX(x.peak)
+                 FROM minute x {FLOW}
+                 WHERE x.device = ?1 AND x.t >= ?2 AND x.t < ?3
+                 GROUP BY f.sources, f.latency_us, recent"
             ))
             .map_err(|e| e.to_string())?;
         let source = |text: &str| -> String {
@@ -679,7 +693,10 @@ impl Store {
             // Per source: its summary, its flows (slot, since) and each
             // flow's sum and count of peaks.
             type Flows = Vec<((u16, i64), u64, u64)>;
-            type Found = (api::LinkSummary, Flows, Option<(u32, u32)>);
+            // The hour's best (share of the latency, peak), and the 3 h and
+            // day's best (share, peak, latency).
+            type Best = Option<(u32, u32, u32)>;
+            type Found = (api::LinkSummary, Flows, Option<(u32, u32)>, [Best; 2]);
             let mut found: Vec<Found> = Vec::new();
             let rows = per
                 .query_map(params![id, hour, now, step, hour_floor], |r| {
@@ -702,7 +719,7 @@ impl Store {
                 let from = source(&sources);
                 let i = match found
                     .iter()
-                    .position(|(l, _, _)| l.from.eq_ignore_ascii_case(&from))
+                    .position(|(l, _, _, _)| l.from.eq_ignore_ascii_case(&from))
                 {
                     Some(i) => i,
                     None => {
@@ -715,12 +732,18 @@ impl Store {
                             },
                             Vec::new(),
                             None,
+                            [None, None],
                         ));
                         found.len() - 1
                     }
                 };
-                let (l, flows, best) = &mut found[i];
+                let (l, flows, best, spans) = &mut found[i];
                 l.late_24h += count(late);
+                // Everything in the second tier is inside 3 hours.
+                l.late_3h += count(late);
+                for span in spans.iter_mut() {
+                    keep_best(span, peak, lat);
+                }
                 if b < 0 {
                     // The seconds between the minute tier and the hour.
                     continue;
@@ -753,24 +776,41 @@ impl Store {
                 }
             }
             let rows = older
-                .query_map(params![id, day, hour_floor], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+                .query_map(params![id, day, hour_floor, now - 3 * 3600], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, u32>(1)?,
+                        r.get::<_, bool>(2)?,
+                        r.get::<_, i64>(3)?,
+                        r.get::<_, u32>(4)?,
+                    ))
                 })
                 .map_err(|e| e.to_string())?;
             for row in rows {
-                let (sources, late) = row.map_err(|e| e.to_string())?;
+                let (sources, lat, recent, late, peak) = row.map_err(|e| e.to_string())?;
                 let from = source(&sources);
                 // A connection with nothing in the last hour is not listed.
-                if let Some((l, _, _)) = found
+                if let Some((l, _, _, spans)) = found
                     .iter_mut()
-                    .find(|(l, _, _)| l.from.eq_ignore_ascii_case(&from))
+                    .find(|(l, _, _, _)| l.from.eq_ignore_ascii_case(&from))
                 {
                     l.late_24h += count(late);
+                    keep_best(&mut spans[1], peak, lat);
+                    if recent {
+                        l.late_3h += count(late);
+                        keep_best(&mut spans[0], peak, lat);
+                    }
                 }
             }
-            for (mut l, flows, _) in found {
+            for (mut l, flows, _, spans) in found {
                 if flows.is_empty() {
                     continue;
+                }
+                if let Some((_, p, lat)) = spans[0] {
+                    (l.peak_3h_us, l.latency_3h_us) = (p, lat);
+                }
+                if let Some((_, p, lat)) = spans[1] {
+                    (l.peak_24h_us, l.latency_24h_us) = (p, lat);
                 }
                 l.flows = u16::try_from(flows.len()).unwrap_or(u16::MAX);
                 l.typical_us = flows
@@ -1135,12 +1175,20 @@ mod tests {
         assert_eq!((p.peak_us, p.latency_us), (1900, 2000));
         assert_eq!(p.typical_us, 1900);
         assert_eq!((p.late_1h, p.late_24h), (3, 10));
+        // #142: 3 h holds the hour only (the other samples are 5 h old);
+        // the day's peak closest to its latency is the same 1900 of 2000.
+        assert_eq!(p.late_3h, 3);
+        assert_eq!((p.peak_3h_us, p.latency_3h_us), (1900, 2000));
+        assert_eq!((p.peak_24h_us, p.latency_24h_us), (1900, 2000));
         assert_eq!(p.age_s, Some(1799));
         assert_eq!(p.spark.len(), 60);
         assert_eq!(p.spark.iter().flatten().copied().max(), Some(950));
         let v = &l.links[1];
         assert_eq!((v.flows, v.peak_us, v.latency_us), (1, 4000, 10_000));
         assert_eq!((v.late_1h, v.late_24h), (1, 3));
+        assert_eq!(v.late_3h, 1);
+        // Five hours ago video peaked at 400 of 10 000; the hour at 4000.
+        assert_eq!((v.peak_24h_us, v.latency_24h_us), (4000, 10_000));
         // A receiver silent for the last hour has no connection listed.
         st.set_flow("amp", 1, &src("desk", 1000), now - 90_000)
             .unwrap();

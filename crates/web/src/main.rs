@@ -102,12 +102,13 @@ fn App() -> impl IntoView {
                 mappage::MapView::Schema
             },
         ),
+        span: RwSignal::new(map::Span::default()),
     };
     provide_context(mp);
     // The routing matrix takes each connection's state from the same read.
     provide_context(LinkStates(Memo::new(move |_| {
         mp.links
-            .with(|l| matrix::link_states(l.as_ref().and_then(|r| r.as_ref().ok())))
+            .with(|l| matrix::link_states(l.as_ref().and_then(|r| r.as_ref().ok()), mp.span.get()))
     })));
     // The hash is the page's address: a link, back or forward moves the view
     // (and the chosen latency receiver) with it.

@@ -210,13 +210,70 @@ pub fn num(n: u64) -> String {
     out
 }
 
-/// A connection's state from its summary.
-pub fn link_state(l: &LinkSummary) -> State {
-    if l.late_1h > 0 {
+/// The window a connection's colour speaks of (#142): the Map shows the
+/// last hour unless the 3 h or 24 h switch is on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Span {
+    #[default]
+    H1,
+    H3,
+    H24,
+}
+
+impl Span {
+    pub const ALL: [Span; 3] = [Span::H1, Span::H3, Span::H24];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Span::H1 => "1 h",
+            Span::H3 => "3 h",
+            Span::H24 => "24 h",
+        }
+    }
+
+    /// In words, after "in the last …".
+    pub fn words(self) -> &'static str {
+        match self {
+            Span::H1 => "hour",
+            Span::H3 => "3 hours",
+            Span::H24 => "24 hours",
+        }
+    }
+
+    /// Late packets in the window.
+    pub fn late(self, l: &LinkSummary) -> u64 {
+        match self {
+            Span::H1 => l.late_1h,
+            Span::H3 => l.late_3h.max(l.late_1h),
+            Span::H24 => l.late_24h,
+        }
+    }
+
+    /// The window's peak closest to its latency, and that latency (a
+    /// server without the longer windows: the hour's).
+    pub fn peak(self, l: &LinkSummary) -> (u32, u32) {
+        let (p, lat) = match self {
+            Span::H1 => (l.peak_us, l.latency_us),
+            Span::H3 => (l.peak_3h_us, l.latency_3h_us),
+            Span::H24 => (l.peak_24h_us, l.latency_24h_us),
+        };
+        if lat == 0 {
+            (l.peak_us, l.latency_us)
+        } else {
+            (p, lat)
+        }
+    }
+}
+
+/// A connection's state in a window, as the mockup named it (#142): red,
+/// late packets in it; amber, a peak at 90 % of the latency or more in
+/// it; green otherwise. Late packets earlier than the window are no
+/// colour: the 24 h switch shows them.
+pub fn link_state(l: &LinkSummary, span: Span) -> State {
+    let (peak, lat) = span.peak(l);
+    if span.late(l) > 0 {
         State::Bad
-    } else if l.late_24h > 0
-        || (l.latency_us > 0 && u64::from(l.peak_us) * 10 >= u64::from(l.latency_us) * 9)
-    {
+    } else if lat > 0 && u64::from(peak) * 10 >= u64::from(lat) * 9 {
         State::Warn
     } else {
         State::Ok
@@ -242,7 +299,7 @@ pub fn summary_of<'a>(links: Option<&'a Links>, from: &str, to: &str) -> Option<
 /// figures: a box per device (and per subscribed source that is not on the
 /// network, and per bridge's ASIO side), a line per (source, receiver) pair
 /// with a subscription and two per bridge.
-pub fn build(d: &Devices, links: Option<&Links>) -> Graph {
+pub fn build(d: &Devices, links: Option<&Links>, span: Span) -> Graph {
     let mut g = Graph::default();
     for dev in &d.devices {
         let (tx, rx) = dev
@@ -350,11 +407,12 @@ pub fn build(d: &Devices, links: Option<&Links>) -> Graph {
                 },
                 from,
                 to,
-                state: sum.map_or(State::Unknown, link_state),
+                state: sum.map_or(State::Unknown, |s| link_state(s, span)),
                 label,
                 lost: sum
-                    .filter(|s| s.late_1h > 0)
-                    .map(|s| format!("{} late", num(s.late_1h))),
+                    .map(|s| span.late(s))
+                    .filter(|&n| n > 0)
+                    .map(|n| format!("{} late", num(n))),
                 title,
                 weight: sum.map_or((0, 0), |s| (s.late_1h, per_mille(s))),
             });
@@ -450,7 +508,7 @@ pub struct Health {
     pub clean: usize,
     /// Those that lost audio in the last hour, worst first: name and count.
     pub lost: Vec<(String, u64)>,
-    /// Those close to their latency or late earlier today.
+    /// Those with a peak close to their latency.
     pub warn: usize,
     /// Bridges, and their underruns in the last hour.
     pub bridges: usize,
@@ -1195,7 +1253,7 @@ mod tests {
     #[test]
     fn the_graph_has_a_line_per_subscribed_pair_with_its_figures() {
         let l = links();
-        let g = build(&net(), Some(&l));
+        let g = build(&net(), Some(&l), Span::H1);
         // 7 devices, the source that is gone, the bridge's ASIO side.
         assert_eq!(g.nodes.len(), 9);
         assert_eq!(g.nodes[7].name, "gone");
@@ -1209,9 +1267,14 @@ mod tests {
         assert_eq!(bad.lost.as_deref(), Some("67 004 late"));
         assert!(bad.title.contains("2 channels"));
         assert_eq!(edge(&g, "player", "desk").state, State::Ok);
-        // A peak at 95 % of the latency, and late packets earlier today.
+        // A peak at 95 % of the latency is amber; late packets earlier
+        // than the hour are no colour in the hour (#142)...
         assert_eq!(edge(&g, "desk", "amp").state, State::Warn);
-        assert_eq!(edge(&g, "bridge", "stream").state, State::Warn);
+        assert_eq!(edge(&g, "bridge", "stream").state, State::Ok);
+        // ...and red in the 24 h window, which counts them.
+        let day = build(&net(), Some(&l), Span::H24);
+        let e = edge(&day, "bridge", "stream");
+        assert_eq!((e.state, e.lost.as_deref()), (State::Bad, Some("2 late")));
         // Not recorded: no figures, the line is still there.
         let unknown = edge(&g, "desk", "stage");
         assert_eq!(unknown.state, State::Unknown);
@@ -1237,7 +1300,7 @@ mod tests {
         assert_eq!(worst_first(&g)[0].sel, bad.sel);
         assert_eq!(worst_first(&g).len(), g.edges.len());
         let h = health(&g);
-        assert_eq!((h.links, h.measured, h.clean, h.warn), (7, 4, 3, 2));
+        assert_eq!((h.links, h.measured, h.clean, h.warn), (7, 4, 3, 1));
         assert_eq!(h.lost, [("player → bridge".to_owned(), 67_004)]);
         assert_eq!((h.bridges, h.underruns), (1, 2));
         assert_eq!(health(&Graph::default()), Health::default());
@@ -1254,7 +1317,7 @@ mod tests {
             .is_some()
         );
         // Without summaries every line is unknown; no bridge side.
-        let plain = build(&net(), None);
+        let plain = build(&net(), None, Span::H1);
         assert_eq!(plain.nodes.len(), 8);
         assert!(plain.edges.iter().all(|e| e.state == State::Unknown));
         assert_eq!(worst(&Graph::default()), None);
@@ -1263,7 +1326,7 @@ mod tests {
     #[test]
     fn devices_sit_in_columns_by_their_part_with_no_overlap() {
         let l = links();
-        let g = build(&net(), Some(&l));
+        let g = build(&net(), Some(&l), Span::H1);
         let p = layout(&g);
         let col = |name: &str| p.cols[g.nodes.iter().position(|n| n.name == name).unwrap()];
         assert_eq!(col("player"), 0);
@@ -1323,7 +1386,7 @@ mod tests {
             ],
             ..Links::default()
         };
-        let g = build(&d, Some(&l));
+        let g = build(&d, Some(&l), Span::H1);
         assert_eq!(g.edges.len(), 14);
         let s = svg(&g, &layout(&g), None);
         assert!(s.starts_with(r#"<svg class="map dense" "#));
@@ -1350,7 +1413,7 @@ mod tests {
             ],
             ..Devices::default()
         };
-        let g = build(&d, None);
+        let g = build(&d, None, Span::H1);
         let p = layout(&g);
         let col = |name: &str| p.cols[g.nodes.iter().position(|n| n.name == name).unwrap()];
         assert_eq!((col("src"), col("amp")), (0, 3));
@@ -1377,7 +1440,7 @@ mod tests {
             devices: vec![dev("solo", 2, &[Some("solo")])],
             ..Devices::default()
         };
-        let g = build(&d, None);
+        let g = build(&d, None, Span::H1);
         assert_eq!((g.nodes.len(), g.edges.len()), (1, 1));
         let p = layout(&g);
         assert_eq!(p.cols, [1]);
@@ -1398,7 +1461,7 @@ mod tests {
             ..Clock::default()
         });
         let l = links();
-        let g = build(&d, Some(&l));
+        let g = build(&d, Some(&l), Span::H1);
         let p = layout(&g);
         let chosen = Sel::Link {
             from: "player".into(),
