@@ -194,7 +194,7 @@ mod tests {
                 true
             )
         );
-        assert_eq!(dsync_summary(&Clocks::default()).1, false);
+        assert!(!dsync_summary(&Clocks::default()).1);
         let d = Devices {
             devices: vec![
                 Device {
