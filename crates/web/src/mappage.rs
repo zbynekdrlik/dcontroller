@@ -542,7 +542,7 @@ pub fn MapPage() -> impl IntoView {
                     .map(|(title, id, rows)| view! {
                         <h3 class="sub">{title}</h3>
                         <div class="table-wrap">
-                        <table class="grid" data-testid=id>
+                        <table class="grid links" data-testid=id>
                             <thead><tr><th>"Connection"</th><th>"Last hour"</th><th>"Latency"</th><th>"Typical"</th><th>"Worst peak"</th><th>"Lost 1 h"</th><th>"Lost 24 h"</th><th>"State"</th></tr></thead>
                             <tbody>{rows.into_iter().map(row).collect_view()}</tbody>
                         </table>
@@ -639,7 +639,7 @@ pub fn MapPage() -> impl IntoView {
         }
         view! {
             <div class="table-wrap">
-            <table class="grid" data-testid="map-links">
+            <table class="grid links" data-testid="map-links">
                 <thead><tr><th>"Connection"</th><th>"Last hour"</th><th>"Latency"</th><th>"Typical"</th><th>"Worst peak"</th><th>"Lost 1 h"</th><th>"Lost 24 h"</th><th>"State"</th></tr></thead>
                 <tbody>{rows.into_iter().map(|r| { let sel = on.as_deref() == Some(r.hash.as_str()); row_marked(r, sel) }).collect_view()}</tbody>
             </table>

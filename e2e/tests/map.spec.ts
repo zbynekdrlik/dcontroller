@@ -187,3 +187,62 @@ test("the map is the start page: every device a box, every connection a line, a 
   await expect(page).toHaveURL(new RegExp(`#map/device/${BRIDGE}$`));
   expect(msgs).toEqual([]);
 });
+
+test("on a phone the map opens on the connections' table and no page scrolls sideways", async ({ page }) => {
+  const msgs: string[] = [];
+  page.on("console", (m: ConsoleMessage) => {
+    if (m.type() === "error" || m.type() === "warning") msgs.push(`${m.type()}: ${m.text()}`);
+  });
+  page.on("pageerror", (e) => msgs.push(`pageerror: ${e.message}`));
+  // A small phone: narrower than the strip of ranges, so the rows must
+  // let it scroll in itself (a wider font on another machine does the
+  // same to a 390 px phone).
+  await page.setViewportSize({ width: 330, height: 700 });
+  // What reaches past the window's right edge (nothing, when the page
+  // does not scroll sideways): named, so a failure says what to fix.
+  const wide = () =>
+    page.evaluate(() => {
+      const w = window.innerWidth;
+      if (document.documentElement.scrollWidth <= w) return [];
+      // Not what a scrolling ancestor clips (the nav's own strip, a table
+      // in its box): only what pushes the page itself wider.
+      const clipped = (e: Element) => {
+        for (let p = e.parentElement; p && p !== document.body; p = p.parentElement) {
+          const o = getComputedStyle(p).overflowX;
+          if (o !== "visible" && p.getBoundingClientRect().right <= w + 1) return true;
+        }
+        return false;
+      };
+      return Array.from(document.querySelectorAll("body *"))
+        .filter((e) => e.getBoundingClientRect().right > w + 1 && !clipped(e))
+        .slice(0, 6)
+        .map((e) => {
+          const h = e as HTMLElement;
+          return `${h.tagName.toLowerCase()}.${String(h.className).replace(/\s+/g, ".")}[${h.dataset.testid ?? ""}] right=${Math.round(h.getBoundingClientRect().right)}`;
+        });
+    });
+
+  // One column of the schema fits a phone: the Links table shows first, the
+  // schema one tap away (#123).
+  await page.goto("/#map");
+  await expect(page.getByTestId("map-view-links")).toHaveClass(/\bon\b/);
+  await expect(page.getByTestId("map-links").getByTestId("map-dev-row").first()).toBeVisible({ timeout: 40_000 });
+  await expect(page.getByTestId("map-panel")).toBeHidden();
+  // The health tiles sit two to a row: all of them within the first screen.
+  const tiles = page.getByTestId("map-tiles-top");
+  expect((await tiles.boundingBox())!.height).toBeLessThan(420);
+  expect(await wide()).toEqual([]);
+  await page.getByTestId("map-view-schema").click();
+  await expect(page.getByTestId("map").locator("svg.map")).toBeVisible();
+  // The schema scrolls inside its box, not the page.
+  expect(await wide()).toEqual([]);
+
+  // The wide tables scroll inside their boxes too.
+  for (const view of ["changes", "routing", "clock", "network"]) {
+    await page.goto(`/#${view}`);
+    await expect(page.locator(".page-head h1")).not.toBeEmpty();
+    await page.waitForTimeout(500);
+    expect(await wide(), `${view} fits the phone's width`).toEqual([]);
+  }
+  expect(msgs).toEqual([]);
+});
