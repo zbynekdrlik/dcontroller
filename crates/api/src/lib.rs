@@ -475,6 +475,51 @@ pub struct ReceiverSummary {
 /// Buckets in a receiver's overview sparkline.
 pub const SPARK_POINTS: i64 = 60;
 
+/// `GET /api/links`: the last hour of every recorded connection (one source
+/// device into one receiver, dcontroller #122) and of every bridge device,
+/// for the map.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Links {
+    /// Unix seconds the summary ends at.
+    pub now: i64,
+    pub links: Vec<LinkSummary>,
+    pub bridges: Vec<BridgeSummary>,
+}
+
+/// One connection's latency: a receiver's flows from one source device.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkSummary {
+    /// The source device (`?` when the flow names none) and the receiver.
+    pub from: String,
+    pub to: String,
+    /// Flows recorded in the last hour.
+    pub flows: u16,
+    /// The largest per-second peak in the last hour, µs, and the latency of
+    /// the flow it came from (the flow closest to its latency).
+    pub peak_us: u32,
+    pub latency_us: u32,
+    /// The mean of the per-second peaks over the hour, µs (the largest
+    /// among the flows).
+    pub typical_us: u32,
+    /// Late packets in the last hour and the last day.
+    pub late_1h: u64,
+    pub late_24h: u64,
+    /// The last hour as [`ReceiverSummary::spark`], of this connection.
+    pub spark: Vec<Option<u32>>,
+    /// Seconds since the last sample.
+    pub age_s: Option<i64>,
+}
+
+/// One bridge device now: its newest figures and its underruns in the last
+/// hour, each way.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BridgeSummary {
+    pub device: String,
+    pub last: BridgePoint,
+    pub to_asio_underruns_1h: u64,
+    pub from_asio_underruns_1h: u64,
+}
+
 /// The most buckets a history answer has.
 pub const HISTORY_POINTS: i64 = 1500;
 

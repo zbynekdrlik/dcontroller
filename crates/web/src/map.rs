@@ -1,0 +1,1178 @@
+//! The map (dcontroller #122): what is connected to what, and how each
+//! connection did in the last hour. The connections come from the devices'
+//! RX subscriptions (the network as it is now), their figures from the
+//! server's link summaries; a bridge device's two delays are two more
+//! connections, to its ASIO side. Pure, so it is tested on the host: the
+//! graph, its layout in three columns, the SVG and the hash of a choice.
+
+use dcontroller_api::{Devices, LinkSummary, Links};
+
+/// How a connection did in the last hour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum State {
+    /// Nothing recorded for it.
+    Unknown,
+    Ok,
+    /// Late packets earlier in the day, or a peak at 90 % of the latency.
+    Warn,
+    /// Late packets (underruns for a bridge) in the last hour.
+    Bad,
+}
+
+impl State {
+    pub fn class(self) -> &'static str {
+        match self {
+            State::Unknown => "unknown",
+            State::Ok => "ok",
+            State::Warn => "warn",
+            State::Bad => "bad",
+        }
+    }
+}
+
+/// One connection, as the hash names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Sel {
+    /// A source device into a receiver.
+    Link { from: String, to: String },
+    /// A bridge device's own path: its ASIO side to Dante, or back.
+    Bridge { device: String, to_dante: bool },
+}
+
+/// `text` with every byte outside `A-Z a-z 0-9 - _ . ~` as `%XX`.
+pub fn encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for b in text.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(char::from(b));
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// [`encode`] undone; `None` for a broken escape or bytes that are no UTF-8.
+pub fn decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = text.get(i + 1..i + 3)?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+impl Sel {
+    /// The page's hash for this connection.
+    pub fn hash(&self) -> String {
+        match self {
+            Sel::Link { from, to } => format!("#map/link/{}/{}", encode(from), encode(to)),
+            Sel::Bridge { device, to_dante } => format!(
+                "#map/bridge/{}/{}",
+                encode(device),
+                if *to_dante { "to-dante" } else { "to-asio" }
+            ),
+        }
+    }
+
+    /// The connection a hash names, if it names one.
+    pub fn from_hash(hash: &str) -> Option<Sel> {
+        let mut parts = hash.strip_prefix("#map/")?.split('/');
+        let (kind, a, b) = (parts.next()?, parts.next()?, parts.next()?);
+        if parts.next().is_some() {
+            return None;
+        }
+        match (kind, b) {
+            ("link", _) => Some(Sel::Link {
+                from: decode(a)?,
+                to: decode(b)?,
+            }),
+            ("bridge", "to-dante" | "to-asio") => Some(Sel::Bridge {
+                device: decode(a)?,
+                to_dante: b == "to-dante",
+            }),
+            _ => None,
+        }
+    }
+
+    /// The device whose history holds this connection: the receiver, or
+    /// the bridge.
+    pub fn device(&self) -> &str {
+        match self {
+            Sel::Link { to, .. } => to,
+            Sel::Bridge { device, .. } => device,
+        }
+    }
+
+    /// The same connection, the names' case aside.
+    pub fn same(&self, other: &Sel) -> bool {
+        match (self, other) {
+            (Sel::Link { from: a, to: b }, Sel::Link { from: c, to: d }) => {
+                a.eq_ignore_ascii_case(c) && b.eq_ignore_ascii_case(d)
+            }
+            (
+                Sel::Bridge {
+                    device: a,
+                    to_dante: x,
+                },
+                Sel::Bridge {
+                    device: b,
+                    to_dante: y,
+                },
+            ) => a.eq_ignore_ascii_case(b) && x == y,
+            _ => false,
+        }
+    }
+}
+
+/// What a box stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeKind {
+    Device,
+    /// A source some receiver is subscribed to that is not on the network.
+    Missing,
+    /// A bridge's ASIO side: no Dante device.
+    Asio,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Node {
+    pub name: String,
+    pub kind: NodeKind,
+    /// Two small lines under the name.
+    pub lines: [String; 2],
+    /// The clock's word and whether it is good.
+    pub badge: Option<(String, bool)>,
+    /// For an ASIO side: its bridge's node.
+    pub of: Option<usize>,
+    /// TX and RX channel counts (the column of a device with no connection).
+    pub tx: usize,
+    pub rx: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Edge {
+    pub sel: Sel,
+    pub from: usize,
+    pub to: usize,
+    pub state: State,
+    /// On the line: the receiver's latency (a bridge: its hold time).
+    pub label: String,
+    /// On the line when audio was lost in the last hour: `12 late`.
+    pub lost: Option<String>,
+    /// The hover text.
+    pub title: String,
+    /// How bad, for the worst-first order: lost in the hour, then the
+    /// peak's share of the latency (per mille).
+    pub weight: (u64, u32),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Graph {
+    pub nodes: Vec<Node>,
+    pub edges: Vec<Edge>,
+}
+
+pub fn ms(us: u32) -> String {
+    format!("{:.2} ms", f64::from(us) / 1000.0)
+}
+
+/// `n` with a space between thousands.
+pub fn num(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A connection's state from its summary.
+pub fn link_state(l: &LinkSummary) -> State {
+    if l.late_1h > 0 {
+        State::Bad
+    } else if l.late_24h > 0
+        || (l.latency_us > 0 && u64::from(l.peak_us) * 10 >= u64::from(l.latency_us) * 9)
+    {
+        State::Warn
+    } else {
+        State::Ok
+    }
+}
+
+fn per_mille(l: &LinkSummary) -> u32 {
+    if l.latency_us == 0 {
+        return 0;
+    }
+    u32::try_from(u64::from(l.peak_us) * 1000 / u64::from(l.latency_us)).unwrap_or(u32::MAX)
+}
+
+/// The summary of the connection `from` into `to`, the names' case aside.
+pub fn summary_of<'a>(links: Option<&'a Links>, from: &str, to: &str) -> Option<&'a LinkSummary> {
+    links?
+        .links
+        .iter()
+        .find(|l| l.from.eq_ignore_ascii_case(from) && l.to.eq_ignore_ascii_case(to))
+}
+
+/// The graph of `d`'s devices and their connections, with `links`'
+/// figures: a box per device (and per subscribed source that is not on the
+/// network, and per bridge's ASIO side), a line per (source, receiver) pair
+/// with a subscription and two per bridge.
+pub fn build(d: &Devices, links: Option<&Links>) -> Graph {
+    let mut g = Graph::default();
+    for dev in &d.devices {
+        let (tx, rx) = dev
+            .channels
+            .as_ref()
+            .map_or((0, 0), |c| (c.tx.len(), c.rx.len()));
+        let what = [dev.manufacturer.clone(), dev.model.clone()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let badge = dev.clock.as_ref().map(|c| {
+            if c.grandmaster {
+                ("PTP GM".to_owned(), true)
+            } else if c.sync == "synchronized" {
+                ("clock ok".to_owned(), true)
+            } else {
+                (format!("clock {}", c.sync), false)
+            }
+        });
+        g.nodes.push(Node {
+            name: dev.name.clone(),
+            kind: NodeKind::Device,
+            lines: [what, format!("{tx} TX · {rx} RX")],
+            badge,
+            of: None,
+            tx,
+            rx,
+        });
+    }
+    let find = |g: &Graph, name: &str| {
+        g.nodes
+            .iter()
+            .position(|n| n.kind != NodeKind::Asio && n.name.eq_ignore_ascii_case(name))
+    };
+    for (to, dev) in d.devices.iter().enumerate() {
+        let Some(ch) = dev.channels.as_ref() else {
+            continue;
+        };
+        // The source devices of this receiver, in channel order, each with
+        // its channel count.
+        let mut sources: Vec<(String, usize)> = Vec::new();
+        for r in &ch.rx {
+            let Some(s) = r.source.as_ref() else {
+                continue;
+            };
+            match sources
+                .iter_mut()
+                .find(|(n, _)| n.eq_ignore_ascii_case(&s.device))
+            {
+                Some((_, n)) => *n += 1,
+                None => sources.push((s.device.clone(), 1)),
+            }
+        }
+        for (source, channels) in sources {
+            let from = match find(&g, &source) {
+                Some(i) => i,
+                None => {
+                    g.nodes.push(Node {
+                        name: source.clone(),
+                        kind: NodeKind::Missing,
+                        lines: ["not on the network".to_owned(), String::new()],
+                        badge: None,
+                        of: None,
+                        tx: 1,
+                        rx: 0,
+                    });
+                    g.nodes.len() - 1
+                }
+            };
+            let sum = summary_of(links, &source, &dev.name);
+            let set = dev
+                .settings
+                .as_ref()
+                .and_then(|s| s.latency_active_us.or(s.latency_configured_us));
+            let label = sum
+                .map(|s| s.latency_us)
+                .filter(|&l| l > 0)
+                .or(set)
+                .map_or_else(|| "–".to_owned(), ms);
+            let chans = if channels == 1 {
+                "1 channel".to_owned()
+            } else {
+                format!("{channels} channels")
+            };
+            let title = match sum {
+                Some(s) => format!(
+                    "{} → {} · {chans} · latency {} · worst peak {} · late packets {} in 1 h, {} in 24 h",
+                    g.nodes[from].name,
+                    dev.name,
+                    ms(s.latency_us),
+                    ms(s.peak_us),
+                    num(s.late_1h),
+                    num(s.late_24h)
+                ),
+                None => format!(
+                    "{} → {} · {chans} · not measured: the receiver reports no packet times",
+                    g.nodes[from].name, dev.name
+                ),
+            };
+            g.edges.push(Edge {
+                sel: Sel::Link {
+                    from: g.nodes[from].name.clone(),
+                    to: dev.name.clone(),
+                },
+                from,
+                to,
+                state: sum.map_or(State::Unknown, link_state),
+                label,
+                lost: sum
+                    .filter(|s| s.late_1h > 0)
+                    .map(|s| format!("{} late", num(s.late_1h))),
+                title,
+                weight: sum.map_or((0, 0), |s| (s.late_1h, per_mille(s))),
+            });
+        }
+    }
+    for b in links.map(|l| l.bridges.as_slice()).unwrap_or_default() {
+        let Some(dev) = find(&g, &b.device) else {
+            continue;
+        };
+        let name = b.last.asio_name().to_owned();
+        g.nodes.push(Node {
+            name: name.clone(),
+            kind: NodeKind::Asio,
+            lines: [
+                "the bridge's ASIO side".to_owned(),
+                "not a Dante device".to_owned(),
+            ],
+            badge: None,
+            of: Some(dev),
+            tx: 0,
+            rx: 0,
+        });
+        let asio = g.nodes.len() - 1;
+        let (to_dante, to_asio) = b
+            .last
+            .card_us()
+            .unwrap_or((b.last.asio_to_dante_us(), b.last.dante_to_asio_us()));
+        // To Dante: what the bridge plays out of ASIO (its from-ASIO side).
+        for (dante, us, under) in [
+            (true, to_dante, b.from_asio_underruns_1h),
+            (false, to_asio, b.to_asio_underruns_1h),
+        ] {
+            let (a, z) = if dante {
+                (name.as_str(), "Dante")
+            } else {
+                ("Dante", name.as_str())
+            };
+            g.edges.push(Edge {
+                sel: Sel::Bridge {
+                    device: g.nodes[dev].name.clone(),
+                    to_dante: dante,
+                },
+                from: if dante { asio } else { dev },
+                to: if dante { dev } else { asio },
+                state: if under > 0 { State::Bad } else { State::Ok },
+                label: ms(us),
+                lost: (under > 0).then(|| {
+                    format!(
+                        "{} underrun{}",
+                        num(under),
+                        if under == 1 { "" } else { "s" }
+                    )
+                }),
+                title: format!(
+                    "{a} → {z} inside {} · held {} · underruns {} in 1 h",
+                    g.nodes[dev].name,
+                    ms(us),
+                    num(under)
+                ),
+                weight: (under, 0),
+            });
+        }
+    }
+    g
+}
+
+/// The connection to show when none is chosen: the worst (most lost, then
+/// the peak closest to its latency), the first of equals.
+pub fn worst(g: &Graph) -> Option<&Edge> {
+    g.edges
+        .iter()
+        .fold(None, |best: Option<&Edge>, e| match best {
+            Some(b) if (b.state, b.weight) >= (e.state, e.weight) => Some(b),
+            _ => Some(e),
+        })
+}
+
+/// The edge `sel` names, if the graph has it.
+pub fn edge_of<'a>(g: &'a Graph, sel: &Sel) -> Option<&'a Edge> {
+    g.edges.iter().find(|e| e.sel.same(sel))
+}
+
+// ---- layout ----
+
+pub const WIDTH: f64 = 1120.0;
+const COL_X: [f64; 3] = [30.0, 455.0, 880.0];
+const BOX_W: f64 = 210.0;
+const BOX_H: f64 = 58.0;
+const GAP: f64 = 26.0;
+/// Room between a bridge and its ASIO side, for the two lines' labels.
+const ASIO_GAP: f64 = 72.0;
+const TOP: f64 = 46.0;
+const LABEL_H: f64 = 20.0;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rect {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+impl Rect {
+    fn mid_y(&self) -> f64 {
+        self.y + self.h / 2.0
+    }
+
+    fn hits(&self, o: &Rect) -> bool {
+        self.x < o.x + o.w && o.x < self.x + self.w && self.y < o.y + o.h && o.y < self.y + self.h
+    }
+}
+
+/// One line's path and its label's box.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Geo {
+    pub d: String,
+    pub label: Rect,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Placed {
+    pub height: f64,
+    pub nodes: Vec<Rect>,
+    /// Each node's column: 0 sends, 1 sends and receives, 2 receives.
+    pub cols: Vec<usize>,
+    pub edges: Vec<Geo>,
+}
+
+/// Each node's column by its part: only sending, both, only receiving. A
+/// device with no connection goes by what its channels allow.
+fn columns(g: &Graph) -> Vec<usize> {
+    let mut cols: Vec<usize> = g
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            let dante = |e: &&Edge| matches!(e.sel, Sel::Link { .. }) && e.from != e.to;
+            let outs = g.edges.iter().filter(dante).filter(|e| e.from == i).count();
+            let ins = g.edges.iter().filter(dante).filter(|e| e.to == i).count();
+            match (outs > 0, ins > 0) {
+                (true, false) => 0,
+                (false, true) => 2,
+                (true, true) => 1,
+                (false, false) => match (n.tx > 0, n.rx > 0) {
+                    (true, false) => 0,
+                    (false, true) => 2,
+                    _ => 1,
+                },
+            }
+        })
+        .collect();
+    for (i, n) in g.nodes.iter().enumerate() {
+        if let Some(of) = n.of {
+            cols[i] = cols[of];
+        }
+    }
+    cols
+}
+
+/// A cubic's point at `t`.
+fn bezier(p: [(f64, f64); 4], t: f64) -> (f64, f64) {
+    let u = 1.0 - t;
+    let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+    (
+        (0..4).map(|i| w[i] * p[i].0).sum(),
+        (0..4).map(|i| w[i] * p[i].1).sum(),
+    )
+}
+
+fn label_width(e: &Edge) -> f64 {
+    let chars = e.label.chars().count() + e.lost.as_ref().map_or(0, |l| l.chars().count() + 3);
+    chars as f64 * 6.4 + 18.0
+}
+
+/// Where everything sits: the boxes in three columns, each ordered to keep
+/// its lines short, a bridge's ASIO side right under it; the lines as
+/// curves between the columns, as arcs inside one, as a loop for a device
+/// subscribed to itself; each label on its line where it covers no box and
+/// no other label.
+pub fn layout(g: &Graph) -> Placed {
+    let cols = columns(g);
+    let lower = |i: usize| g.nodes[i].name.to_lowercase();
+    // A column's order: its devices (an ASIO side follows its bridge).
+    let mut order: [Vec<usize>; 3] = Default::default();
+    for (i, n) in g.nodes.iter().enumerate() {
+        if n.kind != NodeKind::Asio {
+            order[cols[i]].push(i);
+        }
+    }
+    for col in &mut order {
+        col.sort_by_key(|&i| lower(i));
+    }
+    let asio_of = |i: usize| g.nodes.iter().position(|n| n.of == Some(i));
+    let place = |order: &[Vec<usize>; 3]| -> (Vec<Rect>, f64) {
+        let mut rects = vec![
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: BOX_W,
+                h: BOX_H
+            };
+            g.nodes.len()
+        ];
+        let mut heights = [0.0f64; 3];
+        for (c, col) in order.iter().enumerate() {
+            let mut y = 0.0;
+            for &i in col {
+                rects[i] = Rect {
+                    x: COL_X[c],
+                    y,
+                    w: BOX_W,
+                    h: BOX_H,
+                };
+                y += BOX_H + GAP;
+                if let Some(a) = asio_of(i) {
+                    y += ASIO_GAP - GAP;
+                    rects[a] = Rect {
+                        x: COL_X[c],
+                        y,
+                        w: BOX_W,
+                        h: BOX_H,
+                    };
+                    y += BOX_H + GAP;
+                }
+            }
+            heights[c] = (y - GAP).max(0.0);
+        }
+        let tallest = heights.iter().copied().fold(BOX_H, f64::max);
+        for (i, r) in rects.iter_mut().enumerate() {
+            r.y += TOP + (tallest - heights[cols[i]]) / 2.0;
+        }
+        (rects, TOP + tallest + 24.0)
+    };
+    let (mut rects, mut height) = place(&order);
+    // Each column in turn by the mean height of its devices' partners in
+    // the other columns: connected devices end up at the same height.
+    for _ in 0..3 {
+        for c in [1, 0, 2] {
+            let key = |i: usize| -> f64 {
+                let partners: Vec<f64> = g
+                    .edges
+                    .iter()
+                    .filter(|e| matches!(e.sel, Sel::Link { .. }))
+                    .filter_map(|e| match (e.from == i, e.to == i) {
+                        (true, false) => Some(e.to),
+                        (false, true) => Some(e.from),
+                        _ => None,
+                    })
+                    .filter(|&o| cols[o] != c)
+                    .map(|o| rects[o].mid_y())
+                    .collect();
+                if partners.is_empty() {
+                    rects[i].mid_y()
+                } else {
+                    partners.iter().sum::<f64>() / partners.len() as f64
+                }
+            };
+            let mut keyed: Vec<(f64, String, usize)> =
+                order[c].iter().map(|&i| (key(i), lower(i), i)).collect();
+            keyed.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+            order[c] = keyed.into_iter().map(|k| k.2).collect();
+            (rects, height) = place(&order);
+        }
+    }
+    // The sides a line leaves and enters by.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Side {
+        Left,
+        Right,
+    }
+    let sides = |e: &Edge| -> Option<(Side, Side)> {
+        if !matches!(e.sel, Sel::Link { .. }) || e.from == e.to {
+            return None;
+        }
+        Some(match cols[e.from].cmp(&cols[e.to]) {
+            std::cmp::Ordering::Less => (Side::Right, Side::Left),
+            std::cmp::Ordering::Greater => (Side::Left, Side::Right),
+            std::cmp::Ordering::Equal if rects[e.from].y < rects[e.to].y => {
+                (Side::Right, Side::Right)
+            }
+            std::cmp::Ordering::Equal => (Side::Left, Side::Left),
+        })
+    };
+    // A line's height on a box's side: the side's lines spread out, in the
+    // order of their other ends.
+    let port = |node: usize, side: Side, edge: usize| -> f64 {
+        let mut here: Vec<(f64, usize)> = g
+            .edges
+            .iter()
+            .enumerate()
+            .filter_map(|(k, e)| {
+                let (a, z) = sides(e)?;
+                if e.from == node && a == side {
+                    Some((rects[e.to].mid_y(), k))
+                } else if e.to == node && z == side {
+                    Some((rects[e.from].mid_y(), k))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        here.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        let at = here.iter().position(|&(_, k)| k == edge).unwrap_or(0);
+        rects[node].y + rects[node].h * (at + 1) as f64 / (here.len() + 1) as f64
+    };
+    let mut edges: Vec<Geo> = Vec::with_capacity(g.edges.len());
+    for (k, e) in g.edges.iter().enumerate() {
+        let (a, z) = (rects[e.from], rects[e.to]);
+        let lw = label_width(e);
+        // The path, and where its label may sit, best first.
+        let (d, spots): (String, Vec<(f64, f64)>) = if let Sel::Bridge { to_dante, .. } = e.sel {
+            // Two short vertical lines between the bridge and its ASIO side.
+            let (dev, asio) = if to_dante { (z, a) } else { (a, z) };
+            let x = dev.x + dev.w * if to_dante { 0.27 } else { 0.73 };
+            let (y1, y2) = if to_dante {
+                (asio.y, dev.y + dev.h)
+            } else {
+                (dev.y + dev.h, asio.y)
+            };
+            (
+                format!("M{x:.1},{y1:.1} L{x:.1},{y2:.1}"),
+                // One label above the other: a count of underruns is wide.
+                vec![(x, (y1 + y2) / 2.0 + if to_dante { -12.0 } else { 12.0 })],
+            )
+        } else if e.from == e.to {
+            let (x, y) = (a.x + a.w, a.mid_y());
+            (
+                format!(
+                    "M{x:.1},{:.1} C{:.1},{:.1} {:.1},{:.1} {x:.1},{:.1}",
+                    y - 12.0,
+                    x + 64.0,
+                    y - 34.0,
+                    x + 64.0,
+                    y + 34.0,
+                    y + 12.0
+                ),
+                vec![(x + 48.0 + lw / 2.0, y)],
+            )
+        } else {
+            let (sa, sz) = sides(e).unwrap_or((Side::Right, Side::Left));
+            let x1 = if sa == Side::Right { a.x + a.w } else { a.x };
+            let x2 = if sz == Side::Right { z.x + z.w } else { z.x };
+            let (y1, y2) = (port(e.from, sa, k), port(e.to, sz, k));
+            let p = if sa == sz {
+                // Inside one column: an arc out of the side and back.
+                let out = (36.0 + (y2 - y1).abs() * 0.25).min(110.0)
+                    * if sa == Side::Right { 1.0 } else { -1.0 };
+                [(x1, y1), (x1 + out, y1), (x2 + out, y2), (x2, y2)]
+            } else {
+                let bend = ((x2 - x1).abs() * 0.45).max(60.0) * (x2 - x1).signum();
+                [(x1, y1), (x1 + bend, y1), (x2 - bend, y2), (x2, y2)]
+            };
+            (
+                format!(
+                    "M{:.1},{:.1} C{:.1},{:.1} {:.1},{:.1} {:.1},{:.1}",
+                    p[0].0, p[0].1, p[1].0, p[1].1, p[2].0, p[2].1, p[3].0, p[3].1
+                ),
+                [0.5, 0.36, 0.64, 0.26, 0.74, 0.18, 0.82]
+                    .iter()
+                    .map(|&t| bezier(p, t))
+                    .collect(),
+            )
+        };
+        let boxed = |(x, y): (f64, f64)| Rect {
+            x: x - lw / 2.0,
+            y: y - LABEL_H / 2.0,
+            w: lw,
+            h: LABEL_H,
+        };
+        let free = |r: &Rect| {
+            !rects.iter().any(|n| n.hits(r)) && !edges.iter().any(|o: &Geo| o.label.hits(r))
+        };
+        // On the line first; with every place there taken, beside it.
+        let label = [0.0, 22.0, -22.0, 44.0, -44.0]
+            .iter()
+            .flat_map(|&dy| spots.iter().map(move |&(x, y)| boxed((x, y + dy))))
+            .find(free)
+            .unwrap_or_else(|| boxed(spots[0]));
+        edges.push(Geo { d, label });
+    }
+    Placed {
+        height,
+        nodes: rects,
+        cols,
+        edges,
+    }
+}
+
+// ---- drawing ----
+
+/// `text` safe inside SVG text and attributes.
+pub fn esc(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// `name` cut to what a box holds.
+fn short(name: &str, max: usize) -> String {
+    if name.chars().count() <= max {
+        name.to_owned()
+    } else {
+        let cut: String = name.chars().take(max - 1).collect();
+        format!("{cut}…")
+    }
+}
+
+/// More connections than this and a line shows its number only when it
+/// has a problem, is chosen or is pointed at: 34 labels on a mesh hide it.
+pub const QUIET_OVER: usize = 12;
+
+/// The schema as SVG: a box per node (`data-node`), a line per connection
+/// (`data-edge`: its hash), `chosen` standing out with its two ends.
+pub fn svg(g: &Graph, p: &Placed, chosen: Option<&Sel>) -> String {
+    let dense = g.edges.len() > QUIET_OVER;
+    let mut s = format!(
+        r#"<svg class="map{}{}" viewBox="0 0 {WIDTH} {:.0}" role="img" aria-label="Devices and their connections">"#,
+        if chosen.is_some() { " has-sel" } else { "" },
+        if dense { " dense" } else { "" },
+        p.height
+    );
+    s.push_str("<defs>");
+    for c in ["ok", "warn", "bad", "unknown"] {
+        s.push_str(&format!(
+            r#"<marker id="map-arrow-{c}" class="arrow {c}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker>"#
+        ));
+    }
+    s.push_str("</defs>");
+    for (i, title) in ["sends", "sends and receives", "receives"]
+        .iter()
+        .enumerate()
+    {
+        if p.cols.contains(&i) {
+            s.push_str(&format!(
+                r#"<text class="col-title" x="{}" y="22">{title}</text>"#,
+                COL_X[i]
+            ));
+        }
+    }
+    let on = |e: &Edge| chosen.is_some_and(|c| c.same(&e.sel));
+    let ends: Vec<usize> = g
+        .edges
+        .iter()
+        .filter(|e| on(e))
+        .flat_map(|e| [e.from, e.to])
+        .collect();
+    // The chosen line last: on top of the others.
+    let mut order: Vec<usize> = (0..g.edges.len()).collect();
+    order.sort_by_key(|&k| on(&g.edges[k]));
+    for k in order {
+        let (e, geo) = (&g.edges[k], &p.edges[k]);
+        let class = e.state.class();
+        let (from, to) = (&g.nodes[e.from].name, &g.nodes[e.to].name);
+        let l = geo.label;
+        let lost = e.lost.as_ref().map_or(String::new(), |t| {
+            format!(r#"<tspan class="lost"> · {}</tspan>"#, esc(t))
+        });
+        s.push_str(&format!(
+            r#"<g class="edge {class}{}{}" data-testid="map-edge" data-edge="{}" data-from="{}" data-to="{}" data-state="{class}"><path class="line" d="{}" marker-end="url(#map-arrow-{class})"/><g class="lbl"><rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.0}" rx="10"/><text x="{:.1}" y="{:.1}">{}{lost}</text></g><path class="hit" d="{}"><title>{}</title></path></g>"#,
+            if on(e) { " sel" } else { "" },
+            if dense && matches!(e.state, State::Ok | State::Unknown) {
+                " quiet"
+            } else {
+                ""
+            },
+            esc(&e.sel.hash()),
+            esc(from),
+            esc(to),
+            geo.d,
+            l.x,
+            l.y,
+            l.w,
+            l.h,
+            l.x + l.w / 2.0,
+            l.y + 14.0,
+            esc(&e.label),
+            geo.d,
+            esc(&e.title),
+        ));
+    }
+    for (i, n) in g.nodes.iter().enumerate() {
+        let r = p.nodes[i];
+        let kind = match n.kind {
+            NodeKind::Device => "",
+            NodeKind::Missing => " missing",
+            NodeKind::Asio => " asio",
+        };
+        let badge = n.badge.as_ref().map_or(String::new(), |(text, good)| {
+            format!(
+                r#"<text class="badge{}" x="{:.1}" y="{:.1}" text-anchor="end">{}</text>"#,
+                if *good { "" } else { " bad" },
+                r.x + r.w - 10.0,
+                r.y + 20.0,
+                esc(text)
+            )
+        });
+        let room = if n.badge.is_some() { 17 } else { 24 };
+        s.push_str(&format!(
+            r#"<g class="node{kind}{}" data-testid="map-node" data-node="{}"><title>{}</title><rect x="{:.1}" y="{:.1}" width="{:.0}" height="{:.0}" rx="10"/><text class="name" x="{:.1}" y="{:.1}">{}</text><text class="sub" x="{:.1}" y="{:.1}">{}</text><text class="sub" x="{:.1}" y="{:.1}">{}</text>{badge}</g>"#,
+            if ends.contains(&i) { " rel" } else { "" },
+            esc(&n.name),
+            esc(&n.name),
+            r.x,
+            r.y,
+            r.w,
+            r.h,
+            r.x + 12.0,
+            r.y + 22.0,
+            esc(&short(&n.name, room)),
+            r.x + 12.0,
+            r.y + 39.0,
+            esc(&short(&n.lines[0], 32)),
+            r.x + 12.0,
+            r.y + 52.0,
+            esc(&short(&n.lines[1], 32)),
+        ));
+    }
+    s.push_str("</svg>");
+    s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dcontroller_api::{
+        BridgePoint, BridgeSummary, Channels, Clock, Device, RxChannel, Source, TxChannel,
+    };
+
+    fn dev(name: &str, tx: usize, rx: &[Option<&str>]) -> Device {
+        Device {
+            name: name.into(),
+            channels: Some(Channels {
+                tx: (1..=tx)
+                    .map(|c| TxChannel {
+                        channel: c as u16,
+                        label: format!("{c:02}"),
+                    })
+                    .collect(),
+                rx: rx
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| RxChannel {
+                        channel: i as u16 + 1,
+                        label: format!("{:02}", i + 1),
+                        source: s.map(|d| Source {
+                            channel: "01".into(),
+                            device: d.into(),
+                        }),
+                        ..RxChannel::default()
+                    })
+                    .collect(),
+            }),
+            ..Device::default()
+        }
+    }
+
+    fn net() -> Devices {
+        Devices {
+            devices: vec![
+                dev("amp", 0, &[Some("desk"), Some("desk")]),
+                dev("bridge", 2, &[Some("player"), Some("PLAYER")]),
+                dev("desk", 4, &[Some("player"), Some("stage"), None]),
+                dev("idle", 2, &[None]),
+                dev("player", 2, &[]),
+                dev("stage", 4, &[Some("desk"), Some("gone")]),
+                dev("stream", 0, &[Some("bridge")]),
+            ],
+            ..Devices::default()
+        }
+    }
+
+    fn sum(from: &str, to: &str, lat: u32, peak: u32, late_1h: u64, late_24h: u64) -> LinkSummary {
+        LinkSummary {
+            from: from.into(),
+            to: to.into(),
+            latency_us: lat,
+            peak_us: peak,
+            late_1h,
+            late_24h,
+            ..LinkSummary::default()
+        }
+    }
+
+    fn links() -> Links {
+        Links {
+            now: 0,
+            links: vec![
+                sum("Player", "bridge", 8360, 13_280, 67_004, 131_870),
+                sum("player", "desk", 1000, 410, 0, 0),
+                sum("desk", "amp", 1000, 950, 0, 0),
+                sum("bridge", "stream", 13_040, 4100, 0, 2),
+            ],
+            bridges: vec![BridgeSummary {
+                device: "BRIDGE".into(),
+                last: BridgePoint {
+                    card_asio_to_dante_us: Some(7300),
+                    card_dante_to_asio_us: Some(7500),
+                    driver: Some("SoundGrid".into()),
+                    ..BridgePoint::default()
+                },
+                to_asio_underruns_1h: 2,
+                from_asio_underruns_1h: 0,
+            }],
+        }
+    }
+
+    fn edge<'a>(g: &'a Graph, from: &str, to: &str) -> &'a Edge {
+        g.edges
+            .iter()
+            .find(|e| g.nodes[e.from].name == from && g.nodes[e.to].name == to)
+            .unwrap_or_else(|| panic!("no edge {from} → {to}"))
+    }
+
+    #[test]
+    fn a_choice_and_its_hash_name_each_other() {
+        let l = Sel::Link {
+            from: "desk a/b".into(),
+            to: "amp-1".into(),
+        };
+        assert_eq!(l.hash(), "#map/link/desk%20a%2Fb/amp-1");
+        assert_eq!(Sel::from_hash(&l.hash()), Some(l.clone()));
+        let b = Sel::Bridge {
+            device: "dsg".into(),
+            to_dante: false,
+        };
+        assert_eq!(b.hash(), "#map/bridge/dsg/to-asio");
+        assert_eq!(Sel::from_hash(&b.hash()), Some(b.clone()));
+        assert_eq!(l.device(), "amp-1");
+        assert_eq!(b.device(), "dsg");
+        for bad in [
+            "#map",
+            "#map/link/a",
+            "#map/bridge/a/up",
+            "#map/link/a/b/c",
+            "#map/link/%zz/b",
+            "#devices/a",
+        ] {
+            assert_eq!(Sel::from_hash(bad), None, "{bad}");
+        }
+        assert!(l.same(&Sel::Link {
+            from: "DESK A/B".into(),
+            to: "Amp-1".into()
+        }));
+        assert!(!l.same(&b));
+        assert_eq!(decode(&encode("zvuk ô→")).as_deref(), Some("zvuk ô→"));
+    }
+
+    #[test]
+    fn the_graph_has_a_line_per_subscribed_pair_with_its_figures() {
+        let l = links();
+        let g = build(&net(), Some(&l));
+        // 7 devices, the source that is gone, the bridge's ASIO side.
+        assert_eq!(g.nodes.len(), 9);
+        assert_eq!(g.nodes[7].name, "gone");
+        assert_eq!(g.nodes[7].kind, NodeKind::Missing);
+        assert_eq!(g.nodes[8].name, "SoundGrid");
+        assert_eq!(g.nodes[8].of, Some(1));
+        // Two channels from one source are one line, the names' case aside.
+        let bad = edge(&g, "player", "bridge");
+        assert_eq!(bad.state, State::Bad);
+        assert_eq!(bad.label, "8.36 ms");
+        assert_eq!(bad.lost.as_deref(), Some("67 004 late"));
+        assert!(bad.title.contains("2 channels"));
+        assert_eq!(edge(&g, "player", "desk").state, State::Ok);
+        // A peak at 95 % of the latency, and late packets earlier today.
+        assert_eq!(edge(&g, "desk", "amp").state, State::Warn);
+        assert_eq!(edge(&g, "bridge", "stream").state, State::Warn);
+        // Not recorded: no figures, the line is still there.
+        let unknown = edge(&g, "desk", "stage");
+        assert_eq!(unknown.state, State::Unknown);
+        assert_eq!(unknown.label, "–");
+        assert_eq!(edge(&g, "gone", "stage").state, State::Unknown);
+        // The bridge's two delays, named by its driver.
+        let up = edge(&g, "SoundGrid", "bridge");
+        assert_eq!(
+            up.sel,
+            Sel::Bridge {
+                device: "bridge".into(),
+                to_dante: true
+            }
+        );
+        assert_eq!((up.label.as_str(), up.state), ("7.30 ms", State::Ok));
+        let down = edge(&g, "bridge", "SoundGrid");
+        assert_eq!((down.label.as_str(), down.state), ("7.50 ms", State::Bad));
+        assert_eq!(down.lost.as_deref(), Some("2 underruns"));
+        assert_eq!(g.edges.len(), 9);
+        // The worst shows when nothing is chosen.
+        assert_eq!(worst(&g).map(|e| &e.sel), Some(&bad.sel));
+        assert!(
+            edge_of(
+                &g,
+                &Sel::Link {
+                    from: "PLAYER".into(),
+                    to: "Bridge".into()
+                }
+            )
+            .is_some()
+        );
+        // Without summaries every line is unknown; no bridge side.
+        let plain = build(&net(), None);
+        assert_eq!(plain.nodes.len(), 8);
+        assert!(plain.edges.iter().all(|e| e.state == State::Unknown));
+        assert_eq!(worst(&Graph::default()), None);
+    }
+
+    #[test]
+    fn devices_sit_in_three_columns_by_their_part_with_no_overlap() {
+        let l = links();
+        let g = build(&net(), Some(&l));
+        let p = layout(&g);
+        let col = |name: &str| p.cols[g.nodes.iter().position(|n| n.name == name).unwrap()];
+        assert_eq!(col("player"), 0);
+        assert_eq!(col("gone"), 0);
+        assert_eq!(col("desk"), 1);
+        assert_eq!(col("stage"), 1);
+        assert_eq!(col("bridge"), 1);
+        assert_eq!(col("SoundGrid"), 1);
+        assert_eq!(col("amp"), 2);
+        assert_eq!(col("stream"), 2);
+        // Not connected: by its channels (TX and RX: the middle).
+        assert_eq!(col("idle"), 1);
+        for (i, a) in p.nodes.iter().enumerate() {
+            assert!(a.y >= TOP && a.y + a.h <= p.height, "{i} inside");
+            for b in &p.nodes[i + 1..] {
+                assert!(!a.hits(b), "boxes overlap");
+            }
+        }
+        // The ASIO side sits right under its bridge.
+        let (b, a) = (p.nodes[1], p.nodes[8]);
+        assert_eq!(a.x, b.x);
+        assert_eq!(a.y, b.y + b.h + ASIO_GAP);
+        // Every label is on the canvas, off the boxes and off each other.
+        for (i, e) in p.edges.iter().enumerate() {
+            assert!(
+                e.label.x >= 0.0 && e.label.x + e.label.w <= WIDTH,
+                "label {i} on canvas"
+            );
+            assert!(
+                !p.nodes.iter().any(|n| n.hits(&e.label)),
+                "label {i} on a box"
+            );
+            for o in &p.edges[i + 1..] {
+                assert!(!e.label.hits(&o.label), "labels overlap");
+            }
+        }
+        // The same network lays out the same way every time.
+        assert_eq!(layout(&g), p);
+    }
+
+    #[test]
+    fn a_dense_network_keeps_quiet_about_its_good_lines() {
+        // 14 receivers of one source: more lines than a schema can label.
+        let mut devices = vec![dev("src", 2, &[])];
+        for i in 0..14 {
+            devices.push(dev(&format!("rx{i:02}"), 0, &[Some("src")]));
+        }
+        let d = Devices {
+            devices,
+            ..Devices::default()
+        };
+        let l = Links {
+            links: vec![
+                sum("src", "rx00", 1000, 2000, 5, 5),
+                sum("src", "rx01", 1000, 100, 0, 0),
+            ],
+            ..Links::default()
+        };
+        let g = build(&d, Some(&l));
+        assert_eq!(g.edges.len(), 14);
+        let s = svg(&g, &layout(&g), None);
+        assert!(s.starts_with(r#"<svg class="map dense" "#));
+        // The one with late packets keeps its number; the good and the
+        // unmeasured ones show theirs when pointed at.
+        assert!(s.contains(r#"class="edge bad" data-testid"#));
+        assert_eq!(s.matches(r#"class="edge ok quiet""#).count(), 1);
+        assert_eq!(s.matches(r#"class="edge unknown quiet""#).count(), 12);
+    }
+
+    #[test]
+    fn a_device_subscribed_to_itself_is_a_loop_on_its_box() {
+        let d = Devices {
+            devices: vec![dev("solo", 2, &[Some("solo")])],
+            ..Devices::default()
+        };
+        let g = build(&d, None);
+        assert_eq!((g.nodes.len(), g.edges.len()), (1, 1));
+        let p = layout(&g);
+        assert_eq!(p.cols, [1]);
+        assert!(p.edges[0].d.starts_with('M') && p.edges[0].d.contains('C'));
+        assert!(!p.nodes[0].hits(&p.edges[0].label));
+    }
+
+    #[test]
+    fn the_drawing_names_every_box_and_line_and_escapes_names() {
+        let mut d = net();
+        d.devices[0].name = "amp<1>&\"x\"".into();
+        d.devices[4].clock = Some(Clock {
+            grandmaster: true,
+            ..Clock::default()
+        });
+        d.devices[2].clock = Some(Clock {
+            sync: "none".into(),
+            ..Clock::default()
+        });
+        let l = links();
+        let g = build(&d, Some(&l));
+        let p = layout(&g);
+        let chosen = Sel::Link {
+            from: "player".into(),
+            to: "bridge".into(),
+        };
+        let s = svg(&g, &p, Some(&chosen));
+        assert!(s.starts_with(r#"<svg class="map has-sel""#));
+        assert_eq!(s.matches(r#"data-testid="map-node""#).count(), 9);
+        assert_eq!(s.matches(r#"data-testid="map-edge""#).count(), 9);
+        assert!(s.contains(r#"data-node="amp&lt;1&gt;&amp;&quot;x&quot;""#));
+        assert!(!s.contains("amp<1>"));
+        assert!(s.contains(r##"class="edge bad sel" data-testid="map-edge" data-edge="#map/link/player/bridge" data-from="player" data-to="bridge" data-state="bad""##));
+        assert!(s.contains(r#"<tspan class="lost"> · 67 004 late</tspan>"#));
+        assert!(s.contains(">PTP GM</text>"));
+        assert!(s.contains(r#"class="badge bad""#));
+        assert_eq!(s.matches(" rel\"").count(), 2);
+        assert!(s.contains(r#"class="node asio""#));
+        assert!(s.contains(r#"class="node missing""#));
+        // Nothing chosen: nothing stands out.
+        assert!(svg(&g, &p, None).starts_with(r#"<svg class="map" "#));
+        // A small network shows every line's number.
+        assert!(!s.contains(" quiet"));
+        assert_eq!(num(1_234_567), "1 234 567");
+        assert_eq!(num(12), "12");
+    }
+}

@@ -322,6 +322,23 @@ impl Store {
     /// `device`'s bridge figures from `from` to `to` (unix seconds), at most
     /// [`api::HISTORY_POINTS`] of them, evenly thinned, oldest first.
     pub fn bridge(&self, device: &str, from: i64, to: i64) -> Result<api::Bridge, String> {
+        let rows = self.bridge_points(device, from, to)?;
+        Ok(api::Bridge {
+            device: device.to_owned(),
+            from,
+            to,
+            points: thin(rows, usize::try_from(api::HISTORY_POINTS).unwrap_or(1500)),
+        })
+    }
+
+    /// Every stored read of `device`'s bridge figures from `from` to `to`,
+    /// oldest first.
+    fn bridge_points(
+        &self,
+        device: &str,
+        from: i64,
+        to: i64,
+    ) -> Result<Vec<api::BridgePoint>, String> {
         let db = self.conn();
         let mut q = db
             .prepare_cached(
@@ -363,12 +380,7 @@ impl Store {
             .map_err(|e| e.to_string())?
             .collect::<Result<_, _>>()
             .map_err(|e| e.to_string())?;
-        Ok(api::Bridge {
-            device: device.to_owned(),
-            from,
-            to,
-            points: thin(rows, usize::try_from(api::HISTORY_POINTS).unwrap_or(1500)),
-        })
+        Ok(rows)
     }
 
     /// Records `flow` as `device`'s slot `slot` from `now` on, when it
@@ -607,6 +619,218 @@ impl Store {
         Ok(out)
     }
 
+    /// Every connection (a receiver's flows from one source device) with
+    /// samples in the last hour before `now`, and every bridge device read
+    /// in the last five minutes (dcontroller #122).
+    pub fn links(&self, now: i64) -> Result<api::Links, String> {
+        let hour = now - 3600;
+        // Whole minutes older than the hour come from the minute tier.
+        let hour_floor = hour - hour.rem_euclid(60);
+        let day = now - 24 * 3600;
+        let step = 3600 / api::SPARK_POINTS;
+        let points = usize::try_from(api::SPARK_POINTS).unwrap_or(0);
+        let db = self.conn();
+        let mut out = api::Links {
+            now,
+            ..api::Links::default()
+        };
+        let mut q = db
+            .prepare(
+                "SELECT d.name, d.id FROM second s JOIN device d ON d.id = s.device
+                 WHERE s.t > ?1 AND s.t <= ?2 GROUP BY d.id ORDER BY d.name COLLATE NOCASE",
+            )
+            .map_err(|e| e.to_string())?;
+        let devices: Vec<(String, i64)> = q
+            .query_map(params![hour, now], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        // Each stored value against the flow its slot carried then (before
+        // a slot's first description: that description).
+        const FLOW: &str = "LEFT JOIN flow f ON f.device = x.device AND f.slot = x.slot
+            AND f.since = COALESCE(
+                (SELECT MAX(since) FROM flow WHERE device = x.device AND slot = x.slot AND since <= x.t),
+                (SELECT MIN(since) FROM flow WHERE device = x.device AND slot = x.slot))";
+        let mut per = db
+            .prepare_cached(&format!(
+                "SELECT x.slot, COALESCE(f.since, 0), COALESCE(f.latency_us, 0), COALESCE(f.sources, '[]'),
+                        CASE WHEN x.t > ?2 THEN (x.t - ?2 - 1) / ?4 ELSE -1 END AS b,
+                        MAX(x.peak), SUM(x.peak), COUNT(*), SUM(x.late), MAX(x.t)
+                 FROM second x {FLOW}
+                 WHERE x.device = ?1 AND x.t >= ?5 AND x.t <= ?3 GROUP BY x.slot, b, f.since"
+            ))
+            .map_err(|e| e.to_string())?;
+        let mut older = db
+            .prepare_cached(&format!(
+                "SELECT COALESCE(f.sources, '[]'), SUM(x.late) FROM minute x {FLOW}
+                 WHERE x.device = ?1 AND x.t >= ?2 AND x.t < ?3 GROUP BY f.sources"
+            ))
+            .map_err(|e| e.to_string())?;
+        let source = |text: &str| -> String {
+            let list: Vec<String> = serde_json::from_str(text).unwrap_or_default();
+            if list.is_empty() {
+                "?".to_owned()
+            } else {
+                list.join(", ")
+            }
+        };
+        let count = |v: i64| u64::try_from(v).unwrap_or(0);
+        for (name, id) in devices {
+            // Per source: its summary, its flows (slot, since) and each
+            // flow's sum and count of peaks.
+            type Flows = Vec<((u16, i64), u64, u64)>;
+            type Found = (api::LinkSummary, Flows, Option<(u32, u32)>);
+            let mut found: Vec<Found> = Vec::new();
+            let rows = per
+                .query_map(params![id, hour, now, step, hour_floor], |r| {
+                    Ok((
+                        (r.get::<_, u16>(0)?, r.get::<_, i64>(1)?),
+                        r.get::<_, u32>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, i64>(4)?,
+                        r.get::<_, u32>(5)?,
+                        r.get::<_, i64>(6)?,
+                        r.get::<_, i64>(7)?,
+                        r.get::<_, i64>(8)?,
+                        r.get::<_, i64>(9)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let (flow, lat, sources, b, peak, sum, n, late, last) =
+                    row.map_err(|e| e.to_string())?;
+                let from = source(&sources);
+                let i = match found
+                    .iter()
+                    .position(|(l, _, _)| l.from.eq_ignore_ascii_case(&from))
+                {
+                    Some(i) => i,
+                    None => {
+                        found.push((
+                            api::LinkSummary {
+                                from,
+                                to: name.clone(),
+                                spark: vec![None; points],
+                                ..api::LinkSummary::default()
+                            },
+                            Vec::new(),
+                            None,
+                        ));
+                        found.len() - 1
+                    }
+                };
+                let (l, flows, best) = &mut found[i];
+                l.late_24h += count(late);
+                if b < 0 {
+                    // The seconds between the minute tier and the hour.
+                    continue;
+                }
+                l.late_1h += count(late);
+                l.age_s = Some(l.age_s.map_or(now - last, |a| a.min(now - last)));
+                match flows.iter_mut().find(|(k, _, _)| *k == flow) {
+                    Some((_, s, c)) => {
+                        *s += count(sum);
+                        *c += count(n);
+                    }
+                    None => flows.push((flow, count(sum), count(n))),
+                }
+                let per_mille = |us: u64| {
+                    if lat > 0 {
+                        u32::try_from(us * 1000 / u64::from(lat)).unwrap_or(u32::MAX)
+                    } else {
+                        0
+                    }
+                };
+                let share = per_mille(u64::from(peak));
+                if best.is_none_or(|(s, p)| (share, peak) > (s, p)) {
+                    *best = Some((share, peak));
+                    l.peak_us = peak;
+                    l.latency_us = lat;
+                }
+                if let Some(cell) = usize::try_from(b).ok().and_then(|i| l.spark.get_mut(i)) {
+                    let typical = per_mille(count(sum) / count(n).max(1));
+                    *cell = Some(cell.map_or(typical, |c| c.max(typical)));
+                }
+            }
+            let rows = older
+                .query_map(params![id, day, hour_floor], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+                })
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let (sources, late) = row.map_err(|e| e.to_string())?;
+                let from = source(&sources);
+                // A connection with nothing in the last hour is not listed.
+                if let Some((l, _, _)) = found
+                    .iter_mut()
+                    .find(|(l, _, _)| l.from.eq_ignore_ascii_case(&from))
+                {
+                    l.late_24h += count(late);
+                }
+            }
+            for (mut l, flows, _) in found {
+                if flows.is_empty() {
+                    continue;
+                }
+                l.flows = u16::try_from(flows.len()).unwrap_or(u16::MAX);
+                l.typical_us = flows
+                    .iter()
+                    .map(|(_, s, c)| u32::try_from(s / (*c).max(1)).unwrap_or(u32::MAX))
+                    .max()
+                    .unwrap_or(0);
+                out.links.push(l);
+            }
+        }
+        out.links.sort_by(|a, b| {
+            (a.to.to_lowercase(), a.from.to_lowercase())
+                .cmp(&(b.to.to_lowercase(), b.from.to_lowercase()))
+        });
+        drop(per);
+        drop(older);
+        drop(q);
+        let mut q = db
+            .prepare(
+                "SELECT d.name FROM bridge b JOIN device d ON d.id = b.device
+                 WHERE b.t > ?1 AND b.t <= ?2 GROUP BY d.id ORDER BY d.name COLLATE NOCASE",
+            )
+            .map_err(|e| e.to_string())?;
+        let names: Vec<String> = q
+            .query_map(params![now - 300, now], |r| r.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        drop(q);
+        drop(db);
+        for device in names {
+            let points = self.bridge_points(&device, hour, now)?;
+            let Some(last) = points.last().cloned() else {
+                continue;
+            };
+            let grown = |count: fn(&api::BridgePoint) -> u64| -> u64 {
+                points
+                    .windows(2)
+                    .map(|w| {
+                        let (p, c) = (count(&w[0]), count(&w[1]));
+                        // A restart (a new run, or a count that fell)
+                        // counts its new value from zero.
+                        if w[0].run_start_unix_ms != w[1].run_start_unix_ms || c < p {
+                            c
+                        } else {
+                            c - p
+                        }
+                    })
+                    .sum()
+            };
+            out.bridges.push(api::BridgeSummary {
+                device,
+                to_asio_underruns_1h: grown(|p| p.to_asio_underruns),
+                from_asio_underruns_1h: grown(|p| p.from_asio_underruns),
+                last,
+            });
+        }
+        Ok(out)
+    }
+
     /// The history of `device` from `from` to `to` (unix seconds), asked
     /// at `now`. The range is clamped to what is kept (a year back, an hour
     /// ahead), so any request stays small.
@@ -796,6 +1020,27 @@ mod bridge_tests {
     }
 
     #[test]
+    fn links_name_each_bridge_read_lately_with_its_last_hours_underruns() {
+        let st = Store::memory().unwrap();
+        let now = 10_000;
+        // An hour and more ago: 5 underruns already; then +2; a restart with 1.
+        st.add_bridge("dsg", &point(now - 4000, 5)).unwrap();
+        st.add_bridge("dsg", &point(now - 3000, 5)).unwrap();
+        st.add_bridge("dsg", &point(now - 2000, 7)).unwrap();
+        let mut again = point(now - 20, 1);
+        again.run_start_unix_ms += 1;
+        st.add_bridge("dsg", &again).unwrap();
+        // Not read in the last five minutes: not a bridge now.
+        st.add_bridge("old", &point(now - 400, 0)).unwrap();
+        let l = st.links(now).unwrap();
+        assert_eq!(l.bridges.len(), 1);
+        let b = &l.bridges[0];
+        assert_eq!(b.device, "dsg");
+        assert_eq!(b.last, again);
+        assert_eq!((b.to_asio_underruns_1h, b.from_asio_underruns_1h), (3, 0));
+    }
+
+    #[test]
     fn bridge_reads_come_back_as_stored_in_their_range_case_aside() {
         let st = Store::memory().unwrap();
         st.add_bridge("dsg", &point(100, 0)).unwrap();
@@ -843,6 +1088,65 @@ mod tests {
             channels: vec!["In 1".into()],
             sources: vec!["desk".into()],
         }
+    }
+
+    #[test]
+    fn links_sum_a_receivers_flows_per_source_device() {
+        let st = Store::memory().unwrap();
+        let now = 2_000_000;
+        let src = |s: &str, latency_us| FlowInfo {
+            sources: vec![s.into()],
+            ..flow(latency_us)
+        };
+        // desk hears two sources: player on two flows, video on one.
+        st.set_flow("desk", 1, &src("player", 1000), now - 90_000)
+            .unwrap();
+        st.set_flow("desk", 2, &src("PLAYER", 2000), now - 90_000)
+            .unwrap();
+        st.set_flow("desk", 3, &src("video", 10_000), now - 90_000)
+            .unwrap();
+        st.add(
+            "desk",
+            &[
+                // Five hours ago: counts for the day only.
+                s(1, now - 5 * 3600, 400, 7),
+                s(3, now - 5 * 3600, 400, 2),
+                // The last hour.
+                s(1, now - 1800, 300, 0),
+                s(1, now - 1799, 500, 3),
+                s(2, now - 1800, 1900, 0),
+                s(3, now - 10, 4000, 1),
+            ],
+        )
+        .unwrap();
+        // The minute tier holds what is older than the hour.
+        st.rollup(now, 6 * 3600).unwrap();
+        let l = st.links(now).unwrap();
+        assert_eq!(l.now, now);
+        let names: Vec<(&str, &str)> = l
+            .links
+            .iter()
+            .map(|x| (x.from.as_str(), x.to.as_str()))
+            .collect();
+        assert_eq!(names, [("player", "desk"), ("video", "desk")]);
+        let p = &l.links[0];
+        assert_eq!(p.flows, 2);
+        // Slot 2 is closest to its latency: 1900 of 2000.
+        assert_eq!((p.peak_us, p.latency_us), (1900, 2000));
+        assert_eq!(p.typical_us, 1900);
+        assert_eq!((p.late_1h, p.late_24h), (3, 10));
+        assert_eq!(p.age_s, Some(1799));
+        assert_eq!(p.spark.len(), 60);
+        assert_eq!(p.spark.iter().flatten().copied().max(), Some(950));
+        let v = &l.links[1];
+        assert_eq!((v.flows, v.peak_us, v.latency_us), (1, 4000, 10_000));
+        assert_eq!((v.late_1h, v.late_24h), (1, 3));
+        // A receiver silent for the last hour has no connection listed.
+        st.set_flow("amp", 1, &src("desk", 1000), now - 90_000)
+            .unwrap();
+        st.add("amp", &[s(1, now - 2 * 3600, 100, 0)]).unwrap();
+        assert_eq!(st.links(now).unwrap().links.len(), 2);
+        assert!(st.links(now).unwrap().bridges.is_empty());
     }
 
     #[test]

@@ -1,17 +1,17 @@
 import { test, expect, type ConsoleMessage } from "@playwright/test";
 
-// The overview is the start page: health tiles from the device list and the
-// receivers' recorded latency.
+// The overview: health tiles from the device list and the receivers'
+// recorded latency (the start page is the Map since #122).
 const DEVICE = "dc-e2e-device";
 
-test("the overview is the start page with health tiles and the receivers' last hour", async ({ page }) => {
+test("the overview has health tiles and the receivers' last hour", async ({ page }) => {
   const msgs: string[] = [];
   page.on("console", (m: ConsoleMessage) => {
     if (m.type() === "error" || m.type() === "warning") msgs.push(`${m.type()}: ${m.text()}`);
   });
   page.on("pageerror", (e) => msgs.push(`pageerror: ${e.message}`));
 
-  await page.goto("/");
+  await page.goto("/#overview");
   await expect(page.getByTestId("tab-overview")).toHaveClass(/\bon\b/);
   await expect(page.locator(".page-head h1")).toHaveText("Overview");
 
