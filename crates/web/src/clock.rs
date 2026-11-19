@@ -2,7 +2,7 @@
 //! name where the master is a listed device, and what needs a look. Pure,
 //! so it is tested on the host.
 
-use dcontroller_api::{Clock, Devices};
+use dcontroller_api::{Clock, ClockNode, Clocks, Devices};
 
 /// One device's row in the clock view.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,10 +94,125 @@ pub fn ppb(v: i32) -> String {
     format!("{v:+} ppb")
 }
 
+/// A time error for reading: `0.85 µs`, `12.3 µs`, `1.20 ms`.
+pub fn ns_text(ns: i64) -> String {
+    let abs = ns.unsigned_abs();
+    let sign = if ns < 0 { "-" } else { "" };
+    if abs < 10_000 {
+        format!("{sign}{:.2} µs", abs as f64 / 1e3)
+    } else if abs < 1_000_000 {
+        format!("{sign}{:.1} µs", abs as f64 / 1e3)
+    } else {
+        format!("{sign}{:.2} ms", abs as f64 / 1e6)
+    }
+}
+
+/// The dsync nodes with the troubled ones on top (bad, then limping, then
+/// good), each group by name.
+pub fn dsync_order(c: &Clocks) -> Vec<&ClockNode> {
+    let rank = |n: &ClockNode| match n.health().0 {
+        "bad" => 0,
+        "warn" => 1,
+        _ => 2,
+    };
+    let mut v: Vec<&ClockNode> = c.nodes.iter().collect();
+    v.sort_by_key(|n| (rank(n), n.device.to_lowercase()));
+    v
+}
+
+/// The listed devices that gave no clock figures, by name.
+pub fn dsync_silent(d: &Devices, c: &Clocks) -> Vec<String> {
+    d.devices
+        .iter()
+        .filter(|dev| {
+            !c.nodes
+                .iter()
+                .any(|n| n.device.eq_ignore_ascii_case(&dev.name))
+        })
+        .map(|dev| dev.name.clone())
+        .collect()
+}
+
+/// One line for the dsync part: how many are locked, who is not.
+pub fn dsync_summary(c: &Clocks) -> (String, bool) {
+    let bad: Vec<&str> = c
+        .nodes
+        .iter()
+        .filter(|n| n.health().0 == "bad")
+        .map(|n| n.device.as_str())
+        .collect();
+    let limping = c.nodes.iter().filter(|n| n.health().0 == "warn").count();
+    let good = c.nodes.len() - bad.len() - limping;
+    if c.nodes.is_empty() {
+        return ("no device gives dsync clock figures".to_owned(), false);
+    }
+    let mut line = format!("dsync: {good} of {} locked", c.nodes.len());
+    if limping > 0 {
+        line.push_str(&format!(" · {limping} limping"));
+    }
+    if !bad.is_empty() {
+        line.push_str(&format!(" · no usable time: {}", bad.join(", ")));
+    }
+    (line, !bad.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use dcontroller_api::Device;
+
+    #[test]
+    fn dsync_nodes_read_troubles_first_and_name_the_silent_devices() {
+        use dcontroller_api::Follower;
+        let node = |name: &str, locked: bool, holdover: bool| ClockNode {
+            device: name.into(),
+            ready: true,
+            source: "follower".into(),
+            follower: Some(Follower {
+                locked,
+                settled: locked,
+                holdover,
+                ..Follower::default()
+            }),
+            ..ClockNode::default()
+        };
+        let c = Clocks {
+            now: 0,
+            nodes: vec![
+                node("b-good", true, false),
+                node("a-good", true, false),
+                node("limp", true, true),
+                node("lost", false, false),
+            ],
+        };
+        let order: Vec<&str> = dsync_order(&c).iter().map(|n| n.device.as_str()).collect();
+        assert_eq!(order, ["lost", "limp", "a-good", "b-good"]);
+        assert_eq!(
+            dsync_summary(&c),
+            (
+                "dsync: 2 of 4 locked · 1 limping · no usable time: lost".to_owned(),
+                true
+            )
+        );
+        assert_eq!(dsync_summary(&Clocks::default()).1, false);
+        let d = Devices {
+            devices: vec![
+                Device {
+                    name: "LOST".into(),
+                    ..Device::default()
+                },
+                Device {
+                    name: "amp".into(),
+                    ..Device::default()
+                },
+            ],
+            ..Devices::default()
+        };
+        assert_eq!(dsync_silent(&d, &c), ["amp"]);
+        assert_eq!(ns_text(850), "0.85 µs");
+        assert_eq!(ns_text(-12_300), "-12.3 µs");
+        assert_eq!(ns_text(1_200_000), "1.20 ms");
+    }
 
     fn clock(id: &str, master: &str, leader: bool, sync: &str) -> Clock {
         Clock {

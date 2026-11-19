@@ -176,6 +176,23 @@ fn App() -> impl IntoView {
         report: RwSignal::new(None),
     };
     provide_context(mtr);
+    // The devices' dsync clock figures, while the clock view is open (#124).
+    let clk = Clk(RwSignal::new(None));
+    provide_context(clk);
+    let load_clocks = move || {
+        if view_now.get_untracked() == View::Clock {
+            spawn_local(async move {
+                clk.0.set(Some(
+                    pages::get_json::<dcontroller_api::Clocks>("/api/clocks").await,
+                ));
+            });
+        }
+    };
+    Effect::new(move |_| {
+        view_now.track();
+        load_clocks();
+    });
+    let _ = set_interval_with_handle(load_clocks, CLOCKS_POLL);
     // The chosen device's levels, often while the meters view is open.
     let poll_meters = move || {
         if view_now.get_untracked() != View::Meters {
@@ -493,6 +510,12 @@ fn hash_device(prefix: &str) -> Option<String> {
 
 /// How often the meters view asks for the chosen device's levels.
 const MTR_POLL: Duration = Duration::from_millis(300);
+/// How often the clock view reads the devices' dsync figures.
+const CLOCKS_POLL: Duration = Duration::from_secs(4);
+
+/// The devices' dsync clock figures, as last read.
+#[derive(Clone, Copy)]
+struct Clk(RwSignal<Option<Result<dcontroller_api::Clocks, String>>>);
 
 /// The meters view's device (kept in the hash `#meters/<name>`) and its last report.
 #[derive(Clone, Copy)]
@@ -2158,6 +2181,7 @@ fn MdnsView() -> impl IntoView {
 /// Clock Status tab.
 #[component]
 fn ClockView(d: Devices) -> impl IntoView {
+    let dsync = d.clone();
     let rows = clock::rows(&d);
     let (line, warn) = clock::summary(&rows);
     view! {
@@ -2195,6 +2219,80 @@ fn ClockView(d: Devices) -> impl IntoView {
                 }).collect_view()}
             </tbody>
         </table></div>
+        <DsyncClocks d=dsync/>
+    }
+}
+
+/// The devices' dsync clocks (#124): what each dstack device says of its
+/// own time, the troubled ones on top; the devices that say nothing named
+/// in one line.
+#[component]
+fn DsyncClocks(d: Devices) -> impl IntoView {
+    let Clk(clk) = expect_context::<Clk>();
+    move || {
+        let c = match clk.get() {
+            None => return view! { <p class="status">"Reading the dsync clocks…"</p> }.into_any(),
+            Some(Err(e)) => {
+                return view! { <p class="status error">{format!("dsync clocks not readable: {e}")}</p> }
+                    .into_any();
+            }
+            Some(Ok(c)) => c,
+        };
+        let (line, bad) = clock::dsync_summary(&c);
+        let silent = clock::dsync_silent(&d, &c);
+        let dash = || "–".to_owned();
+        let rows = clock::dsync_order(&c)
+            .into_iter()
+            .map(|n| {
+                let (state, why) = n.health();
+                let source = match n.source.as_str() {
+                    "follower" => "its own follower",
+                    "service" => "the PC's dsync service",
+                    "system" => "test system clock",
+                    _ => "none",
+                };
+                let f = n.follower.as_ref();
+                let s = n.service.as_ref();
+                let gm = f
+                    .and_then(|f| f.grandmaster.clone())
+                    .or_else(|| s.and_then(|s| s.grandmaster.clone()))
+                    .unwrap_or_else(dash);
+                view! {
+                    <tr class=if state == "bad" { "warn" } else { "" } data-testid="dsync-row" data-name=n.device.clone() data-state=state>
+                        <td>{n.device.clone()}</td>
+                        <td><span class=format!("chip {state}") data-testid="dsync-state">{why}</span></td>
+                        <td>{source}</td>
+                        <td class="num">{f.and_then(|f| f.error_p90_ns).map_or_else(dash, clock::ns_text)}</td>
+                        <td>{f.map_or_else(dash, |f| f.waiting.clone().unwrap_or_else(|| "in use".to_owned()))}</td>
+                        <td class="num">{f.map_or_else(dash, |f| f.holdovers.to_string())}</td>
+                        <td>{s.map_or_else(dash, |s| match s.reply_age_ms {
+                            Some(ms) => format!("{} · reply {} ms ago", s.poll, ms),
+                            None => s.poll.clone(),
+                        })}</td>
+                        <td class="mono">{gm}</td>
+                    </tr>
+                }
+            })
+            .collect_view();
+        view! {
+            <h3 class="sub">"dsync clocks"</h3>
+            <p class=if bad { "status error" } else { "status" } data-testid="dsync-summary">{line}</p>
+            {(!c.nodes.is_empty()).then(|| view! {
+                <div class="clock-wrap"><table class="clock" data-testid="dsync-table">
+                    <thead><tr>
+                        <th>"Device"</th><th>"Clock"</th><th>"Runs on"</th><th>"Follower error (p90)"</th>
+                        <th>"Follower"</th><th>"Holdovers"</th><th>"dsync service"</th><th>"Grandmaster"</th>
+                    </tr></thead>
+                    <tbody>{rows}</tbody>
+                </table></div>
+            })}
+            {(!silent.is_empty()).then(|| view! {
+                <p class="muted small" data-testid="dsync-silent">
+                    {format!("No dsync figures from: {} (not a dstack device, or a dstack before v0.6.187).", silent.join(", "))}
+                </p>
+            })}
+        }
+        .into_any()
     }
 }
 

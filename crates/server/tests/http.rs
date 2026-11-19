@@ -10,6 +10,7 @@ fn off() -> dcontroller::Shared {
         .into_temp_path()
         .to_path_buf();
     dcontroller::Shared {
+        clocks: dcontroller::clocks::Latest::default(),
         dante: std::sync::Arc::new(std::sync::RwLock::new(dcontroller::dante::State::off(
             None, None,
         ))),

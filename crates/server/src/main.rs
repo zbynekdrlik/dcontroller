@@ -70,7 +70,10 @@ async fn serve(path: PathBuf) -> anyhow::Result<()> {
     info!(history_db = %cfg.history_db.display(), "history");
     dcontroller::latency::start(Arc::clone(&dante), Arc::clone(&history), Arc::clone(&stop));
     dcontroller::bridge::start(Arc::clone(&dante), Arc::clone(&history), Arc::clone(&stop));
+    let clocks = dcontroller::clocks::Latest::default();
+    dcontroller::clocks::start(Arc::clone(&dante), Arc::clone(&clocks), Arc::clone(&stop));
     let shared = dcontroller::Shared {
+        clocks,
         dante,
         changes,
         history,

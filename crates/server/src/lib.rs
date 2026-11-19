@@ -2,6 +2,7 @@
 
 pub mod bridge;
 pub mod change;
+pub mod clocks;
 pub mod dante;
 pub mod flows;
 pub mod history;
@@ -119,6 +120,8 @@ pub struct Shared {
     pub history: std::sync::Arc<history::Store>,
     pub meters: std::sync::Arc<meters::Watches>,
     pub mdns: std::sync::Arc<mdns::Watch>,
+    /// Every dstack device's newest clock figures (#124).
+    pub clocks: clocks::Latest,
 }
 
 async fn devices(State(s): State<Shared>) -> axum::Json<dcontroller_api::Devices> {
@@ -210,6 +213,10 @@ async fn overview(
             tracing::error!(error = %e, "overview: read failed");
             StatusCode::INTERNAL_SERVER_ERROR
         })
+}
+
+async fn clocks_now(State(s): State<Shared>) -> axum::Json<dcontroller_api::Clocks> {
+    axum::Json(clocks::snapshot(&s.clocks, std::time::Instant::now()))
 }
 
 async fn links(State(s): State<Shared>) -> Result<axum::Json<dcontroller_api::Links>, StatusCode> {
@@ -395,6 +402,7 @@ pub fn app(web_dir: &Path, shared: Shared) -> Router {
         .route("/api/bridge/{device}", get(bridge_report))
         .route("/api/overview", get(overview))
         .route("/api/links", get(links))
+        .route("/api/clocks", get(clocks_now))
         .route("/api/meters/{device}", get(meter_report))
         .route("/api/levels", get(levels_report))
         .route("/api/mdns", get(mdns_report))
