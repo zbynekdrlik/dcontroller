@@ -2238,6 +2238,56 @@ fn ClockView(d: Devices) -> impl IntoView {
     }
 }
 
+/// The PCs' dsync clock services (#124), as each last answered its status
+/// over the LAN; nothing when the box's config names none.
+fn dsync_services(c: &dcontroller_api::Clocks) -> Option<impl IntoView + use<>> {
+    if c.services.is_empty() {
+        return None;
+    }
+    let (line, bad) = clock::service_summary(c);
+    let dash = || "–".to_owned();
+    let rows = clock::service_order(c)
+        .into_iter()
+        .map(|n| {
+            let (state, why) = n.health();
+            let gm = match (&n.gm_uuid, &n.gm_source_ip) {
+                (Some(id), Some(ip)) => format!("{id} · {ip}"),
+                (Some(id), None) => id.clone(),
+                (None, Some(ip)) => ip.clone(),
+                (None, None) => dash(),
+            };
+            view! {
+                <tr class=if state == "bad" { "warn" } else { "" } data-testid="dsync-service" data-name=n.node.clone() data-state=state>
+                    <td>{n.node.clone()}</td>
+                    <td><span class=format!("chip {state}") data-testid="dsync-service-state">{why}</span></td>
+                    <td>{n.mode.clone().unwrap_or_else(dash)}</td>
+                    <td class="num">{n.ptp_phase_error_us.map_or_else(dash, |e| format!("{e:.1} µs"))}</td>
+                    <td class="num">{match n.last_ptp_rx_age_s {
+                        Some(a) => format!("{a:.1} s ago"),
+                        None => "never".to_owned(),
+                    }}</td>
+                    <td class="num">{n.ptp_rx_pps.map_or_else(dash, |p| format!("{p:.0}/s"))}</td>
+                    <td class="mono">{gm}</td>
+                    <td class="num">{n.drift_ppm.map_or_else(dash, |d| format!("{d:+.2} ppm"))}</td>
+                    <td>{n.version.clone().unwrap_or_else(dash)}</td>
+                    <td class="num">{n.age_s.map_or_else(|| "never".to_owned(), |a| format!("{a} s ago"))}</td>
+                </tr>
+            }
+        })
+        .collect_view();
+    Some(view! {
+        <h3 class="sub">"dsync service nodes"</h3>
+        <p class=if bad { "status error" } else { "status" } data-testid="dsync-service-summary">{line}</p>
+        <div class="clock-wrap"><table class="clock" data-testid="dsync-services">
+            <thead><tr>
+                <th>"Node"</th><th>"Clock"</th><th>"Mode"</th><th>"Phase error"</th><th>"Last PTP packet"</th>
+                <th>"PTP packets"</th><th>"Grandmaster"</th><th>"Drift"</th><th>"dsync"</th><th>"Answered"</th>
+            </tr></thead>
+            <tbody>{rows}</tbody>
+        </table></div>
+    })
+}
+
 /// The devices' dsync clocks (#124): what each dstack device says of its
 /// own time, the troubled ones on top; the devices that say nothing named
 /// in one line.
@@ -2306,6 +2356,7 @@ fn DsyncClocks(d: Devices) -> impl IntoView {
                     {format!("No dsync figures from: {} (not a dstack device, or a dstack before v0.6.187).", silent.join(", "))}
                 </p>
             })}
+            {dsync_services(&c)}
         }
         .into_any()
     }

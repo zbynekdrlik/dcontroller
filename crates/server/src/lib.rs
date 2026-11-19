@@ -4,6 +4,7 @@ pub mod bridge;
 pub mod change;
 pub mod clocks;
 pub mod dante;
+pub mod dsync;
 pub mod flows;
 pub mod history;
 pub mod latency;
@@ -50,6 +51,11 @@ pub struct Config {
     /// The latency history (SQLite), recorded for every receiver.
     #[serde(default = "default_history_db")]
     pub history_db: PathBuf,
+    /// The PCs' dsync clock services to watch, `host` or `host:port`
+    /// (dsync's 8898), asked over the LAN (dcontroller #124). Site facts:
+    /// they live in the box's config, not in the repo.
+    #[serde(default)]
+    pub dsync_nodes: Vec<String>,
 }
 
 fn default_history_db() -> PathBuf {
@@ -122,6 +128,8 @@ pub struct Shared {
     pub mdns: std::sync::Arc<mdns::Watch>,
     /// Every dstack device's newest clock figures (#124).
     pub clocks: clocks::Latest,
+    /// Every configured dsync service node's newest status (#124).
+    pub dsync: dsync::Latest,
 }
 
 async fn devices(State(s): State<Shared>) -> axum::Json<dcontroller_api::Devices> {
@@ -216,7 +224,11 @@ async fn overview(
 }
 
 async fn clocks_now(State(s): State<Shared>) -> axum::Json<dcontroller_api::Clocks> {
-    axum::Json(clocks::snapshot(&s.clocks, std::time::Instant::now()))
+    let now = std::time::Instant::now();
+    axum::Json(dcontroller_api::Clocks {
+        services: dsync::snapshot(&s.dsync, now),
+        ..clocks::snapshot(&s.clocks, now)
+    })
 }
 
 async fn links(State(s): State<Shared>) -> Result<axum::Json<dcontroller_api::Links>, StatusCode> {

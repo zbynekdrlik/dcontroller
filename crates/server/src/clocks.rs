@@ -115,6 +115,7 @@ pub fn snapshot(latest: &Latest, now: Instant) -> api::Clocks {
     api::Clocks {
         now: unix_now(),
         nodes,
+        services: Vec::new(),
     }
 }
 
