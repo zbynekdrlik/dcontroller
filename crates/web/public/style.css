@@ -373,3 +373,6 @@ table.changes td:first-child { white-space: nowrap; }
   table.links th:nth-child(7), table.links td:nth-child(7) { display: none; }
   table.grid th, table.grid td { padding: 0.4rem 0.4rem; }
 }
+/* A row's parts may shrink: a strip of ranges then scrolls in itself
+   instead of pushing the page wider (#123, seen with a wider font). */
+.panel-head > *, .bar > * { min-width: 0; max-width: 100%; }

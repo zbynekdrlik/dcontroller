@@ -194,15 +194,27 @@ test("on a phone the map opens on the connections' table and no page scrolls sid
     if (m.type() === "error" || m.type() === "warning") msgs.push(`${m.type()}: ${m.text()}`);
   });
   page.on("pageerror", (e) => msgs.push(`pageerror: ${e.message}`));
-  await page.setViewportSize({ width: 390, height: 844 });
+  // A small phone: narrower than the strip of ranges, so the rows must
+  // let it scroll in itself (a wider font on another machine does the
+  // same to a 390 px phone).
+  await page.setViewportSize({ width: 330, height: 700 });
   // What reaches past the window's right edge (nothing, when the page
   // does not scroll sideways): named, so a failure says what to fix.
   const wide = () =>
     page.evaluate(() => {
       const w = window.innerWidth;
       if (document.documentElement.scrollWidth <= w) return [];
+      // Not what a scrolling ancestor clips (the nav's own strip, a table
+      // in its box): only what pushes the page itself wider.
+      const clipped = (e: Element) => {
+        for (let p = e.parentElement; p && p !== document.body; p = p.parentElement) {
+          const o = getComputedStyle(p).overflowX;
+          if (o !== "visible" && p.getBoundingClientRect().right <= w + 1) return true;
+        }
+        return false;
+      };
       return Array.from(document.querySelectorAll("body *"))
-        .filter((e) => e.getBoundingClientRect().right > w + 1)
+        .filter((e) => e.getBoundingClientRect().right > w + 1 && !clipped(e))
         .slice(0, 6)
         .map((e) => {
           const h = e as HTMLElement;
