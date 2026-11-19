@@ -161,6 +161,25 @@ pub(crate) fn spark_of(values: &[Option<u32>], class: &'static str) -> AnyView {
 
 /// One health tile: a title, a value (long names get a smaller type so
 /// they are not cut), a line under it; a click goes to `href`.
+/// A device's name as a link to its place on the Map (#123): on every
+/// page a device is the same thing, one click from its connections.
+pub(crate) fn dev_link(name: &str) -> impl IntoView + use<> {
+    let href = crate::map::Sel::Device {
+        name: name.to_owned(),
+    }
+    .hash();
+    view! { <a class="devlink" href=href data-testid="dev-link" title="Show this device on the Map">{name.to_owned()}</a> }
+}
+
+/// Device names, each a link to the Map, with commas between.
+pub(crate) fn dev_links(names: &[String]) -> impl IntoView + use<> {
+    names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| view! { {(i > 0).then_some(", ")}{dev_link(n)} })
+        .collect_view()
+}
+
 pub(crate) fn tile(
     id: &'static str,
     title: &'static str,

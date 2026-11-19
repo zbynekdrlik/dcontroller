@@ -2282,7 +2282,7 @@ fn links_table(d: &Devices) -> AnyView {
                     match &r.primary {
                         Some(p) => view! {
                             <tr class=if r.warn { "warn" } else { "" } data-testid="network-row" data-name=name>
-                                <td>{r.device.clone()}</td>
+                                <td>{pages::dev_link(&r.device)}</td>
                                 <td data-testid="network-primary">{net::port_text(p)}</td>
                                 <td>{p.mac.clone()}</td>
                                 <td>{p.netmask.clone()}</td>
@@ -2292,7 +2292,7 @@ fn links_table(d: &Devices) -> AnyView {
                         }.into_any(),
                         None => view! {
                             <tr class="none" data-testid="network-row" data-name=name>
-                                <td>{r.device.clone()}</td>
+                                <td>{pages::dev_link(&r.device)}</td>
                                 <td colspan="5" data-testid="network-none">
                                     {r.error.clone().map_or_else(|| "not read yet".to_owned(), |e| format!("no network info: {e}"))}
                                 </td>
@@ -2331,7 +2331,7 @@ fn MdnsSenders() -> impl IntoView {
                         {top.into_iter().map(|s| view! {
                             <tr class=row_class(s.per_s, cap) data-testid="mdns-row" data-source=s.source.clone()>
                                 <td>{s.source.clone()}</td>
-                                <td>{s.devices.join(", ")}</td>
+                                <td>{pages::dev_links(&s.devices)}</td>
                                 <td data-testid="mdns-rate">{format!("{:.1}", s.per_s)}</td>
                             </tr>
                         }).collect_view()}
@@ -2361,7 +2361,7 @@ fn MdnsBrowsers() -> impl IntoView {
                         {browsers.into_iter().map(|b| view! {
                             <tr class="warn" data-testid="browser-row" data-source=b.source.clone()>
                                 <td>{b.source.clone()}</td>
-                                <td>{b.devices.join(", ")}</td>
+                                <td>{pages::dev_links(&b.devices)}</td>
                                 <td data-testid="browser-period">{format!("{:.1}", b.period_s)}</td>
                             </tr>
                         }).collect_view()}
@@ -2460,6 +2460,7 @@ fn ptp_table(d: &Devices) -> AnyView {
     let rows = clock::rows(d);
     let (line, warn) = clock::summary(&rows);
     let rows = parts::trouble_first(rows, |r| r.warn);
+    let known: Vec<String> = d.devices.iter().map(|x| x.name.clone()).collect();
     view! {
         <p class=if warn { "status error" } else { "status" } data-testid="clock-summary">{line}</p>
         <div class="clock-wrap"><table class="clock" data-testid="clock-table">
@@ -2474,18 +2475,25 @@ fn ptp_table(d: &Devices) -> AnyView {
                     match r.clock {
                         Some(c) => view! {
                             <tr class=class data-testid="clock-row" data-name=name>
-                                <td>{r.device}</td>
+                                <td>{pages::dev_link(&r.device)}</td>
                                 <td data-testid="clock-role">{clock::role(&c)}</td>
                                 <td data-testid="clock-sync">{c.sync.clone()}</td>
                                 <td>{c.state.clone()}</td>
                                 <td>{clock::ppb(c.frequency_ppb)}</td>
-                                <td data-testid="clock-master">{r.master.unwrap_or_default()}</td>
+                                <td data-testid="clock-master">{r.master.map(|m| {
+                                    // A master the list knows is a device; else its clock id.
+                                    if known.iter().any(|k| k.eq_ignore_ascii_case(&m)) {
+                                        pages::dev_link(&m).into_any()
+                                    } else {
+                                        view! { {m} }.into_any()
+                                    }
+                                })}</td>
                                 <td>{c.word_clock.clone().unwrap_or_default()}</td>
                             </tr>
                         }.into_any(),
                         None => view! {
                             <tr class="none" data-testid="clock-row" data-name=name>
-                                <td>{r.device}</td>
+                                <td>{pages::dev_link(&r.device)}</td>
                                 <td colspan="6" data-testid="clock-none">
                                     {r.error.map_or_else(|| "not read yet".to_owned(), |e| format!("no clock status: {e}"))}
                                 </td>
@@ -2591,7 +2599,7 @@ fn DsyncClocks(d: Devices) -> impl IntoView {
                     .unwrap_or_else(dash);
                 view! {
                     <tr class=if state == "bad" { "warn" } else { "" } data-testid="dsync-row" data-name=n.device.clone() data-state=state>
-                        <td>{n.device.clone()}</td>
+                        <td>{pages::dev_link(&n.device)}</td>
                         <td><span class=format!("chip {state}") data-testid="dsync-state">{why}</span></td>
                         <td>{source}</td>
                         <td class="num">{f.and_then(|f| f.error_p90_ns).map_or_else(dash, clock::ns_text)}</td>
