@@ -105,6 +105,9 @@ pub fn point(cell: Cell, link: Option<State>) -> (&'static str, String) {
         Cell::Empty => return (cell.class(), String::new()),
         Cell::Ok(1) => "1 subscription, receiving".to_owned(),
         Cell::Ok(n) => format!("{n} subscriptions, all receiving"),
+        Cell::Warn { n: 1, .. } | Cell::Err { n: 1, .. } => {
+            "1 subscription, not receiving".to_owned()
+        }
         Cell::Warn { n, bad } | Cell::Err { n, bad } => {
             format!("{bad} of {n} subscriptions not receiving")
         }
@@ -438,6 +441,11 @@ mod tests {
         assert_eq!(
             point(Cell::Warn { n: 2, bad: 1 }, Some(State::Bad)).0,
             "cell err"
+        );
+        assert!(
+            point(Cell::Warn { n: 1, bad: 1 }, None)
+                .1
+                .starts_with("1 subscription, not receiving · "),
         );
         // No subscription: an empty cell with nothing to say.
         assert_eq!(

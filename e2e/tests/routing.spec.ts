@@ -58,9 +58,18 @@ test.describe("routing matrix", () => {
     // Once the latency reader has the connection, the cell names its state
     // in the Map's words.
     await expect(devCell).toHaveAttribute("data-link", /^(ok|warn|bad)$/, { timeout: 40_000 });
-    await expect(devCell).toHaveAttribute("title", /1 subscription, .* · .* · click: this connection on the Map/);
+    // What the receiver reports now comes first (the suite's device takes
+    // its own channel, which other tests stop and start), then the last hour.
+    await expect(devCell).toHaveAttribute(
+      "title",
+      /^1 subscription, (receiving|not receiving) · [^·]+ · click: this connection on the Map$/,
+    );
     const state = await devCell.getAttribute("data-link");
+    const now = (await devCell.getAttribute("title"))!.includes("not receiving");
+    // The colour is the worse of the two.
     if (state === "bad") await expect(devCell).toHaveClass(/\berr\b/);
+    else if (state === "ok" && !now) await expect(devCell).toHaveClass(/\bok\b/);
+    else await expect(devCell).toHaveClass(/\b(warn|err)\b/);
     // A cell with no subscription is no link.
     const empty = matrix.locator('[data-testid="cell"]:not([data-link])').first();
     await expect(empty.locator("a")).toHaveCount(0);
