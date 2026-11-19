@@ -106,6 +106,10 @@ test("a dstack peer and a local client below the network floor and a 96 s Dante 
     await expect(floor).toBeVisible({ timeout: 90_000 });
     await expect(floor).toContainText(`dstack below the network floor 0.6.58: ${PEER} at ${routed.ip} (dstack 0.6.20)`);
     await expect(page.getByTestId("floor-summary")).toHaveClass(/error/);
+    // The part in trouble moves to the top of the page (#123), above the
+    // interfaces table that is fine, and its chip says so.
+    await expect(page.locator('[data-testid="part-chip"][data-part="floor"]')).toHaveAttribute("data-state", "bad");
+    await expect(page.getByTestId("part").first()).toHaveAttribute("data-part", "floor");
     const row = page.locator(`[data-testid="floor-row"][data-name="${PEER}"]`);
     await expect(row.getByTestId("floor-version")).toHaveText("0.6.20");
     const api = await page.evaluate(() => fetch("/api/mdns").then((r) => r.json()));

@@ -133,6 +133,22 @@ pub fn dsync_silent(d: &Devices, c: &Clocks) -> Vec<String> {
         .collect()
 }
 
+/// A service node as the page names it: without dsync's own port.
+pub fn node_label(node: &str) -> &str {
+    node.strip_suffix(":8898").unwrap_or(node)
+}
+
+/// The state of the devices' dsync part: `none` while no device answers.
+pub fn dsync_state(c: &Clocks) -> &'static str {
+    if c.nodes.is_empty() {
+        "none"
+    } else if dsync_summary(c).1 {
+        "bad"
+    } else {
+        "ok"
+    }
+}
+
 /// One line for the dsync part: how many are locked, who is not.
 pub fn dsync_summary(c: &Clocks) -> (String, bool) {
     let bad: Vec<&str> = c
@@ -262,6 +278,11 @@ mod tests {
             ("dsync not locked: lost:8898".to_owned(), true)
         );
         assert_eq!(rig_summary(&Clocks::default()), (String::new(), false));
+        // The page names a node without dsync's own port; another port stays.
+        assert_eq!(node_label("mixer.lan:8898"), "mixer.lan");
+        assert_eq!(node_label("127.0.0.1:18898"), "127.0.0.1:18898");
+        // No device answers: nothing to say, not a fault.
+        assert_eq!(dsync_state(&Clocks::default()), "none");
         // A travelling node that is away is neither counted nor a fault,
         // and reads last.
         let mut c = c;
