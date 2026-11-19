@@ -1701,10 +1701,14 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
             let name = t.device.clone();
             let label = t.device.clone();
             let name_attr = t.device.clone();
-            let bar = (!open).then(|| level_bar(&t.device, true, None, false, Vec::new()));
+            // A folded device is one narrow column, its name written up the
+            // header's height (#123: with names across, six of fifteen
+            // devices filled the page's width).
+            let bar = (!open).then(|| level_bar(&t.device, true, None, true, Vec::new()));
             view! {
-                <th class=if open { "txdev open" } else { "txdev" } colspan=span
-                    data-testid="tx-device" data-name=name_attr
+                <th class=if open { "txdev open" } else { "txdev folded" } colspan=span
+                    rowspan=if open { 1 } else { 2 }
+                    data-testid="tx-device" data-name=name_attr title=t.device.clone()
                     on:click=move |_| flip(tx_open, &name)>
                     <span>{label}</span>
                     <NoMeters device=t.device.clone()/>
@@ -1730,7 +1734,8 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
                 }
                 .into_any()
             }
-            None => view! { <th class="txch"></th> }.into_any(),
+            // A folded device's header spans both rows.
+            None => ().into_any(),
         })
         .collect_view();
     let mut rows = Vec::new();

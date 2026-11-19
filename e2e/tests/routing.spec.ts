@@ -98,7 +98,8 @@ test.describe("routing matrix", () => {
     await expect(txBar).toHaveAttribute("data-dir", "tx");
     await expect(rxBar).toHaveAttribute("data-dir", "rx");
     // Silence fills nothing.
-    await expect(txBar.locator("span")).toHaveAttribute("style", "width: 0.0%");
+    // A folded TX device is a narrow column (#123): its bar stands upright.
+    await expect(txBar.locator("span")).toHaveAttribute("style", "height: 0.0%");
 
     // The page reads what the server has for the device.
     const lv = await page.evaluate((d) => fetch(`/api/levels?devices=${d}`).then((r) => r.json()), DEVICE);

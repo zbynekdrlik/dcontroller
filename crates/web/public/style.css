@@ -199,7 +199,11 @@ table.matrix thead tr:first-child th { top: 0; }
 table.matrix thead tr:nth-child(2) th { top: 1.8rem; }
 table.matrix .corner { left: 0; z-index: 3; min-width: 12rem; color: var(--muted); font-weight: normal; }
 .txdev { cursor: pointer; height: 1.8rem; padding: 0 0.5rem !important; white-space: nowrap; text-align: left; }
-.txdev > span:first-child { position: sticky; left: 12.5rem; }
+.txdev.open > span:first-child { position: sticky; left: 12.5rem; }
+.txdev.folded { height: 11.6rem; min-width: 1.9rem; padding: 0.3rem 0 0.2rem !important; vertical-align: bottom; text-align: center; white-space: nowrap; }
+.txdev.folded > span:first-child { display: inline-block; writing-mode: vertical-rl; transform: rotate(180deg); max-height: 11rem; overflow: hidden; text-overflow: ellipsis; }
+.txdev.folded .chip.nometer { display: block; margin: 0.2rem auto 0; writing-mode: vertical-rl; transform: rotate(180deg); padding: 0.3rem 0; }
+.txdev.folded .lvl.v { height: 3rem; margin: 0 0 0 0.15rem; }
 .txdev.open, .rxname.open { color: var(--accent); }
 .txch { height: 7.5rem; vertical-align: bottom; }
 .txch > span:first-child { writing-mode: vertical-rl; transform: rotate(180deg); padding: 0.4rem 0; white-space: nowrap; font-weight: normal; color: var(--muted); }
