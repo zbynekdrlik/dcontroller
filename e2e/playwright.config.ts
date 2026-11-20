@@ -25,7 +25,7 @@ rmSync(changes, { force: true });
 for (const f of [history, `${history}-wal`, `${history}-shm`]) rmSync(f, { force: true });
 writeFileSync(
   config,
-  `bind = "127.0.0.1:${port}"\nweb_dir = "${resolve(root, "crates/web/dist")}"\ndante_interface = "${routed.iface}"\nchanges_log = "${changes}"\nhistory_db = "${history}"\ndsync_nodes = ["${DSYNC.up}", "${DSYNC.down}"]\n`,
+  `bind = "127.0.0.1:${port}"\nweb_dir = "${resolve(root, "crates/web/dist")}"\ndante_interface = "${routed.iface}"\nchanges_log = "${changes}"\nhistory_db = "${history}"\ndsync_nodes = ["${DSYNC.up}", "${DSYNC.down}", "${DSYNC.old}", "${DSYNC.newer}"]\n`,
 );
 
 export default defineConfig({

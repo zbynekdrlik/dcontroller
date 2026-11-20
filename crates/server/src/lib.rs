@@ -334,6 +334,29 @@ async fn bridge_report(
         })
 }
 
+/// A dsync service node's states over a range (#124 2c), the node as the
+/// box's config names it (`host:port`).
+async fn dsync_report(
+    State(s): State<Shared>,
+    axum::extract::Path(node): axum::extract::Path<String>,
+    axum::extract::Query(r): axum::extract::Query<Range>,
+) -> Result<axum::Json<dcontroller_api::DsyncHistory>, StatusCode> {
+    let now = history::unix_now();
+    let to = r.to.unwrap_or(now);
+    let from = r.from.unwrap_or(to.saturating_sub(3600));
+    tokio::task::spawn_blocking(move || s.history.dsync(&node, from, to))
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "dsync history: task failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .map(axum::Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "dsync history: read failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
 async fn meter_report(
     State(s): State<Shared>,
     axum::extract::Path(device): axum::extract::Path<String>,
@@ -449,6 +472,7 @@ pub fn app(web_dir: &Path, shared: Shared) -> Router {
         .route("/api/flows/{device}", get(tx_flows))
         .route("/api/history/{device}", get(history_report))
         .route("/api/bridge/{device}", get(bridge_report))
+        .route("/api/dsync/{node}", get(dsync_report))
         .route("/api/overview", get(overview))
         .route("/api/links", get(links))
         .route("/api/usage", get(usage).post(record_use))

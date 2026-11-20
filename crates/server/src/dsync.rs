@@ -23,6 +23,9 @@ pub const WAIT: Duration = Duration::from_secs(2);
 /// Unanswered asks in a row after which an answering node is taken as
 /// silent (one lost ask is no outage).
 pub const MISSES: u32 = 3;
+/// How often every node's state is stored for its chart (#124 2c), as the
+/// bridge's figures.
+pub const STORE_EVERY: i64 = 10;
 /// dsync's status port, when the config names a host alone.
 pub const PORT: u16 = 8898;
 
@@ -78,6 +81,21 @@ pub fn parse(node: &str, body: &str) -> Result<api::DsyncNode, String> {
         _ => None,
     };
     let num = |k: &str| o.get(k).and_then(Value::as_f64);
+    // A newer contract is not read field by field: what its fields mean
+    // may have changed (#124). The node is named with its schema only.
+    let schema = o
+        .get("schema")
+        .and_then(Value::as_u64)
+        .map(|n| u32::try_from(n).unwrap_or(u32::MAX));
+    if let Some(n) = schema.filter(|n| *n > api::DSYNC_SCHEMA) {
+        return Ok(api::DsyncNode {
+            node: node.to_owned(),
+            age_s: Some(0),
+            version: text("version"),
+            schema: Some(n),
+            ..api::DsyncNode::default()
+        });
+    }
     let alarm = o
         .get("clock_alarm")
         .and_then(Value::as_object)
@@ -109,6 +127,7 @@ pub fn parse(node: &str, body: &str) -> Result<api::DsyncNode, String> {
         fallback_role: text("fallback_role"),
         alarm,
         may_be_off: false,
+        schema,
     })
 }
 
@@ -152,8 +171,26 @@ pub fn snapshot(latest: &Latest, now: Instant) -> Vec<api::DsyncNode> {
         .collect()
 }
 
-/// Starts the reader thread; nothing runs without configured nodes.
-pub fn start(nodes: &[String], latest: Latest, stop: Arc<AtomicBool>) {
+/// A node's state as its chart stores it: an error on top is no answer
+/// (one lost ask is none: [`take`] keeps the last answer until [`MISSES`]).
+pub fn point_of(n: &api::DsyncNode, t: i64) -> api::DsyncPoint {
+    api::DsyncPoint {
+        t,
+        answered: n.error.is_none(),
+        locked: n.ptp_phase_locked,
+        phase_error_us: n.ptp_phase_error_us,
+        mode: n.mode.clone(),
+    }
+}
+
+/// Starts the reader thread; nothing runs without configured nodes. Every
+/// node's state goes to `history` every [`STORE_EVERY`] seconds.
+pub fn start(
+    nodes: &[String],
+    latest: Latest,
+    history: Arc<crate::history::Store>,
+    stop: Arc<AtomicBool>,
+) {
     let nodes: Vec<(String, bool)> = nodes.iter().map(|n| named(n)).collect();
     if nodes.is_empty() {
         info!("dsync: no service node configured (`dsync_nodes`), none asked");
@@ -177,7 +214,7 @@ pub fn start(nodes: &[String], latest: Latest, stop: Arc<AtomicBool>) {
     let nodes: Vec<String> = nodes.into_iter().map(|(n, _)| n).collect();
     std::thread::Builder::new()
         .name("dsync".into())
-        .spawn(move || run(&nodes, &latest, &stop))
+        .spawn(move || run(&nodes, &latest, &history, &stop))
         .expect("spawn the dsync reader");
 }
 
@@ -279,10 +316,11 @@ pub fn take(
     }
 }
 
-fn run(nodes: &[String], latest: &Latest, stop: &AtomicBool) {
+fn run(nodes: &[String], latest: &Latest, history: &crate::history::Store, stop: &AtomicBool) {
     let names = Names::default();
     let agent = agent_with(names.clone());
     let mut misses = vec![0u32; nodes.len()];
+    let mut stored = 0i64;
     while !stop.load(Ordering::Relaxed) {
         for (i, node) in nodes.iter().enumerate() {
             if stop.load(Ordering::Relaxed) {
@@ -309,6 +347,16 @@ fn run(nodes: &[String], latest: &Latest, stop: &AtomicBool) {
                 }
             }
         }
+        let now = crate::history::unix_now();
+        if now - stored >= STORE_EVERY {
+            stored = now;
+            let all = latest.read().unwrap_or_else(|e| e.into_inner()).clone();
+            for (n, _) in &all {
+                if let Err(e) = history.add_dsync(&n.node, &point_of(n, now)) {
+                    warn!(node = %n.node, error = %e, "dsync: state not stored");
+                }
+            }
+        }
         let until = Instant::now() + READ_EVERY;
         while Instant::now() < until && !stop.load(Ordering::Relaxed) {
             std::thread::sleep(Duration::from_millis(100));
@@ -329,6 +377,56 @@ mod tests {
         "clock_alarm": {"active": false, "since": null, "reason": ""},
         "offset_ns": 123456789012, "settled": true, "something_new": [1, 2]
     }"#;
+
+    #[test]
+    fn a_nodes_stored_state_is_no_answer_while_an_error_is_on_top() {
+        let n = parse("pc:8898", STATUS).unwrap();
+        let p = point_of(&n, 100);
+        assert_eq!(
+            (
+                p.t,
+                p.answered,
+                p.locked,
+                p.phase_error_us,
+                p.mode.as_deref()
+            ),
+            (100, true, Some(true), Some(3.25), Some("LOCK"))
+        );
+        assert!(!p.lost());
+        let silent = api::DsyncNode {
+            error: Some("no reply".into()),
+            ..n
+        };
+        let p = point_of(&silent, 110);
+        assert!(!p.answered);
+        assert!(p.lost());
+    }
+
+    #[test]
+    fn a_status_names_its_schema_and_a_newer_one_is_not_misread() {
+        assert_eq!(parse("pc:8898", STATUS).unwrap().schema, Some(1));
+        // An older dsync states none: read as before, named old.
+        let old = STATUS.replace(r#""schema": 1, "#, "");
+        let n = parse("pc:8898", &old).unwrap();
+        assert_eq!(n.schema, None);
+        assert_eq!(n.mode.as_deref(), Some("LOCK"));
+        assert_eq!(n.health().0, "ok");
+        // A newer one: none of its fields is taken, the node says why.
+        let new = STATUS.replace(r#""schema": 1, "#, r#""schema": 2, "#);
+        let n = parse("pc:8898", &new).unwrap();
+        assert_eq!(n.schema, Some(2));
+        assert_eq!(n.version.as_deref(), Some("0.9.4"));
+        assert_eq!(
+            (n.mode.as_deref(), n.ptp_phase_locked, n.ptp_phase_error_us),
+            (None, None, None)
+        );
+        let (state, why) = n.health();
+        assert_eq!(state, "bad");
+        assert!(
+            why.contains("schema 2, newer than this dcontroller reads (1)"),
+            "{why}"
+        );
+    }
 
     #[test]
     fn a_status_reads_its_health_fields_and_nothing_else() {

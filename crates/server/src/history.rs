@@ -80,12 +80,48 @@ const MIGRATIONS: &[&str] = &[
     "CREATE TABLE usage (t INTEGER NOT NULL, user TEXT NOT NULL, view TEXT NOT NULL,
          target TEXT NOT NULL);
      CREATE INDEX usage_t ON usage (t);",
+    // 7: each dsync service node's state over time (#124 2c), kept as long
+    // as the minutes; the node as the box's config names it.
+    "CREATE TABLE dsync (node TEXT NOT NULL, t INTEGER NOT NULL, answered INTEGER NOT NULL,
+         locked INTEGER, phase_error_us REAL, mode TEXT, PRIMARY KEY (node, t)) WITHOUT ROWID;
+     CREATE INDEX dsync_t ON dsync (t);",
 ];
 
 /// How long the record of use is kept, and how far back it is counted.
 pub const USAGE_DAYS: u32 = 30;
 /// The longest view or target name kept.
 pub const USAGE_TEXT: usize = 200;
+
+/// dsync states thinned as [`thin`], each kept point taking the worst of
+/// the ones it stands for: a lock lost between two kept points stays
+/// visible, and the largest phase error with it.
+fn thin_dsync(rows: Vec<api::DsyncPoint>, max: usize) -> Vec<api::DsyncPoint> {
+    let n = rows.len();
+    if n <= max || max == 0 {
+        return rows;
+    }
+    let k = n.div_ceil(max);
+    let mut out = Vec::with_capacity(max);
+    let mut worst: Option<api::DsyncPoint> = None;
+    for (i, mut p) in rows.into_iter().enumerate() {
+        if let Some(w) = worst.take() {
+            p.answered &= w.answered;
+            if w.locked == Some(false) {
+                p.locked = Some(false);
+            }
+            p.phase_error_us = match (p.phase_error_us, w.phase_error_us) {
+                (Some(a), Some(b)) => Some(if b.abs() > a.abs() { b } else { a }),
+                (a, b) => a.or(b),
+            };
+        }
+        if (n - 1 - i).is_multiple_of(k) {
+            out.push(p);
+        } else {
+            worst = Some(p);
+        }
+    }
+    out
+}
 
 /// Every k-th of `rows` so at most `max` are left, the newest always kept.
 fn thin<T>(rows: Vec<T>, max: usize) -> Vec<T> {
@@ -334,6 +370,52 @@ impl Store {
         })
     }
 
+    /// A dsync service node's state at `t` (#124 2c).
+    pub fn add_dsync(&self, node: &str, p: &api::DsyncPoint) -> Result<(), String> {
+        self.conn()
+            .execute(
+                "INSERT OR REPLACE INTO dsync (node, t, answered, locked, phase_error_us, mode)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![node, p.t, p.answered, p.locked, p.phase_error_us, p.mode],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// `node`'s stored states from `from` to `to` (unix seconds), at most
+    /// [`api::HISTORY_POINTS`], evenly thinned, oldest first. A thinned
+    /// point keeps a lock lost in the states it stands for.
+    pub fn dsync(&self, node: &str, from: i64, to: i64) -> Result<api::DsyncHistory, String> {
+        let db = self.conn();
+        let mut q = db
+            .prepare_cached(
+                "SELECT t, answered, locked, phase_error_us, mode FROM dsync
+                 WHERE node = ?1 AND t >= ?2 AND t <= ?3 ORDER BY t",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows: Vec<api::DsyncPoint> = q
+            .query_map(params![node, from, to], |r| {
+                Ok(api::DsyncPoint {
+                    t: r.get(0)?,
+                    answered: r.get(1)?,
+                    locked: r.get(2)?,
+                    phase_error_us: r.get(3)?,
+                    mode: r.get(4)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        drop(q);
+        drop(db);
+        Ok(api::DsyncHistory {
+            node: node.to_owned(),
+            from,
+            to,
+            points: thin_dsync(rows, usize::try_from(api::HISTORY_POINTS).unwrap_or(1500)),
+        })
+    }
+
     pub fn add_bridge(&self, device: &str, p: &api::BridgePoint) -> Result<(), String> {
         let db = self.conn();
         let id = Self::device_id(&db, device).map_err(|e| e.to_string())?;
@@ -556,6 +638,7 @@ impl Store {
             ("minute", KEEP_MINUTES),
             ("hour", KEEP_HOURS),
             ("bridge", KEEP_MINUTES),
+            ("dsync", KEEP_MINUTES),
         ] {
             db.execute(&format!("DELETE FROM {table} WHERE t < ?1"), [now - keep])
                 .map_err(|e| format!("prune {table}: {e}"))?;
@@ -1193,6 +1276,55 @@ mod bridge_tests {
         assert_eq!(b.device, "dsg");
         assert_eq!(b.last, again);
         assert_eq!((b.to_asio_underruns_1h, b.from_asio_underruns_1h), (3, 0));
+    }
+
+    #[test]
+    fn a_dsync_nodes_states_are_kept_thinned_with_their_lock_losses_and_pruned() {
+        let st = Store::memory().unwrap();
+        let now = 3_000_000;
+        let point =
+            |t: i64, answered: bool, locked: Option<bool>, err: Option<f64>| api::DsyncPoint {
+                t,
+                answered,
+                locked,
+                phase_error_us: err,
+                mode: answered.then(|| "LOCK".to_owned()),
+            };
+        // 3000 states 10 s apart; one lost lock and one unanswered ask in
+        // the middle, the largest phase error next to them.
+        for i in 0..3000 {
+            let t = now - 30_000 + i * 10;
+            let p = match i {
+                1201 => point(t, true, Some(false), Some(80.0)),
+                1203 => point(t, false, None, None),
+                _ => point(t, true, Some(true), Some(1.5)),
+            };
+            st.add_dsync("pc:8898", &p).unwrap();
+        }
+        // Another node's states are its own.
+        st.add_dsync("other:8898", &point(now, true, Some(true), Some(0.5)))
+            .unwrap();
+        let h = st.dsync("pc:8898", now - 40_000, now).unwrap();
+        assert_eq!(h.node, "pc:8898");
+        assert!(h.points.len() <= 1500, "{}", h.points.len());
+        assert!(h.points.windows(2).all(|w| w[0].t < w[1].t));
+        // Thinned, the lock loss, the silence and the 80 µs survive.
+        assert!(h.points.iter().any(|p| p.locked == Some(false)));
+        assert!(h.points.iter().any(|p| !p.answered));
+        assert!(h.points.iter().any(|p| p.phase_error_us == Some(80.0)));
+        assert_eq!(h.points.last().unwrap().t, now - 10);
+        // A short range is every state as stored.
+        let one = st
+            .dsync("pc:8898", now - 30_000 + 12_010, now - 30_000 + 12_030)
+            .unwrap();
+        assert_eq!(
+            one.points.iter().map(|p| p.lost()).collect::<Vec<_>>(),
+            [true, false, true]
+        );
+        assert_eq!(st.dsync("other:8898", 0, now).unwrap().points.len(), 1);
+        // Kept as long as the minutes.
+        st.rollup(now + KEEP_MINUTES + 20_000, 3600).unwrap();
+        assert!(st.dsync("pc:8898", 0, now).unwrap().points.is_empty());
     }
 
     #[test]

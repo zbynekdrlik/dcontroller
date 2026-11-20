@@ -117,6 +117,12 @@ fn App() -> impl IntoView {
         report: RwSignal::new(None),
     };
     provide_context(mtr);
+    let dsel = DsyncSel {
+        node: RwSignal::new(hash_device("#clock/dsync/")),
+        range: RwSignal::new(3600),
+        data: RwSignal::new(None),
+    };
+    provide_context(dsel);
     // The hash is the page's address: a link, back or forward moves the view
     // (and the chosen latency receiver) with it.
     {
@@ -149,6 +155,13 @@ fn App() -> impl IntoView {
                             Duration::from_millis(60),
                         );
                     }
+                }
+            }
+            if v == View::Clock {
+                let d = hash_device("#clock/dsync/");
+                if dsel.node.get_untracked() != d {
+                    dsel.data.set(None);
+                    dsel.node.set(d);
                 }
             }
             if v == View::Meters {
@@ -229,6 +242,36 @@ fn App() -> impl IntoView {
         load_clocks();
     });
     let _ = set_interval_with_handle(load_clocks, CLOCKS_POLL);
+    // The chosen dsync node's states, while the clock view shows it.
+    let load_dsync = move || {
+        let (Some(node), View::Clock) = (dsel.node.get_untracked(), view_now.get_untracked())
+        else {
+            return;
+        };
+        let range = dsel.range.get_untracked();
+        spawn_local(async move {
+            let to = js_sys::Date::now() as i64 / 1000;
+            let url = format!(
+                "/api/dsync/{}?from={}&to={to}",
+                String::from(js_sys::encode_uri_component(&node)),
+                to - range
+            );
+            let r = pages::get_json::<dcontroller_api::DsyncHistory>(&url).await;
+            // Only the answer for what is still chosen shows.
+            if dsel.node.get_untracked().as_deref() == Some(node.as_str())
+                && dsel.range.get_untracked() == range
+            {
+                dsel.data.set(Some(r));
+            }
+        });
+    };
+    Effect::new(move |_| {
+        dsel.node.track();
+        dsel.range.track();
+        view_now.track();
+        load_dsync();
+    });
+    let _ = set_interval_with_handle(load_dsync, DSYNC_POLL);
     // The chosen device's levels, often while the meters view is open.
     let poll_meters = move || {
         if view_now.get_untracked() != View::Meters {
@@ -536,6 +579,19 @@ const CLOCKS_POLL: Duration = Duration::from_secs(4);
 /// The devices' dsync clock figures, as last read.
 #[derive(Clone, Copy)]
 struct Clk(RwSignal<Option<Result<dcontroller_api::Clocks, String>>>);
+
+/// The dsync service node whose chart shows on the Clock page
+/// (`#clock/dsync/<node>`, #124 2c), its range and its last read.
+#[derive(Clone, Copy)]
+struct DsyncSel {
+    node: RwSignal<Option<String>>,
+    range: RwSignal<i64>,
+    data: RwSignal<Option<Result<dcontroller_api::DsyncHistory, String>>>,
+}
+
+/// How often a shown dsync node's chart is read again (its states are
+/// stored every 10 s).
+const DSYNC_POLL: Duration = Duration::from_secs(10);
 
 /// The device the Changes page is narrowed to (`#changes/<device>`).
 #[derive(Clone, Copy)]
@@ -2508,7 +2564,7 @@ fn ClockView(d: Devices) -> impl IntoView {
                 id: "dsync-services",
                 title: "dsync service nodes",
                 state,
-                body: view! { <DsyncServices/> }.into_any(),
+                body: view! { <DsyncServices/><DsyncChart/> }.into_any(),
             });
         }
         parts_view(parts)
@@ -2573,10 +2629,12 @@ fn ptp_table(d: &Devices) -> AnyView {
 #[component]
 fn DsyncServices() -> impl IntoView {
     let Clk(clk) = expect_context::<Clk>();
+    let dsel = expect_context::<DsyncSel>();
     move || {
         let Some(Ok(c)) = clk.get() else {
             return ().into_any();
         };
+        let chosen = dsel.node.get();
         let (line, bad) = clock::service_summary(&c);
         let dash = || "–".to_owned();
         let rows = clock::service_order(&c)
@@ -2595,15 +2653,19 @@ fn DsyncServices() -> impl IntoView {
                     (None, Some(a)) => format!("last {a:.1} s ago"),
                     (None, None) => dash(),
                 };
+                // A click opens the node's chart under the table (#124 2c).
+                let href = format!("#clock/dsync/{}", String::from(js_sys::encode_uri_component(&n.node)));
+                let sel = chosen.as_deref() == Some(n.node.as_str());
                 view! {
-                    <tr class=if state == "bad" { "warn" } else { "" } data-testid="dsync-service" data-name=n.node.clone() data-state=state>
-                        <td title=n.node.clone()>{clock::node_label(&n.node).to_owned()}</td>
+                    <tr class=format!("{}{}", if state == "bad" { "warn" } else { "" }, if sel { " sel" } else { "" }) data-testid="dsync-service" data-name=n.node.clone() data-state=state>
+                        <td title=n.node.clone()><a class="strong" href=href data-testid="dsync-service-open">{clock::node_label(&n.node).to_owned()}</a></td>
                         <td><span class=format!("chip {state}") data-testid="dsync-service-state">{why}</span></td>
                         <td>{n.mode.clone().unwrap_or_else(dash)}</td>
                         <td data-testid="dsync-service-ptp">{heard}</td>
                         <td class="mono">{gm}</td>
                         <td class="num">{n.drift_ppm.map_or_else(dash, |d| format!("{d:+.2} ppm"))}</td>
-                        <td>{n.version.clone().unwrap_or_else(dash)}</td>
+                        // An older dsync names no status schema (#124).
+                        <td data-testid="dsync-service-version">{n.version.clone().unwrap_or_else(dash)}{n.schema.is_none().then_some(" · old dsync")}</td>
                         <td class="num">{n.age_s.map_or_else(|| "never".to_owned(), |a| format!("{a} s ago"))}</td>
                     </tr>
                 }
@@ -2620,6 +2682,67 @@ fn DsyncServices() -> impl IntoView {
             </table></div>
         }
         .into_any()
+    }
+}
+
+/// The chosen dsync service node's chart (#124 2c): its phase error over
+/// the range, dsync's alarm line, and red bars where it had no lock.
+#[component]
+fn DsyncChart() -> impl IntoView {
+    let dsel = expect_context::<DsyncSel>();
+    let chart_ref = NodeRef::<leptos::html::Div>::new();
+    Effect::new(move |_| {
+        let (Some(el), Some(node), Some(Ok(h))) =
+            (chart_ref.get(), dsel.node.get(), dsel.data.get())
+        else {
+            return;
+        };
+        if !h.points.is_empty() {
+            pages::draw_chart(
+                wasm_bindgen::JsCast::unchecked_ref(&*el),
+                &hist::dsync_chart_json(&h, clock::node_label(&node), 260),
+            );
+        }
+    });
+    let has = move || {
+        dsel.data
+            .with(|d| matches!(d, Some(Ok(h)) if !h.points.is_empty()))
+    };
+    let ranges = hist::RANGES
+        .iter()
+        .map(|&(label, secs)| {
+            view! {
+                <button data-testid="dsync-range" data-range=secs.to_string()
+                    class=move || if dsel.range.get() == secs { "seg on" } else { "seg" }
+                    on:click=move |_| dsel.range.set(secs)>{label}</button>
+            }
+        })
+        .collect_view();
+    let words = move || match (dsel.node.get(), dsel.data.get()) {
+        (_, None) => "Reading its states…".to_owned(),
+        (_, Some(Err(e))) => format!("Not readable: {e}"),
+        (Some(n), Some(Ok(h))) if h.points.is_empty() => format!(
+            "Nothing stored for {} in this range: dcontroller stores a node's state every 10 s from v0.1.102 on.",
+            clock::node_label(&n)
+        ),
+        (_, Some(Ok(h))) => match hist::dsync_lost(&h) {
+            (0, n) => format!("Locked the whole range ({n} states, one per 10 s)."),
+            (l, n) => format!("No lock in {l} of {n} states (red bars): not locked, or no answer."),
+        },
+    };
+    view! {
+        <section class="panel" data-testid="dsync-chart-panel"
+            style=move || if dsel.node.get().is_some() { "" } else { "display:none" }>
+            <header class="panel-head">
+                <b data-testid="dsync-chart-title">{move || dsel.node.get().map(|n| format!("{} · phase error", clock::node_label(&n)))}</b>
+                <span class="grow"></span>
+                <div class="seg-group">{ranges}</div>
+                <a class="chip info" href="#clock" data-testid="dsync-chart-close">"✕"</a>
+            </header>
+            <p class="muted small" data-testid="dsync-chart-words">{words}</p>
+            <div class="chart" node_ref=chart_ref data-testid="dsync-chart"
+                style=move || if has() { "" } else { "display:none" }></div>
+        </section>
     }
 }
 

@@ -521,7 +521,44 @@ pub struct DsyncNode {
     /// does not answer.
     #[serde(default)]
     pub may_be_off: bool,
+    /// The `/status` contract's version the node states (dsync v1.35.15 on);
+    /// `None`: an older dsync that names none (#124).
+    #[serde(default)]
+    pub schema: Option<u32>,
 }
+
+/// A dsync service node's stored states from `from` to `to` (unix
+/// seconds), at most [`HISTORY_POINTS`], oldest first (#124 2c).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DsyncHistory {
+    pub node: String,
+    pub from: i64,
+    pub to: i64,
+    pub points: Vec<DsyncPoint>,
+}
+
+/// One stored state of a dsync service node.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DsyncPoint {
+    pub t: i64,
+    /// It answered the last ask (a newer-schema node answers with no figures).
+    pub answered: bool,
+    pub locked: Option<bool>,
+    pub phase_error_us: Option<f64>,
+    pub mode: Option<String>,
+}
+
+impl DsyncPoint {
+    /// Its clock had no usable lock then: it did not answer, or said it is
+    /// not locked.
+    pub fn lost(&self) -> bool {
+        !self.answered || self.locked == Some(false)
+    }
+}
+
+/// The newest dsync `/status` contract this dcontroller reads: a node on a
+/// newer one is not misread, it is named as such (#124).
+pub const DSYNC_SCHEMA: u32 = 1;
 
 /// dsync's own line for the phase error, µs: at or over it, it alarms.
 pub const DSYNC_PHASE_ALARM_US: f64 = 50.0;
@@ -530,6 +567,14 @@ impl DsyncNode {
     /// `ok`, `warn` or `bad`, and why, from what the node says and dsync's
     /// own alarm line; `none` for a travelling node that is away.
     pub fn health(&self) -> (&'static str, String) {
+        if let Some(n) = self.schema.filter(|n| *n > DSYNC_SCHEMA) {
+            return (
+                "bad",
+                format!(
+                    "its status is schema {n}, newer than this dcontroller reads ({DSYNC_SCHEMA}): update dcontroller"
+                ),
+            );
+        }
         if self.error.is_some() && self.may_be_off {
             return (
                 "none",
