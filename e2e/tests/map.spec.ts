@@ -86,6 +86,11 @@ test("the map is the start page: every device a box, every connection a line, a 
   await expect(md.locator(".tile-value")).toHaveText(/^(counting|quiet)$/, { timeout: 30_000 });
   await expect(md).toContainText("mDNS");
   await expect(md).toHaveAttribute("href", "#network");
+  // As in the mockup (#142): on a desktop every tile sits in one row, the
+  // bridge's tile included (a seventh one wrapped to a row of its own).
+  const tops = await top.locator(".tile").evaluateAll((l) => l.map((e) => Math.round(e.getBoundingClientRect().top)));
+  expect(tops.length).toBe(7);
+  expect(new Set(tops).size).toBe(1);
 
   // Links: every connection in one table, the worst first; a row is a click
   // on its line.
