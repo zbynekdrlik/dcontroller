@@ -1,9 +1,10 @@
-//! The overview and the latency history pages. Both stay mounted while
-//! the device list refreshes (they read it inside), so the chart keeps its
-//! zoom and is updated in place, never rebuilt by a poll.
+//! The parts the Map's connection detail is made of: the latency history
+//! and its chart, the health tiles. The Map stays mounted while the device
+//! list refreshes (it reads it inside), so the chart keeps its zoom and is
+//! updated in place, never rebuilt by a poll.
 
 use super::*;
-use dcontroller_api::{Bridge, History, Overview, ReceiverSummary};
+use dcontroller_api::{Bridge, History};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
@@ -17,12 +18,11 @@ extern "C" {
 /// How often the latency page reads the history again while it shows a
 /// live range (one that ends now and spans at most a day).
 pub const HIST_POLL: Duration = Duration::from_secs(5);
-/// How often the overview summary is read again.
+/// How often the Map's connection summaries are read again.
 pub const OVERVIEW_POLL: Duration = Duration::from_secs(10);
 
-/// The latency page's state: the receiver (kept in the hash
-/// `#latency/<name>`), the range, a zoom into it, the last history read,
-/// and the overview summary both pages share.
+/// The chosen connection's history: its receiver (or bridge), the range,
+/// a zoom into it, the last history read.
 #[derive(Clone, Copy)]
 pub struct Hist {
     pub device: RwSignal<Option<String>>,
@@ -31,7 +31,6 @@ pub struct Hist {
     pub data: RwSignal<Option<Result<History, String>>>,
     /// The chosen device's bridge figures over the same range (#108).
     pub bridge: RwSignal<Option<Bridge>>,
-    pub overview: RwSignal<Option<Result<Overview, String>>>,
     pub reads: StoredValue<hist::HistReads>,
 }
 
@@ -112,32 +111,6 @@ pub fn load_history(h: Hist, poll: bool) {
     });
 }
 
-/// Reads the overview summary.
-pub fn load_overview(h: Hist) {
-    spawn_local(async move {
-        h.overview
-            .set(Some(get_json::<Overview>("/api/overview").await))
-    });
-}
-
-pub(crate) fn summary_of<'a>(
-    o: &'a Option<Result<Overview, String>>,
-    name: &str,
-) -> Option<&'a ReceiverSummary> {
-    o.as_ref()?
-        .as_ref()
-        .ok()?
-        .receivers
-        .iter()
-        .find(|r| r.device.eq_ignore_ascii_case(name))
-}
-
-/// A small sparkline of a receiver's last hour (typical peak as a share of
-/// the latency, the measure the chart draws).
-pub(crate) fn spark(r: Option<&ReceiverSummary>, class: &'static str) -> AnyView {
-    spark_of(r.map_or(&[], |r| r.spark.as_slice()), class)
-}
-
 /// A sparkline of an hour's typical seconds, per mille of the latency.
 pub(crate) fn spark_of(values: &[Option<u32>], class: &'static str) -> AnyView {
     let path = hist::spark_path(values, 120.0, 28.0, 1000);
@@ -204,8 +177,7 @@ pub(crate) fn tile(
     }
 }
 
-/// The tiles that come from the device list alone, for the overview and
-/// the map: devices, subscriptions, clock, network.
+/// The tiles that come from the device list alone, for the map: devices, subscriptions, clock, network.
 pub(crate) fn device_tiles(d: &Devices, dsync: Option<&dcontroller_api::Clocks>) -> [AnyView; 4] {
     let read = d.devices.iter().filter(|x| x.channels.is_some()).count();
     let failing = d.devices.iter().filter(|x| x.error.is_some()).count();
@@ -261,7 +233,7 @@ pub(crate) fn device_tiles(d: &Devices, dsync: Option<&dcontroller_api::Clocks>)
                 }
             },
             if failing > 0 { "warn" } else { "ok" },
-            "#devices".to_owned(),
+            "#map/devices".to_owned(),
         )
         .into_any(),
         tile(
@@ -300,124 +272,6 @@ pub(crate) fn device_tiles(d: &Devices, dsync: Option<&dcontroller_api::Clocks>)
         )
         .into_any(),
     ]
-}
-
-/// The overview: the network's health at a glance, and every receiver's
-/// last hour.
-#[component]
-pub fn OverviewPage() -> impl IntoView {
-    let ctl = expect_context::<Ctl>();
-    let h = expect_context::<Hist>();
-    let tiles = move || {
-        let Some(Ok(d)) = ctl.devices.get() else {
-            return view! { <p class="status" data-testid="status">"Loading…"</p> }.into_any();
-        };
-        let clocks = expect_context::<Clk>().0.get();
-        let [devices, subs, clock, network] =
-            device_tiles(&d, clocks.as_ref().and_then(|c| c.as_ref().ok()));
-        let o = h.overview.get();
-        let recs = o
-            .as_ref()
-            .and_then(|o| o.as_ref().ok())
-            .map(|o| o.receivers.clone())
-            .unwrap_or_default();
-        // Receivers by the seconds their late packets hit, not by packets.
-        let clean = recs.iter().filter(|r| r.late_s_1h == 0).count();
-        let now_late: Vec<&str> = recs
-            .iter()
-            .filter(|r| r.late_s_5m > 0)
-            .map(|r| r.device.as_str())
-            .collect();
-        let hit: Vec<String> = recs
-            .iter()
-            .filter(|r| r.late_s_1h > 0)
-            .map(|r| format!("{} {} s", r.device, r.late_s_1h))
-            .collect();
-        let lat_sub = if !now_late.is_empty() {
-            format!("late now: {}", now_late.join(", "))
-        } else if hit.is_empty() {
-            "no late packets in the last hour".to_owned()
-        } else {
-            format!("late seconds: {}", hit.join(", "))
-        };
-        let lat_class = if !now_late.is_empty() {
-            "bad"
-        } else if hit.is_empty() {
-            "ok"
-        } else {
-            "warn"
-        };
-        view! {
-            <section class="tiles">
-                {devices}
-                {tile("tile-latency", "Receivers clean · 1 h", format!("{clean} / {}", recs.len()), lat_sub,
-                    lat_class, "#devices".to_owned())}
-                {subs}
-                {clock}
-                {network}
-            </section>
-        }
-        .into_any()
-    };
-    let receivers = move || {
-        let o = h.overview.get();
-        let list = match &o {
-            None => {
-                return view! { <p class="status">"Reading the latency history…"</p> }.into_any();
-            }
-            Some(Err(e)) => {
-                return view! { <p class="status error">{format!("History not readable: {e}")}</p> }
-                    .into_any();
-            }
-            Some(Ok(o)) => o.receivers.clone(),
-        };
-        if list.is_empty() {
-            return view! { <p class="status" data-testid="overview-empty">"No receiver recorded in the last hour yet."</p> }.into_any();
-        }
-        view! {
-            <div class="table-wrap">
-            <table class="grid" data-testid="overview-receivers">
-                <thead><tr><th>"Receiver"</th><th>"Last hour"</th><th>"Peak"</th><th>"Latency"</th><th>"Late seconds 1 h"</th><th>"Late packets 1 h"</th><th>"Late packets 24 h"</th><th>"State"</th></tr></thead>
-                <tbody>
-                    {list.into_iter().map(|r| {
-                        let (class, text) = hist::health(&r);
-                        let href = format!("#devices/{}", String::from(js_sys::encode_uri_component(&r.device)));
-                        let name = r.device.clone();
-                        let pick = {
-                            let name = name.clone();
-                            move |_| {
-                                h.zoom.set(None);
-                                h.data.set(None);
-                                h.bridge.set(None);
-                                h.device.set(Some(name.clone()));
-                            }
-                        };
-                        view! {
-                            <tr data-testid="overview-receiver" data-name=name.clone()>
-                                <td><a href=href on:click=pick class="strong">{name.clone()}</a></td>
-                                <td>{spark(Some(&r), "spark")}</td>
-                                <td class="num">{hist::ms(r.peak_us)}</td>
-                                <td class="num">{if r.latency_us > 0 { hist::ms(r.latency_us) } else { "–".to_owned() }}</td>
-                                <td class="num">{r.late_s_1h}</td>
-                                <td class="num">{r.late_1h}</td>
-                                <td class="num">{r.late_24h}</td>
-                                <td><span class=format!("chip {class}")>{text}</span></td>
-                            </tr>
-                        }
-                    }).collect_view()}
-                </tbody>
-            </table>
-            </div>
-        }
-        .into_any()
-    };
-    view! {
-        {tiles}
-        <section class="panel">
-            <header class="panel-head"><h2>"Receivers"</h2><span class="muted">"packet latency, recorded all the time"</span></header>
-            {receivers}
-        </section>
-    }
 }
 
 /// The latency history of one receiver: a chart per range with zoom, and
@@ -484,114 +338,9 @@ pub(crate) fn RangeHead(prefix: &'static str) -> impl IntoView {
     }
 }
 
-#[component]
-pub fn LatencyPanel() -> impl IntoView {
-    let h = expect_context::<Hist>();
-    let chart_ref = NodeRef::<leptos::html::Div>::new();
-    let bridge_ref = NodeRef::<leptos::html::Div>::new();
-    // The bridge chart (#108), drawn on every new read of a bridge device.
-    Effect::new(move |_| {
-        let b = h.bridge.get();
-        if let (Some(el), Some(b)) = (bridge_ref.get(), b.filter(|b| !b.points.is_empty())) {
-            chart_latency(el.unchecked_ref(), &hist::bridge_chart_json(&b, 220));
-        }
-    });
-    let wired = StoredValue::new(false);
-    // Draw on every new read; wire the zoom events once.
-    Effect::new(move |_| {
-        let data = h.data.get();
-        let Some(el) = chart_ref.get() else {
-            return;
-        };
-        if !wired.get_value() {
-            wired.set_value(true);
-            wire_zoom(el.unchecked_ref(), h);
-        }
-        if let Some(Ok(hd)) = data.filter(|d| d.as_ref().is_ok_and(|x| !x.flows.is_empty())) {
-            chart_latency(el.unchecked_ref(), &hist::chart_json(&hd, 320));
-        }
-    });
-    let figures = move || {
-        let Some(name) = h.device.get() else {
-            return ().into_any();
-        };
-        match h.data.get() {
-            None => view! { <p class="status" data-testid="lat-wait">"Reading the history…"</p> }.into_any(),
-            Some(Err(e)) => view! { <p class="status error">{format!("Not readable: {e}")}</p> }.into_any(),
-            Some(Ok(hd)) if hd.flows.is_empty() => view! {
-                <p class="status" data-testid="lat-noflows">{format!("Nothing recorded for {name} in this range yet: it receives no flow, or the recorder only started.")}</p>
-            }
-            .into_any(),
-            Some(Ok(hd)) => {
-                let step = if hd.step_s < 60 { format!("{} s", hd.step_s) } else if hd.step_s < 3600 { format!("{} min", hd.step_s / 60) } else { format!("{} h", hd.step_s / 3600) };
-                let tier = hd.tier_s;
-                let groups = hist::by_source(&hd);
-                let late: u64 = groups.iter().map(|s| s.late_total).sum();
-                let damaged: Vec<String> = groups
-                    .iter()
-                    .filter(|s| s.late_total > 0)
-                    .map(|s| format!("{} from {}", s.late_total, s.source))
-                    .collect();
-                let (vclass, verdict) = if late == 0 {
-                    ("chip ok", format!("No late packets: everything from {} source{} played on time.", groups.len(), if groups.len() == 1 { "" } else { "s" }))
-                } else {
-                    ("chip bad", format!("{late} late packets, not played: {}.", damaged.join(", ")))
-                };
-                view! {
-                    <p data-testid="lat-verdict"><span class=vclass>{verdict}</span></p>
-                    <p class="muted small" data-testid="lat-head">{format!("{name} · {} source devices · {} flows · one point per {step}", groups.len(), hd.flows.len())}</p>
-                    <div class="table-wrap">
-                    <table class="grid" data-testid="lat-sources">
-                        <thead><tr><th></th><th>"From"</th><th>"Late (not played)"</th><th>"Worst peak"</th><th>"Latency"</th><th>"Past latency"</th><th>"Distribution"</th></tr></thead>
-                        <tbody>
-                            {groups.iter().enumerate().map(|(i, s)| source_row(hist::chart_color(i).to_owned(), s, tier)).collect_view()}
-                        </tbody>
-                    </table>
-                    </div>
-                }
-                .into_any()
-            }
-        }
-    };
-    // The chosen device's receive latency, on top of the device list (#106);
-    // nothing until a device's latency is picked.
-    let close = move |_| {
-        h.device.set(None);
-        h.data.set(None);
-        h.bridge.set(None);
-        let _ = window().location().set_hash("#devices");
-    };
-    view! {
-        <div style=move || if h.device.get().is_some() { "" } else { "display:none" }>
-            <section class="panel grow" data-testid="lat-panel">
-                <header class="panel-head">
-                    <b data-testid="lat-title">{move || h.device.get().map(|d| format!("Latency · {d}")).unwrap_or_default()}</b>
-                    <RangeHead prefix="lat"/>
-                    <button class="chip info" data-testid="lat-close" on:click=close>"✕"</button>
-                </header>
-                <div class="chart" node_ref=chart_ref data-testid="lat-chart"
-                    style=move || if h.data.get().is_some_and(|d| d.is_ok_and(|x| !x.flows.is_empty())) { "" } else { "display:none" }></div>
-                <p class="muted small hint">"Red bars at the bottom: late packets (not played) at that time. Drag across the chart to zoom in; double-click to zoom out."</p>
-                {figures}
-                <div style=move || if h.bridge.get().is_some_and(|b| !b.points.is_empty()) { "" } else { "display:none" }
-                    data-testid="bridge-panel">
-                    <h3 class="sub">"ASIO bridge"</h3>
-                    {move || h.bridge.get().and_then(|b| b.points.last().cloned()).map(bridge_lines)}
-                    <div class="chart" node_ref=bridge_ref data-testid="bridge-chart"></div>
-                    <p class="muted small hint">"How long the bridge holds a sample, from one card to the other. Red bars at the bottom: underruns (blocks played as silence) at that time."</p>
-                    <details class="bridge-details" data-testid="bridge-details">
-                        <summary>"Details"</summary>
-                        {move || h.bridge.get().as_ref().and_then(hist::bridge_now).map(bridge_table)}
-                    </details>
-                </div>
-            </section>
-        </div>
-    }
-}
-
 /// The bridge's two lines now (#117): each way, how long it holds a
 /// sample, the ASIO side named by its driver.
-fn bridge_lines(p: dcontroller_api::BridgePoint) -> impl IntoView {
+pub(crate) fn bridge_lines(p: dcontroller_api::BridgePoint) -> impl IntoView {
     let [(a, a_us), (b, b_us)] = hist::bridge_lines(&p);
     let known = p.card_us().is_some();
     view! {

@@ -37,9 +37,9 @@ test.describe("TX flows", () => {
     page,
   }) => {
     test.setTimeout(90_000);
-    await page.goto("/#devices");
-    const card = page.locator(`[data-testid="device"][data-name="${DEVICE}"]`);
-    await expect(card.getByTestId("device-counts")).toHaveText("4 TX · 4 RX", { timeout: 30_000 });
+    await page.goto(`/#map/device/${DEVICE}`);
+    const card = page.getByTestId("map-device-body");
+    await expect(page.getByTestId("map-what")).toContainText("4 TX · 4 RX", { timeout: 30_000 });
     // Its fixture's Stage L <- Mix L is one unicast TX flow; a subscription
     // of Stage R to its own Mix R adds a second once it receives.
     expect((await subscribe(page, { channel: "Mix R", device: DEVICE })).ok).toBe(true);
@@ -51,7 +51,6 @@ test.describe("TX flows", () => {
         { timeout: 30_000 },
       )
       .toBe(2);
-    await card.getByTestId("device-name").click();
 
     await card.getByTestId("tx-flows").click();
     // dstack's device states 32 flow slots.

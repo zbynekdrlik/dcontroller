@@ -63,7 +63,7 @@ test("an mDNS flood on the Dante leg raises an alarm naming its source, and its 
     await expect(row).toHaveClass(/warn/);
     await expect(row.getByTestId("mdns-rate")).toHaveText(api.minute.top.find((s: { source: string }) => s.source === routed.ip).per_s.toFixed(1));
 
-    await page.getByTestId("tab-devices").click();
+    await page.getByTestId("tab-map").click();
     await expect(alarm).toBeVisible();
 
     await page.getByTestId("tab-changes").click();

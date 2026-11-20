@@ -1,6 +1,7 @@
 import { test, expect, type ConsoleMessage } from "@playwright/test";
 
-// The device global-setup.ts runs: dstack's own Dante device binary.
+// The device global-setup.ts runs: dstack's own Dante device binary. Its
+// list and detail are on the Map since #130 (the Devices page is gone).
 const DEVICE = "dc-e2e-device";
 
 test.describe("devices", () => {
@@ -15,43 +16,45 @@ test.describe("devices", () => {
   });
 
   test("devices sort newest first, each saying when it joined the network", async ({ page }) => {
-    await page.goto("/#devices");
-    const card = page.locator(`[data-testid="device"][data-name="${DEVICE}"]`);
-    await expect(card.getByTestId("device-counts")).toHaveText("4 TX · 4 RX", { timeout: 30_000 });
+    await page.goto("/#map/devices");
+    const row = page.locator(`[data-testid="map-device-row"][data-name="${DEVICE}"]`);
+    await expect(row).toContainText("4 TX · 4 RX", { timeout: 30_000 });
     // Found in discovery's first sweep: it was there when dcontroller started.
-    await expect(card.getByTestId("device-joined")).toHaveText(/^on the network when dcontroller started \(/);
+    await expect(row).toContainText(/there at start \(/);
     const api = await page.evaluate(() => fetch("/api/devices").then((r) => r.json()));
     type D = { name: string; seen_at: number };
     const names = (l: D[]) => l.map((d) => d.name);
-    const shown = () => page.locator('[data-testid="device"]').evaluateAll((l) => l.map((e) => (e as HTMLElement).dataset.name));
+    const shown = () =>
+      page.locator('[data-testid="map-device-row"]').evaluateAll((l) => l.map((e) => (e as HTMLElement).dataset.name));
     expect(api.devices.every((d: D) => d.seen_at >= api.started_at)).toBe(true);
     // By name first (the server's order), newest first on a click.
-    await expect(page.getByTestId("sort-name")).toHaveClass(/\bon\b/);
+    await expect(page.getByTestId("map-sort-name")).toHaveClass(/\bon\b/);
     expect(await shown()).toEqual(names(api.devices));
-    await page.getByTestId("sort-newest").click();
-    await expect(page.getByTestId("sort-newest")).toHaveClass(/\bon\b/);
+    await page.getByTestId("map-sort-newest").click();
+    await expect(page.getByTestId("map-sort-newest")).toHaveClass(/\bon\b/);
     const newest = [...api.devices].sort(
       (a: D, b: D) => b.seen_at - a.seen_at || a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
     );
     expect(await shown()).toEqual(names(newest));
     // The choice survives the device poll's rebuild.
     await page.waitForResponse((r) => r.url().endsWith("/api/devices"));
-    await expect(page.getByTestId("sort-newest")).toHaveClass(/\bon\b/);
+    await expect(page.getByTestId("map-sort-newest")).toHaveClass(/\bon\b/);
     expect(console_msgs).toEqual([]);
   });
 
   test("lists the discovered Dante device with its channels and subscription", async ({ page }) => {
-    await page.goto("/#devices");
-    const card = page.locator(`[data-testid="device"][data-name="${DEVICE}"]`);
+    await page.goto("/#map/devices");
+    const drow = page.locator(`[data-testid="map-device-row"][data-name="${DEVICE}"]`);
     // Discovery plus the first ARC read: a few seconds on a real network.
-    await expect(card.getByTestId("device-counts")).toHaveText("4 TX · 4 RX", { timeout: 30_000 });
+    await expect(drow).toContainText("4 TX · 4 RX", { timeout: 30_000 });
     await expect(page.getByTestId("status")).toContainText(/Dante devices? on /);
-    await expect(card).toContainText("dcontroller-e2e test-box");
-    await expect(card).toContainText("1 subscribed");
+    await expect(drow).toContainText("dcontroller-e2e test-box");
+    await expect(drow).toContainText("48 kHz · 24 bit · latency 10.00 ms");
 
-    // Channels open on a click on the device.
-    await expect(card.getByTestId("rx-table")).toBeHidden();
-    await card.getByTestId("device-name").click();
+    // A click on the device shows its channels.
+    await drow.click();
+    await expect(page).toHaveURL(new RegExp(`#map/device/${DEVICE}$`));
+    const card = page.getByTestId("map-device-body");
     const rx = card.getByTestId("rx-channel");
     await expect(rx).toHaveCount(4);
     await expect(rx.nth(0)).toContainText("Stage L");
@@ -79,7 +82,6 @@ test.describe("devices", () => {
       model: "test-box",
       encoding_bits: 24,
     });
-    await expect(card.getByTestId("device-settings")).toHaveText("48 kHz · 24 bit · latency 10.00 ms");
     const table = card.getByTestId("settings-table");
     await expect(table).toBeVisible();
     const row = (name: string) => table.locator("tr", { has: page.getByRole("rowheader", { name, exact: true }) }).locator("td");
@@ -101,15 +103,14 @@ test.describe("devices", () => {
     expect(console_msgs).toEqual([]);
   });
 
-  test("an open device stays open while the list refreshes", async ({ page }) => {
-    await page.goto("/#devices");
-    const card = page.locator(`[data-testid="device"][data-name="${DEVICE}"]`);
-    await expect(card.getByTestId("device-counts")).toHaveText("4 TX · 4 RX", { timeout: 30_000 });
-    await card.getByTestId("device-name").click();
-    await expect(card.getByTestId("rx-table")).toBeVisible();
+  test("a chosen device stays shown while the list refreshes", async ({ page }) => {
+    await page.goto(`/#map/device/${DEVICE}`);
+    const card = page.getByTestId("map-device-body");
+    await expect(card.getByTestId("rx-table")).toBeVisible({ timeout: 30_000 });
     // Two poll intervals (3 s each) later the channels are still shown.
     await page.waitForTimeout(7_000);
     await expect(card.getByTestId("rx-table")).toBeVisible();
+    await expect(page.getByTestId("map-title")).toHaveText(DEVICE);
     expect(console_msgs).toEqual([]);
   });
 });

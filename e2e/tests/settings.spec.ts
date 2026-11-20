@@ -22,14 +22,14 @@ test.describe("settings", () => {
       if (m.type() === "error" || m.type() === "warning") msgs.push(`${m.type()}: ${m.text()}`);
     });
     page.on("pageerror", (e) => msgs.push(`pageerror: ${e.message}`));
-    await page.goto("/#devices");
-    const card = page.locator(`[data-testid="device"][data-name="${DEVICE}"]`);
-    await expect(card.getByTestId("device-counts")).toHaveText("4 TX · 4 RX", { timeout: 30_000 });
-    await card.getByTestId("device-name").click();
+    await page.goto(`/#map/device/${DEVICE}`);
+    await expect(page.getByTestId("map-what")).toContainText("4 TX · 4 RX", { timeout: 30_000 });
   });
 
   test("a latency change is confirmed, read back from the device, logged, and set back", async ({ page }) => {
-    const card = page.locator(`[data-testid="device"][data-name="${DEVICE}"]`);
+    const card = page.getByTestId("map-device-body");
+    const setting = (name: string) =>
+      card.getByTestId("settings-table").locator("tr", { has: page.getByRole("rowheader", { name, exact: true }) }).locator("td");
     const dialog = page.getByTestId("setting-dialog");
     await card.getByTestId("change-latency").click();
     await expect(dialog.getByTestId("setting-title")).toHaveText(`Change the latency of ${DEVICE} (now 10.00 ms)`);
@@ -47,7 +47,7 @@ test.describe("settings", () => {
     await expect(page.getByTestId("change-result")).toHaveText("Done: done, read back from the device: latency 5.00 ms", {
       timeout: 20_000,
     });
-    await expect(card.getByTestId("device-settings")).toContainText("latency 5.00 ms");
+    await expect(setting("Latency, active")).toHaveText("5.00 ms");
     const after = await changes(page);
     expect(after.length).toBe(before.length + 1);
     expect(after[0]).toMatchObject({
@@ -76,12 +76,14 @@ test.describe("settings", () => {
       DEVICE,
     );
     expect(back.ok).toBe(true);
-    await expect(card.getByTestId("device-settings")).toContainText("latency 10.00 ms");
+    await expect(setting("Latency, active")).toHaveText("10.00 ms");
     expect(msgs).toEqual([]);
   });
 
   test("a device with one sample rate offers nothing else", async ({ page }) => {
-    const card = page.locator(`[data-testid="device"][data-name="${DEVICE}"]`);
+    const card = page.getByTestId("map-device-body");
+    const setting = (name: string) =>
+      card.getByTestId("settings-table").locator("tr", { has: page.getByRole("rowheader", { name, exact: true }) }).locator("td");
     await card.getByTestId("change-sample-rate").click();
     const dialog = page.getByTestId("setting-dialog");
     await expect(dialog.getByTestId("setting-title")).toHaveText(`Change the sample rate of ${DEVICE} (now 48 kHz)`);
@@ -93,7 +95,9 @@ test.describe("settings", () => {
   });
 
   test("an encoding the device does not take ends not confirmed, logged; cancel sends nothing", async ({ page }) => {
-    const card = page.locator(`[data-testid="device"][data-name="${DEVICE}"]`);
+    const card = page.getByTestId("map-device-body");
+    const setting = (name: string) =>
+      card.getByTestId("settings-table").locator("tr", { has: page.getByRole("rowheader", { name, exact: true }) }).locator("td");
     const dialog = page.getByTestId("setting-dialog");
     await card.getByTestId("change-encoding").click();
     await expect(dialog.getByTestId("setting-title")).toHaveText(`Change the encoding of ${DEVICE} (now 24 bit)`);
@@ -128,8 +132,8 @@ test.describe("settings", () => {
     const row = page.locator('[data-testid="change-row"]:not([data-kind="status"])').first();
     await expect(row).toContainText(`encoding @ ${DEVICE}`);
     await expect(row).toHaveClass(/err/);
-    await page.getByTestId("tab-devices").click();
-    await expect(card.getByTestId("device-settings")).toContainText("24 bit");
+    await page.goto(`/#map/device/${DEVICE}`);
+    await expect(setting("Encoding")).toHaveText("PCM 24 bit", { timeout: 30_000 });
     expect(msgs).toEqual([]);
   });
 });

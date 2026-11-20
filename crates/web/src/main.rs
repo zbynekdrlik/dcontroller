@@ -51,7 +51,6 @@ async fn fetch_devices() -> Result<Devices, String> {
 fn App() -> impl IntoView {
     let devices = RwSignal::new(None::<Result<Devices, String>>);
     // The devices whose channels are open, kept across refreshes.
-    provide_context(Open(RwSignal::new(BTreeSet::new())));
     provide_context(NewestFirst(RwSignal::new(false)));
     let changes_only = RwSignal::new(hash_device("#changes/"));
     provide_context(ChangesOnly(changes_only));
@@ -76,12 +75,11 @@ fn App() -> impl IntoView {
     };
     provide_context(ctl);
     let hst = pages::Hist {
-        device: RwSignal::new(hash_device("#devices/")),
+        device: RwSignal::new(None),
         range: RwSignal::new(hist::DEFAULT_RANGE),
         zoom: RwSignal::new(None),
         data: RwSignal::new(None),
         bridge: RwSignal::new(None),
-        overview: RwSignal::new(None),
         reads: StoredValue::new(hist::HistReads::default()),
     };
     provide_context(hst);
@@ -93,7 +91,9 @@ fn App() -> impl IntoView {
         // A phone holds one column of the schema: it opens on the table of
         // connections, the schema one tap away (#123).
         view: RwSignal::new(
-            if window()
+            if let Some(t) = map::tab_of(&window().location().hash().unwrap_or_default()) {
+                mappage::MapView::of(t)
+            } else if window()
                 .inner_width()
                 .ok()
                 .and_then(|w| w.as_f64())
@@ -122,7 +122,11 @@ fn App() -> impl IntoView {
                 view_now.set(v);
             }
             if v == View::Map {
-                let c = map::Sel::from_hash(&window().location().hash().unwrap_or_default());
+                let hash = window().location().hash().unwrap_or_default();
+                if let Some(t) = map::tab_of(&hash) {
+                    mp.view.set(mappage::MapView::of(t));
+                }
+                let c = map::Sel::from_hash(&hash);
                 if mp.chosen.get_untracked() != c {
                     let picked = c.is_some();
                     mp.chosen.set(c);
@@ -148,15 +152,6 @@ fn App() -> impl IntoView {
                     changes_only.set(d);
                 }
             }
-            if v == View::Devices {
-                let d = hash_device("#devices/");
-                if hst.device.get_untracked() != d {
-                    hst.zoom.set(None);
-                    hst.data.set(None);
-                    hst.bridge.set(None);
-                    hst.device.set(d);
-                }
-            }
         });
         let _ = window().add_event_listener_with_callback(
             "hashchange",
@@ -175,13 +170,13 @@ fn App() -> impl IntoView {
             hst.zoom.get(),
             view_now.get(),
         );
-        if matches!(v, View::Devices | View::Map) && hst.device.get().is_some() {
+        if v == View::Map && hst.device.get().is_some() {
             pages::load_history(hst, false);
         }
     });
     let _ = set_interval_with_handle(
         move || {
-            if matches!(view_now.get_untracked(), View::Devices | View::Map)
+            if view_now.get_untracked() == View::Map
                 && hst.device.get_untracked().is_some()
                 && hst.live()
             {
@@ -189,19 +184,6 @@ fn App() -> impl IntoView {
             }
         },
         pages::HIST_POLL,
-    );
-    Effect::new(move |_| {
-        if matches!(view_now.get(), View::Overview | View::Devices) {
-            pages::load_overview(hst);
-        }
-    });
-    let _ = set_interval_with_handle(
-        move || {
-            if matches!(view_now.get_untracked(), View::Overview | View::Devices) {
-                pages::load_overview(hst);
-            }
-        },
-        pages::OVERVIEW_POLL,
     );
     // The map's connections: at once on the page, then with the overview.
     Effect::new(move |_| {
@@ -227,10 +209,7 @@ fn App() -> impl IntoView {
     provide_context(clk);
     let load_clocks = move || {
         // The clock page, and the pages whose clock tile counts dsync too.
-        if matches!(
-            view_now.get_untracked(),
-            View::Clock | View::Map | View::Overview
-        ) {
+        if matches!(view_now.get_untracked(), View::Clock | View::Map) {
             spawn_local(async move {
                 clk.0.set(Some(
                     pages::get_json::<dcontroller_api::Clocks>("/api/clocks").await,
@@ -409,16 +388,6 @@ fn App() -> impl IntoView {
                     }}</p>
                 }.into_any(),
                 (View::Map, _) => view! { <mappage::MapPage/> }.into_any(),
-                (View::Overview, _) => view! { <pages::OverviewPage/> }.into_any(),
-                // The latency panel stays mounted across the device poll
-                // (its chart keeps its zoom); only the list is rebuilt.
-                (View::Devices, _) => view! {
-                    <pages::LatencyPanel/>
-                    {move || match devices.get() {
-                        Some(Ok(d)) => view! { <DeviceList d=d/> }.into_any(),
-                        _ => ().into_any(),
-                    }}
-                }.into_any(),
                 (v, _) => (move || match devices.get() {
                     Some(Ok(d)) => match v {
                         View::Routing => view! { <Routing d=d/> }.into_any(),
@@ -426,7 +395,7 @@ fn App() -> impl IntoView {
                         View::Meters => view! { <MeterView d=d/> }.into_any(),
                         View::Clock => view! { <ClockView d=d/> }.into_any(),
                         View::Network => view! { <NetworkView d=d/> }.into_any(),
-                        View::Map | View::Overview | View::Devices => ().into_any(),
+                        View::Map => ().into_any(),
                     },
                     _ => ().into_any(),
                 }).into_any(),
@@ -446,9 +415,7 @@ fn App() -> impl IntoView {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum View {
     Map,
-    Overview,
     Routing,
-    Devices,
     Meters,
     Clock,
     Network,
@@ -457,11 +424,10 @@ enum View {
 
 impl View {
     /// The views in the sidebar's order.
-    const ALL: [View; 8] = [
+    /// The Overview and Devices pages live on the Map now (#130).
+    const ALL: [View; 6] = [
         View::Map,
-        View::Overview,
         View::Routing,
-        View::Devices,
         View::Meters,
         View::Clock,
         View::Network,
@@ -471,9 +437,7 @@ impl View {
     fn slug(self) -> &'static str {
         match self {
             View::Map => "map",
-            View::Overview => "overview",
             View::Routing => "routing",
-            View::Devices => "devices",
             View::Meters => "meters",
             View::Clock => "clock",
             View::Network => "network",
@@ -484,9 +448,7 @@ impl View {
     fn title(self) -> &'static str {
         match self {
             View::Map => "Map",
-            View::Overview => "Overview",
             View::Routing => "Routing",
-            View::Devices => "Devices",
             View::Meters => "Meters",
             View::Clock => "Clock",
             View::Network => "Network",
@@ -506,11 +468,10 @@ impl View {
             .next()
             .unwrap_or_default()
             .to_owned();
-        // Latency lives on the Devices page now (#106): an old link moves there.
-        if head == "latency" {
-            let rest = hash.trim_start_matches('#').trim_start_matches("latency");
-            let _ = window().location().replace(&format!("#devices{rest}"));
-            return View::Devices;
+        // An old page's link lands on the Map (#130), latency's too (#106).
+        if let Some(new) = map::moved(&hash) {
+            let _ = window().location().replace(&new);
+            return View::Map;
         }
         View::ALL
             .into_iter()
@@ -525,11 +486,9 @@ fn icon(v: View) -> impl IntoView {
         View::Map => {
             "M3 4h6v5H3zM15 4h6v5h-6zM9 15h6v5H9zM9 6.5h6M6 9v3.5a2 2 0 0 0 2 2h1M18 9v3.5a2 2 0 0 1-2 2h-1"
         }
-        View::Overview => "M3 13h8V3H3zM13 21h8V11h-8zM3 21h8v-6H3zM13 9h8V3h-8z",
         View::Routing => {
             "M4 4h4v4H4zM16 4h4v4h-4zM4 16h4v4H4zM16 16h4v4h-4zM8 6h8M6 8v8M18 8v8M8 18h8"
         }
-        View::Devices => "M4 5h16v6H4zM4 13h16v6H4zM7 8h.01M7 16h.01",
         View::Meters => "M5 20V10M10 20V4M15 20v-7M20 20V8",
         View::Clock => "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 7v5l3 3",
         View::Network => "M12 3v6M5 21v-4h14v4M12 9v8M5 13h14M5 13v4M19 13v4",
@@ -552,7 +511,7 @@ fn logo() -> impl IntoView {
     }
 }
 
-/// The device named in the hash after `prefix` (`#devices/<name>`).
+/// The device named in the hash after `prefix` (`#meters/<name>`).
 fn hash_device(prefix: &str) -> Option<String> {
     let hash = window().location().hash().unwrap_or_default();
     let name = hash.strip_prefix(prefix)?;
@@ -2138,49 +2097,10 @@ fn status_line(d: &Devices) -> String {
     }
 }
 
-#[component]
-fn DeviceList(d: Devices) -> impl IntoView {
-    let line = status_line(&d);
-    let NewestFirst(newest) = expect_context::<NewestFirst>();
-    let start = pages::time_text(d.started_at as i64);
-    let list = move || {
-        devlist::order(&d, newest.get())
-            .into_iter()
-            .map(|dev| {
-                let joined = match devlist::joined(&dev, &d) {
-                    devlist::Joined::AtStart => {
-                        format!("on the network when dcontroller started ({start})")
-                    }
-                    devlist::Joined::At(t) => format!("joined {}", pages::time_text(t as i64)),
-                };
-                view! { <DeviceCard dev=dev joined=joined/> }
-            })
-            .collect_view()
-    };
-    let seg = move |on: bool, label: &'static str, id: &'static str| {
-        view! {
-            <button data-testid=id class=move || if newest.get() == on { "seg on" } else { "seg" }
-                on:click=move |_| newest.set(on)>{label}</button>
-        }
-    };
-    view! {
-        <p class="status" data-testid="status">{line}</p>
-        <div class="seg-group" data-testid="device-sort">
-            {seg(false, "By name", "sort-name")}
-            {seg(true, "Newest first", "sort-newest")}
-        </div>
-        <ul class="devices">{list}</ul>
-    }
-}
-
-/// The Devices page lists the devices newest first (else by name), kept
+/// The Map's device table lists the devices newest first (else by name), kept
 /// across the device poll's rebuilds.
 #[derive(Clone, Copy)]
 struct NewestFirst(RwSignal<bool>);
-
-/// The names of the devices whose channels are open.
-#[derive(Clone, Copy)]
-struct Open(RwSignal<BTreeSet<String>>);
 
 /// The short settings line: sample rate, encoding and active latency.
 fn settings_line(s: &Settings, i: Option<&Info>) -> Option<String> {
@@ -2752,92 +2672,6 @@ fn DsyncClocks(d: Devices) -> impl IntoView {
             })}
         }
         .into_any()
-    }
-}
-
-#[component]
-fn DeviceCard(dev: Device, joined: String) -> impl IntoView {
-    let body = dev.clone();
-    let Open(open) = expect_context::<Open>();
-    let is_open = open.with_untracked(|o| o.contains(&dev.name));
-    let key = dev.name.clone();
-    let toggle = move |ev: leptos::ev::Event| {
-        let now = event_target::<web_sys::HtmlDetailsElement>(&ev).open();
-        open.update_untracked(|o| {
-            if now {
-                o.insert(key.clone());
-            } else {
-                o.remove(&key);
-            }
-        });
-    };
-    let what = [dev.manufacturer.clone(), dev.model.clone()]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" ");
-    let counts = dev.channels.as_ref().map_or_else(
-        || "channels not read yet".to_string(),
-        |c| format!("{} TX · {} RX", c.tx.len(), c.rx.len()),
-    );
-    let subscribed = dev
-        .channels
-        .as_ref()
-        .map_or(0, |c| c.rx.iter().filter(|r| r.source.is_some()).count());
-    let name = dev.name.clone();
-    let name_attr = dev.name.clone();
-    // A receiver's latency (#106): its last hour as a chip; a click shows
-    // its latency on top of this page.
-    let latency = dev
-        .channels
-        .as_ref()
-        .is_some_and(|c| !c.rx.is_empty())
-        .then(|| {
-            let h = expect_context::<pages::Hist>();
-            let n = dev.name.clone();
-            let chip = {
-                let n = n.clone();
-                move || {
-                    let o = h.overview.get();
-                    let (class, text) = pages::summary_of(&o, &n)
-                        .map_or(("none", "latency not recorded yet".to_owned()), hist::health);
-                    let on = h.device.get().is_some_and(|d| hist::same_name(&d, &n));
-                    (format!("chip {class}{}", if on { " sel" } else { "" }), text)
-                }
-            };
-            let chip2 = chip.clone();
-            let show = move |ev: leptos::ev::MouseEvent| {
-                ev.prevent_default();
-                ev.stop_propagation();
-                let _ = window().location().set_hash(&format!(
-                    "#devices/{}",
-                    String::from(js_sys::encode_uri_component(&n))
-                ));
-                window().scroll_to_with_x_and_y(0.0, 0.0);
-            };
-            view! {
-                <button class=move || chip().0 data-testid="device-latency" title="Show this receiver's latency"
-                    on:click=show>{move || format!("latency: {}", chip2().1)}</button>
-            }
-        });
-    view! {
-        <li class="device" data-testid="device" data-name=name_attr>
-            <details open=is_open on:toggle=toggle>
-                <summary>
-                    <span class="name" data-testid="device-name">{name}</span>
-                    <span class="model">{what}</span>
-                    <span class="counts" data-testid="device-counts">{counts}</span>
-                    <span class="subs">{format!("{subscribed} subscribed")}</span>
-                    {settings_line(&dev.settings.clone().unwrap_or_default(), dev.info.as_ref()).map(|l| view! {
-                        <span class="subs" data-testid="device-settings">{l}</span>
-                    })}
-                    <span class="addr">{dev.address.clone()}</span>
-                    <span class="subs" data-testid="device-joined">{joined}</span>
-                    {latency}
-                </summary>
-                <DeviceBody dev=body/>
-            </details>
-        </li>
     }
 }
 

@@ -30,6 +30,17 @@ pub enum MapView {
     Devices,
 }
 
+impl MapView {
+    /// The view [`map::tab_of`] names.
+    pub fn of(tab: &str) -> MapView {
+        match tab {
+            "links" => MapView::Links,
+            "devices" => MapView::Devices,
+            _ => MapView::Schema,
+        }
+    }
+}
+
 /// Reads the connections' summaries.
 pub fn load_links(m: MapCtl) {
     spawn_local(async move {
@@ -110,6 +121,14 @@ fn row_marked(r: Row, on: bool) -> impl IntoView {
         let class = if n == 0 { "num" } else { "num bad strong" };
         view! { <td class=class>{map::num(n)}</td> }
     };
+    // The seconds of the hour with a late packet (#130: the Overview's
+    // column, now here).
+    let late_s = r.sum.as_ref().map_or_else(dash, |s| map::num(s.late_s_1h));
+    let late_s_class = if r.sum.as_ref().is_some_and(|s| s.late_s_1h > 0) {
+        "num bad strong"
+    } else {
+        "num"
+    };
     let (typical, worst, late_1h, late_24h) = match &r.sum {
         Some(s) => (
             hist::ms(s.typical_us),
@@ -131,6 +150,7 @@ fn row_marked(r: Row, on: bool) -> impl IntoView {
             <td class="num">{r.label}</td>
             <td class="num">{typical}</td>
             <td class="num">{worst}</td>
+            <td class=late_s_class data-testid="late-seconds">{late_s}</td>
             {late_1h}
             {late_24h}
             <td><span class=r.chip.0>{r.chip.1}</span></td>
@@ -259,7 +279,16 @@ pub fn MapPage() -> impl IntoView {
                 .and_then(|r| r.as_ref().ok())
                 .is_some_and(|x| !hist::only_source(x, &from).flows.is_empty())
         }),
-        Some(map::Sel::Device { .. }) => false,
+        // A device: everything it receives, else its bridge's both ways.
+        Some(map::Sel::Device { .. }) => {
+            h.data.with(|d| {
+                d.as_ref()
+                    .and_then(|r| r.as_ref().ok())
+                    .is_some_and(|x| !x.flows.is_empty())
+            }) || h
+                .bridge
+                .with(|b| b.as_ref().is_some_and(|b| !b.points.is_empty()))
+        }
         Some(map::Sel::Bridge { .. }) => h
             .bridge
             .with(|b| b.as_ref().is_some_and(|b| !b.points.is_empty())),
@@ -287,6 +316,12 @@ pub fn MapPage() -> impl IntoView {
                     el.unchecked_ref(),
                     &hist::bridge_dir_chart_json(&b, to_dante, 300),
                 );
+            }
+            (Some(map::Sel::Device { .. }), Some(Ok(hd)), _) if !hd.flows.is_empty() => {
+                pages::draw_chart(el.unchecked_ref(), &hist::chart_json(&hd, 300));
+            }
+            (Some(map::Sel::Device { .. }), _, Some(b)) => {
+                pages::draw_chart(el.unchecked_ref(), &hist::bridge_chart_json(&b, 300));
             }
             _ => {}
         }
@@ -502,7 +537,7 @@ pub fn MapPage() -> impl IntoView {
                     <h3 class="sub">{format!("Other connections of {to}")}</h3>
                     <div class="table-wrap">
                     <table class="grid links" data-testid="map-others">
-                        <thead><tr><th>"Connection"</th><th>"Last hour"</th><th>"Latency"</th><th>"Typical"</th><th>"Worst peak"</th><th>"Lost 1 h"</th><th>"Lost 24 h"</th><th>"State"</th></tr></thead>
+                        <thead><tr><th>"Connection"</th><th>"Last hour"</th><th>"Latency"</th><th>"Typical"</th><th>"Worst peak"</th><th>"Late seconds 1 h"</th><th>"Lost 1 h"</th><th>"Lost 24 h"</th><th>"State"</th></tr></thead>
                         <tbody>{others.into_iter().map(row).collect_view()}</tbody>
                     </table>
                     </div>
@@ -523,6 +558,12 @@ pub fn MapPage() -> impl IntoView {
                 .into_any()
             }
             map::Sel::Bridge { device, .. } => {
+                // Its two ways now (#117), as the Devices page showed them.
+                let lines = h
+                    .bridge
+                    .get()
+                    .and_then(|b| b.points.last().cloned())
+                    .map(pages::bridge_lines);
                 let table = h
                     .bridge
                     .get()
@@ -530,6 +571,7 @@ pub fn MapPage() -> impl IntoView {
                     .and_then(hist::bridge_now)
                     .map(pages::bridge_table);
                 view! {
+                    {lines}
                     {table}
                     <p class="actions" data-testid="map-actions">
                         <a class="act" href=map::Sel::Device { name: device.clone() }.hash()>{format!("Device {device}")}</a>
@@ -586,7 +628,7 @@ pub fn MapPage() -> impl IntoView {
                         <h3 class="sub">{title}</h3>
                         <div class="table-wrap">
                         <table class="grid links" data-testid=id>
-                            <thead><tr><th>"Connection"</th><th>"Last hour"</th><th>"Latency"</th><th>"Typical"</th><th>"Worst peak"</th><th>"Lost 1 h"</th><th>"Lost 24 h"</th><th>"State"</th></tr></thead>
+                            <thead><tr><th>"Connection"</th><th>"Last hour"</th><th>"Latency"</th><th>"Typical"</th><th>"Worst peak"</th><th>"Late seconds 1 h"</th><th>"Lost 1 h"</th><th>"Lost 24 h"</th><th>"State"</th></tr></thead>
                             <tbody>{rows.into_iter().map(row).collect_view()}</tbody>
                         </table>
                         </div>
@@ -717,7 +759,7 @@ pub fn MapPage() -> impl IntoView {
         view! {
             <div class="table-wrap">
             <table class="grid links" data-testid="map-links">
-                <thead><tr><th>"Connection"</th><th>"Last hour"</th><th>"Latency"</th><th>"Typical"</th><th>"Worst peak"</th><th>"Lost 1 h"</th><th>"Lost 24 h"</th><th>"State"</th></tr></thead>
+                <thead><tr><th>"Connection"</th><th>"Last hour"</th><th>"Latency"</th><th>"Typical"</th><th>"Worst peak"</th><th>"Late seconds 1 h"</th><th>"Lost 1 h"</th><th>"Lost 24 h"</th><th>"State"</th></tr></thead>
                 <tbody>{rows.into_iter().map(|r| { let sel = on.as_deref() == Some(r.hash.as_str()); row_marked(r, sel) }).collect_view()}</tbody>
             </table>
             </div>
@@ -858,7 +900,7 @@ pub fn MapPage() -> impl IntoView {
                 {state}
                 {chosen_by}
                 <span class="grow"></span>
-                <span class="panel-head" style=move || if matches!(shown.get(), Some(map::Sel::Device { .. })) { "display:none" } else { "margin:0" }>
+                <span class="panel-head" style=move || if has_chart.get() || !matches!(shown.get(), Some(map::Sel::Device { .. })) { "margin:0" } else { "display:none" }>
                     <RangeHead prefix="map"/>
                 </span>
             </header>

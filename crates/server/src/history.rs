@@ -760,6 +760,15 @@ impl Store {
                  GROUP BY f.sources, f.latency_us, recent"
             ))
             .map_err(|e| e.to_string())?;
+        // Seconds of the hour with a late packet, per source (#130): two
+        // flows late in the same second count it once.
+        let mut late_s = db
+            .prepare_cached(&format!(
+                "SELECT COALESCE(f.sources, '[]'), x.t FROM second x {FLOW}
+                 WHERE x.device = ?1 AND x.t > ?2 AND x.t <= ?3 AND x.late > 0
+                 GROUP BY f.sources, x.t"
+            ))
+            .map_err(|e| e.to_string())?;
         let source = |text: &str| -> String {
             let list: Vec<String> = serde_json::from_str(text).unwrap_or_default();
             if list.is_empty() {
@@ -882,6 +891,28 @@ impl Store {
                     }
                 }
             }
+            let rows = late_s
+                .query_map(params![id, hour, now], |r| r.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            let mut seconds: Vec<(String, u64)> = Vec::new();
+            for row in rows {
+                let from = source(&row.map_err(|e| e.to_string())?);
+                match seconds
+                    .iter_mut()
+                    .find(|(f, _)| f.eq_ignore_ascii_case(&from))
+                {
+                    Some((_, n)) => *n += 1,
+                    None => seconds.push((from, 1)),
+                }
+            }
+            for (l, _, _, _) in &mut found {
+                if let Some((_, n)) = seconds
+                    .iter()
+                    .find(|(f, _)| f.eq_ignore_ascii_case(&l.from))
+                {
+                    l.late_s_1h = (*n).min(3600);
+                }
+            }
             for (mut l, flows, _, spans) in found {
                 if flows.is_empty() {
                     continue;
@@ -907,6 +938,7 @@ impl Store {
         });
         drop(per);
         drop(older);
+        drop(late_s);
         drop(q);
         let mut q = db
             .prepare(
@@ -1280,6 +1312,40 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM usage", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 4);
+    }
+
+    #[test]
+    fn a_connections_late_seconds_count_each_second_of_the_hour_once() {
+        let st = Store::memory().unwrap();
+        let now = 2_000_000;
+        let src = |s: &str| FlowInfo {
+            sources: vec![s.into()],
+            ..flow(1000)
+        };
+        st.set_flow("desk", 1, &src("player"), now - 90_000)
+            .unwrap();
+        st.set_flow("desk", 2, &src("player"), now - 90_000)
+            .unwrap();
+        st.set_flow("desk", 3, &src("video"), now - 90_000).unwrap();
+        st.add(
+            "desk",
+            &[
+                // Two hours ago: not this hour.
+                s(1, now - 7200, 400, 5),
+                // Both flows late in one second, then one more second.
+                s(1, now - 100, 400, 2),
+                s(2, now - 100, 400, 4),
+                s(1, now - 50, 400, 1),
+                s(2, now - 40, 400, 0),
+                s(3, now - 30, 400, 0),
+            ],
+        )
+        .unwrap();
+        let l = st.links(now).unwrap();
+        let by = |from: &str| l.links.iter().find(|x| x.from == from).unwrap();
+        assert_eq!(by("player").late_s_1h, 2);
+        assert_eq!(by("player").late_1h, 7);
+        assert_eq!(by("video").late_s_1h, 0);
     }
 
     #[test]

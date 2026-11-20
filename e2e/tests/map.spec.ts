@@ -197,8 +197,9 @@ test("the map is the start page: every device a box, every connection a line, a 
   await expect(map.locator(`[data-testid="map-node"][data-node="${DEVICE}"]`)).toHaveClass(/\bsel\b/);
   await expect(line).toHaveClass(/\bof\b/);
   await expect(page.getByTestId("map-what")).toContainText("4 TX · 4 RX");
-  await expect(page.getByTestId("map-chart")).toBeHidden();
-  await expect(page.locator('[data-testid="map-range"]').first()).toBeHidden();
+  // Its own chart (#130): everything it receives, as the Devices page had it.
+  await expect(page.getByTestId("map-chart").locator("canvas")).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator('[data-testid="map-range"]').first()).toBeVisible();
   // Its connections, each with the last hour's figures.
   const incoming = page.getByTestId("map-dev-in").getByTestId("map-dev-row");
   await expect(incoming).toHaveCount(1);
