@@ -105,6 +105,9 @@ fn App() -> impl IntoView {
             },
         ),
         span: RwSignal::new(map::Span::default()),
+        video: RwSignal::new(None),
+        video_sel: RwSignal::new(None),
+        video_hist: RwSignal::new(None),
     };
     provide_context(mp);
     // The routing matrix takes each connection's state from the same read.
@@ -206,6 +209,31 @@ fn App() -> impl IntoView {
                 && hst.live()
             {
                 pages::load_history(hst, true);
+            }
+        },
+        pages::HIST_POLL,
+    );
+    // The shown video connection's reads over the chart's range (#124),
+    // again every few seconds while the range is live.
+    let video_range = move || {
+        let (from, to) = hst.zoom.get_untracked().unwrap_or_else(|| {
+            let to = js_sys::Date::now() as i64 / 1000;
+            (to - hst.range.get_untracked(), to)
+        });
+        mappage::load_video(mp, from, to);
+    };
+    Effect::new(move |_| {
+        mp.video_sel.track();
+        hst.range.track();
+        hst.zoom.track();
+        if view_now.get() == View::Map {
+            video_range();
+        }
+    });
+    let _ = set_interval_with_handle(
+        move || {
+            if view_now.get_untracked() == View::Map && hst.live() {
+                video_range();
             }
         },
         pages::HIST_POLL,

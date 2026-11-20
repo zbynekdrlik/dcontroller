@@ -10,6 +10,7 @@ pub mod history;
 pub mod latency;
 pub mod mdns;
 pub mod meters;
+pub mod video;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -56,6 +57,11 @@ pub struct Config {
     /// they live in the box's config, not in the repo.
     #[serde(default)]
     pub dsync_nodes: Vec<String>,
+    /// camera-box's video node list (`…/video-nodes.json`, dcontroller #124
+    /// phase 1). A site fact: it lives in the box's config. Unset = no
+    /// video network read.
+    #[serde(default)]
+    pub video_nodes_url: Option<String>,
 }
 
 fn default_history_db() -> PathBuf {
@@ -130,6 +136,7 @@ pub struct Shared {
     pub clocks: clocks::Latest,
     /// Every configured dsync service node's newest status (#124).
     pub dsync: dsync::Latest,
+    pub video: video::Latest,
 }
 
 async fn devices(State(s): State<Shared>) -> axum::Json<dcontroller_api::Devices> {
@@ -334,6 +341,47 @@ async fn bridge_report(
         })
 }
 
+/// The video network now (#124 phase 1): the nodes and every connection
+/// with its windows.
+async fn video_now(
+    State(s): State<Shared>,
+) -> Result<axum::Json<dcontroller_api::VideoReport>, StatusCode> {
+    let now = history::unix_now();
+    tokio::task::spawn_blocking(move || video::report(&s.video, &s.history, now))
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "video: task failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .map(axum::Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "video: read failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+/// A video connection's reads over a range (#124 phase 1).
+async fn video_report(
+    State(s): State<Shared>,
+    axum::extract::Path(conn): axum::extract::Path<String>,
+    axum::extract::Query(r): axum::extract::Query<Range>,
+) -> Result<axum::Json<dcontroller_api::VideoHistory>, StatusCode> {
+    let now = history::unix_now();
+    let to = r.to.unwrap_or(now);
+    let from = r.from.unwrap_or(to.saturating_sub(3600));
+    tokio::task::spawn_blocking(move || s.history.video(&conn, from, to))
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "video history: task failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .map(axum::Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "video history: read failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
 /// A dsync service node's states over a range (#124 2c), the node as the
 /// box's config names it (`host:port`).
 async fn dsync_report(
@@ -473,6 +521,8 @@ pub fn app(web_dir: &Path, shared: Shared) -> Router {
         .route("/api/history/{device}", get(history_report))
         .route("/api/bridge/{device}", get(bridge_report))
         .route("/api/dsync/{node}", get(dsync_report))
+        .route("/api/video", get(video_now))
+        .route("/api/video/{conn}", get(video_report))
         .route("/api/overview", get(overview))
         .route("/api/links", get(links))
         .route("/api/usage", get(usage).post(record_use))

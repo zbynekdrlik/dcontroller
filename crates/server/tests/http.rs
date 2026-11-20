@@ -12,6 +12,7 @@ fn off() -> dcontroller::Shared {
     dcontroller::Shared {
         clocks: dcontroller::clocks::Latest::default(),
         dsync: dcontroller::dsync::Latest::default(),
+        video: dcontroller::video::Latest::default(),
         dante: std::sync::Arc::new(std::sync::RwLock::new(dcontroller::dante::State::off(
             None, None,
         ))),

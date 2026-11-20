@@ -310,6 +310,9 @@ svg.map .node text { pointer-events: none; fill: var(--text); font-size: 13.5px;
 svg.map .node text.sub { fill: var(--muted); font-size: 11px; font-weight: 400; }
 svg.map .node text.badge { fill: var(--muted); font-size: 10px; font-weight: 700; }
 svg.map .node text.badge.bad { fill: var(--bad); }
+/* The video network (#124): its lines dashed, its boxes' edge dashed. */
+svg.map .edge.video .line { stroke-dasharray: 9 5; }
+svg.map .node.video rect { stroke-dasharray: 5 4; }
 svg.map .edge { cursor: pointer; }
 svg.map .edge.ok { color: var(--ok); }
 svg.map .edge.warn { color: var(--warn); }

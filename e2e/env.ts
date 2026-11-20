@@ -30,3 +30,15 @@ export const DSYNC = {
   old: "127.0.0.1:18897",
   newer: "127.0.0.1:18896",
 } as const;
+
+// camera-box's video nodes (#124 phase 1, contract camera-box#1540): the
+// suite stands in for the node list and two nodes; the OBS node reports one
+// JPEG XS input from the cambox whose frames start to be lost after a few
+// reads, so its line turns red.
+export const VIDEO = {
+  list: "127.0.0.1:18895",
+  nodes: "127.0.0.1:18894",
+  cam: "cam-e2e",
+  obs: "obs-e2e",
+  conn: "jxs:cam-e2e->obs-e2e:JXS cam-e2e src",
+} as const;
