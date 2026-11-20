@@ -2,12 +2,79 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { copyFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createServer, type Server } from "node:http";
-import { DSYNC, run, root, routed } from "./env";
+import { DSYNC, VIDEO, run, root, routed } from "./env";
 
 // The stand-in dsync service node: its status, as dsync's contract names
 // the fields (the ones it says are no health, `offset_ns` and `settled`,
 // included: the server must not read them). `schema` is the contract's
 // version: absent on an older dsync, 2 on one this dcontroller does not read.
+// camera-box's node list and its two nodes (#124 phase 1), as its draft
+// contract names the fields (camera-box#1540). The OBS node's input loses
+// one frame per read from its fourth read on.
+function startVideo(): Promise<Server[]> {
+  const listen = (at: string, answer: (url: string) => object | null): Promise<Server> => {
+    const [host, port] = at.split(":");
+    return new Promise((ok, fail) => {
+      const server = createServer((req, res) => {
+        const body = answer(req.url ?? "");
+        if (body === null) {
+          res.writeHead(404).end();
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(body));
+      });
+      server.once("error", fail);
+      server.listen(Number(port), host, () => ok(server));
+    });
+  };
+  let reads = 0;
+  const list = listen(VIDEO.list, (url) =>
+    url === "/video-nodes.json"
+      ? {
+          schema: 1,
+          venue: "e2e",
+          nodes: [
+            { name: VIDEO.cam, kind: "cambox", url: `http://${VIDEO.nodes}/cam.json` },
+            { name: VIDEO.obs, kind: "obs", url: `http://${VIDEO.nodes}/obs.json` },
+          ],
+        }
+      : null,
+  );
+  const nodes = listen(VIDEO.nodes, (url) => {
+    const head = { schema: 1, read_at: new Date().toISOString(), run_start: "2026-11-20T00:00:00Z", run_id: "e2e:1" };
+    if (url === "/cam.json") return { ...head, node: VIDEO.cam, kind: "cambox", connections: [] };
+    if (url !== "/obs.json") return null;
+    reads += 1;
+    return {
+      ...head,
+      node: VIDEO.obs,
+      kind: "obs",
+      connections: [
+        {
+          id: VIDEO.conn,
+          source: VIDEO.cam,
+          sink: VIDEO.obs,
+          sink_input: "JXS cam-e2e src",
+          kind: "jxs",
+          direction: "in",
+          latency_ms: 40 + (reads % 3),
+          frames_received: reads * 500,
+          frames_lost: Math.max(0, reads - 3),
+          frames_duplicated: 0,
+          frames_skipped: 0,
+          slices_lost: 0,
+          slices_concealed: 0,
+          relocks: 0,
+          decoder_opens: 1,
+          counters_since: "2026-11-20T00:00:02Z",
+        },
+      ],
+    };
+  });
+  return Promise.all([list, nodes]);
+}
+
 function startDsync(at: string, schema: number | null): Promise<Server> {
   const status = {
     ...(schema === null ? {} : { schema }),
@@ -98,8 +165,9 @@ export default async function globalSetup() {
     await startDsync(DSYNC.old, null),
     await startDsync(DSYNC.newer, 2),
   ];
+  const video = await startVideo();
   return async () => {
-    for (const s of dsync) await new Promise((done) => s.close(done));
+    for (const s of [...dsync, ...video]) await new Promise((done) => s.close(done));
     for (const [c, what] of [
       [child, "dstack-dev"],
       [bridge, "bridge_device"],

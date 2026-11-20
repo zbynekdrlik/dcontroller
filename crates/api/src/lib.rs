@@ -556,6 +556,88 @@ impl DsyncPoint {
     }
 }
 
+/// The video network as camera-box's nodes report it (#124 phase 1): the
+/// nodes and every video connection with its last hour, 3 hours and day.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct VideoReport {
+    /// Unix seconds the figures end at.
+    pub now: i64,
+    /// Why the node list could not be read; `None` when it was (or no
+    /// discovery URL is configured: then `nodes` is empty too).
+    pub discovery_error: Option<String>,
+    pub nodes: Vec<VideoNode>,
+    pub connections: Vec<VideoConn>,
+}
+
+/// A video node (a cambox, an OBS box) as discovery names it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VideoNode {
+    pub name: String,
+    /// `cambox`, `obs`.
+    pub kind: String,
+    /// Seconds since its last answer; `None`: never.
+    pub age_s: Option<i64>,
+    /// Why the last ask failed (or its schema is newer than read here).
+    pub error: Option<String>,
+}
+
+/// One video connection: a source into a sink, as the node that reports it
+/// counts it. Frames lost count concealed slices too (a loss as well).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct VideoConn {
+    /// camera-box's id, stable across reads.
+    pub id: String,
+    /// The node that reports it.
+    pub node: String,
+    pub source: String,
+    pub sink: String,
+    pub sink_input: String,
+    /// `jxs`, `ndi`, `dante`.
+    pub kind: String,
+    /// `in` or `out` (of the node that reports it).
+    pub direction: String,
+    /// Its latency at the last read, ms.
+    pub latency_ms: Option<f64>,
+    pub lost_1h: u64,
+    pub duplicated_1h: u64,
+    pub skipped_1h: u64,
+    pub lost_3h: u64,
+    pub duplicated_3h: u64,
+    pub skipped_3h: u64,
+    pub lost_24h: u64,
+    pub duplicated_24h: u64,
+    pub skipped_24h: u64,
+    /// The last hour's latency, [`SPARK_POINTS`] buckets, ms.
+    pub spark: Vec<Option<f64>>,
+    /// Seconds since its node last reported it.
+    pub age_s: Option<i64>,
+}
+
+/// A video connection's stored figures over a range, at most
+/// [`HISTORY_POINTS`], oldest first; a thinned point sums its frames.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct VideoHistory {
+    pub conn: String,
+    pub from: i64,
+    pub to: i64,
+    pub points: Vec<VideoPoint>,
+}
+
+/// One stored read of a video connection: its latency then and the frames
+/// lost (concealed slices included), duplicated and skipped since the read
+/// before.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct VideoPoint {
+    pub t: i64,
+    pub latency_ms: Option<f64>,
+    pub lost: u64,
+    pub duplicated: u64,
+    pub skipped: u64,
+}
+
+/// The newest video read contract this dcontroller reads (camera-box#1540).
+pub const VIDEO_SCHEMA: u32 = 1;
+
 /// The newest dsync `/status` contract this dcontroller reads: a node on a
 /// newer one is not misread, it is named as such (#124).
 pub const DSYNC_SCHEMA: u32 = 1;

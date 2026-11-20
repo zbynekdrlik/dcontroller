@@ -85,12 +85,47 @@ const MIGRATIONS: &[&str] = &[
     "CREATE TABLE dsync (node TEXT NOT NULL, t INTEGER NOT NULL, answered INTEGER NOT NULL,
          locked INTEGER, phase_error_us REAL, mode TEXT, PRIMARY KEY (node, t)) WITHOUT ROWID;
      CREATE INDEX dsync_t ON dsync (t);",
+    // 8: each video connection's reads (#124 phase 1): its latency and the
+    // frames each read added, kept as long as the minutes.
+    "CREATE TABLE video (conn TEXT NOT NULL, t INTEGER NOT NULL, latency_ms REAL,
+         lost INTEGER NOT NULL, duplicated INTEGER NOT NULL, skipped INTEGER NOT NULL,
+         PRIMARY KEY (conn, t)) WITHOUT ROWID;
+     CREATE INDEX video_t ON video (t);",
 ];
 
 /// How long the record of use is kept, and how far back it is counted.
 pub const USAGE_DAYS: u32 = 30;
 /// The longest view or target name kept.
 pub const USAGE_TEXT: usize = 200;
+
+/// Video reads thinned as [`thin`], each kept point summing the frames of
+/// the reads it stands for and keeping the highest latency among them.
+fn thin_video(rows: Vec<api::VideoPoint>, max: usize) -> Vec<api::VideoPoint> {
+    let n = rows.len();
+    if n <= max || max == 0 {
+        return rows;
+    }
+    let k = n.div_ceil(max);
+    let mut out = Vec::with_capacity(max);
+    let mut acc: Option<api::VideoPoint> = None;
+    for (i, mut p) in rows.into_iter().enumerate() {
+        if let Some(a) = acc.take() {
+            p.lost += a.lost;
+            p.duplicated += a.duplicated;
+            p.skipped += a.skipped;
+            p.latency_ms = match (p.latency_ms, a.latency_ms) {
+                (Some(x), Some(y)) => Some(x.max(y)),
+                (x, y) => x.or(y),
+            };
+        }
+        if (n - 1 - i).is_multiple_of(k) {
+            out.push(p);
+        } else {
+            acc = Some(p);
+        }
+    }
+    out
+}
 
 /// dsync states thinned as [`thin`], each kept point taking the worst of
 /// the ones it stands for: a lock lost between two kept points stays
@@ -370,6 +405,111 @@ impl Store {
         })
     }
 
+    /// A video connection's read at `p.t` (#124 phase 1).
+    pub fn add_video(&self, conn: &str, p: &api::VideoPoint) -> Result<(), String> {
+        let i = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
+        self.conn()
+            .execute(
+                "INSERT OR REPLACE INTO video (conn, t, latency_ms, lost, duplicated, skipped)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    conn,
+                    p.t,
+                    p.latency_ms,
+                    i(p.lost),
+                    i(p.duplicated),
+                    i(p.skipped)
+                ],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// A video connection's frames lost, duplicated and skipped in the last
+    /// hour, 3 hours and day before `now`.
+    pub fn video_windows(&self, conn: &str, now: i64) -> Result<[(u64, u64, u64); 3], String> {
+        let db = self.conn();
+        let mut q = db
+            .prepare_cached(
+                "SELECT COALESCE(SUM(lost), 0), COALESCE(SUM(duplicated), 0), COALESCE(SUM(skipped), 0)
+                 FROM video WHERE conn = ?1 AND t > ?2 AND t <= ?3",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut out = [(0, 0, 0); 3];
+        for (i, span) in [3600, 3 * 3600, 24 * 3600].into_iter().enumerate() {
+            let (a, b, c): (i64, i64, i64) = q
+                .query_row(params![conn, now - span, now], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })
+                .map_err(|e| e.to_string())?;
+            let u = |v: i64| u64::try_from(v).unwrap_or(0);
+            out[i] = (u(a), u(b), u(c));
+        }
+        Ok(out)
+    }
+
+    /// A video connection's last hour of latency, [`api::SPARK_POINTS`]
+    /// buckets (the mean of each), ms.
+    pub fn video_spark(&self, conn: &str, now: i64) -> Result<Vec<Option<f64>>, String> {
+        let hour = now - 3600;
+        let step = 3600 / api::SPARK_POINTS;
+        let db = self.conn();
+        let mut q = db
+            .prepare_cached(
+                "SELECT (t - ?2 - 1) / ?3 AS b, AVG(latency_ms) FROM video
+                 WHERE conn = ?1 AND t > ?2 AND t <= ?4 AND latency_ms IS NOT NULL GROUP BY b",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut out = vec![None; usize::try_from(api::SPARK_POINTS).unwrap_or(0)];
+        let rows = q
+            .query_map(params![conn, hour, step, now], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (b, v) = row.map_err(|e| e.to_string())?;
+            if let Some(cell) = usize::try_from(b).ok().and_then(|i| out.get_mut(i)) {
+                *cell = Some(v);
+            }
+        }
+        Ok(out)
+    }
+
+    /// A video connection's reads from `from` to `to`, at most
+    /// [`api::HISTORY_POINTS`], oldest first; a thinned point carries the
+    /// frames of the reads it stands for and the highest latency.
+    pub fn video(&self, conn: &str, from: i64, to: i64) -> Result<api::VideoHistory, String> {
+        let db = self.conn();
+        let mut q = db
+            .prepare_cached(
+                "SELECT t, latency_ms, lost, duplicated, skipped FROM video
+                 WHERE conn = ?1 AND t >= ?2 AND t <= ?3 ORDER BY t",
+            )
+            .map_err(|e| e.to_string())?;
+        let u = |v: i64| u64::try_from(v).unwrap_or(0);
+        let rows: Vec<api::VideoPoint> = q
+            .query_map(params![conn, from, to], |r| {
+                Ok(api::VideoPoint {
+                    t: r.get(0)?,
+                    latency_ms: r.get(1)?,
+                    lost: u(r.get(2)?),
+                    duplicated: u(r.get(3)?),
+                    skipped: u(r.get(4)?),
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        drop(q);
+        drop(db);
+        Ok(api::VideoHistory {
+            conn: conn.to_owned(),
+            from,
+            to,
+            points: thin_video(rows, usize::try_from(api::HISTORY_POINTS).unwrap_or(1500)),
+        })
+    }
+
     /// A dsync service node's state at `t` (#124 2c).
     pub fn add_dsync(&self, node: &str, p: &api::DsyncPoint) -> Result<(), String> {
         self.conn()
@@ -639,6 +779,7 @@ impl Store {
             ("hour", KEEP_HOURS),
             ("bridge", KEEP_MINUTES),
             ("dsync", KEEP_MINUTES),
+            ("video", KEEP_MINUTES),
         ] {
             db.execute(&format!("DELETE FROM {table} WHERE t < ?1"), [now - keep])
                 .map_err(|e| format!("prune {table}: {e}"))?;
@@ -1276,6 +1417,55 @@ mod bridge_tests {
         assert_eq!(b.device, "dsg");
         assert_eq!(b.last, again);
         assert_eq!((b.to_asio_underruns_1h, b.from_asio_underruns_1h), (3, 0));
+    }
+
+    #[test]
+    fn a_video_connections_reads_sum_by_window_thin_keeping_their_frames_and_prune() {
+        let st = Store::memory().unwrap();
+        let now = 3_000_000;
+        let p = |t: i64, lat: f64, lost: u64, dup: u64, skip: u64| api::VideoPoint {
+            t,
+            latency_ms: Some(lat),
+            lost,
+            duplicated: dup,
+            skipped: skip,
+        };
+        // 3000 reads 10 s apart over 8 h 20 min: frames lost 2 h ago and in
+        // the last hour, duplicated 20 h ago (before the reads: one more).
+        for i in 0..3000 {
+            let t = now - 30_000 + i * 10;
+            let (lost, dup) = match i {
+                2280 => (3, 0),
+                2950 => (1, 0),
+                _ => (0, 0),
+            };
+            st.add_video(
+                "jxs:cam3->strih",
+                &p(t, 40.0 + (i % 3) as f64, lost, dup, 0),
+            )
+            .unwrap();
+        }
+        st.add_video("jxs:cam3->strih", &p(now - 20 * 3600, 40.0, 0, 5, 2))
+            .unwrap();
+        st.add_video("other", &p(now, 10.0, 9, 9, 9)).unwrap();
+        let w = st.video_windows("jxs:cam3->strih", now).unwrap();
+        assert_eq!(w, [(1, 0, 0), (4, 0, 0), (4, 5, 2)]);
+        let spark = st.video_spark("jxs:cam3->strih", now).unwrap();
+        assert_eq!(spark.len(), 60);
+        assert!(spark.iter().flatten().all(|v| (40.0..=42.0).contains(v)));
+        let h = st.video("jxs:cam3->strih", now - 24 * 3600, now).unwrap();
+        assert!(h.points.len() <= 1500, "{}", h.points.len());
+        // Thinned, no frame is lost on the way and the peak latency stays.
+        assert_eq!(h.points.iter().map(|p| p.lost).sum::<u64>(), 4);
+        assert_eq!(h.points.iter().map(|p| p.duplicated).sum::<u64>(), 5);
+        assert!(h.points.iter().any(|p| p.latency_ms == Some(42.0)));
+        st.rollup(now + KEEP_MINUTES + 20_000, 3600).unwrap();
+        assert!(
+            st.video("jxs:cam3->strih", 0, now)
+                .unwrap()
+                .points
+                .is_empty()
+        );
     }
 
     #[test]

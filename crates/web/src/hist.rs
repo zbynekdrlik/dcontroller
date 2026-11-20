@@ -567,6 +567,32 @@ pub fn spark_path(values: &[Option<u32>], w: f64, h: f64, top: u32) -> String {
     out.trim_end().to_owned()
 }
 
+/// A video connection's chart (#124 phase 1): its latency, ms, and a red
+/// bar at the bottom for the frames lost, duplicated or skipped then.
+pub fn video_chart_json(v: &dcontroller_api::VideoHistory, label: &str, height: u32) -> String {
+    let t: Vec<i64> = v.points.iter().map(|p| p.t).collect();
+    let chart = Chart {
+        t: &t,
+        unit: "ms",
+        sources: vec![ChartSource {
+            label: label.to_owned(),
+            color: LINK_COLOR.to_owned(),
+            values: v.points.iter().map(|p| p.latency_ms).collect(),
+            late: v
+                .points
+                .iter()
+                .map(|p| p.lost + p.duplicated + p.skipped)
+                .collect(),
+        }],
+        thresholds: Vec::new(),
+        late_name: "frames lost, duplicated or skipped",
+        axis: "latency, ms",
+        floor: 0.0,
+        height,
+    };
+    serde_json::to_string(&chart).unwrap_or_else(|_| "{}".into())
+}
+
 /// A dsync service node's chart (#124 2c): its phase error, µs (the size
 /// of it: dsync alarms at 50 either way), with dsync's alarm line, and a
 /// red bar at the bottom where it had no lock (not locked, or no answer).
@@ -609,6 +635,38 @@ pub fn dsync_lost(h: &dcontroller_api::DsyncHistory) -> (usize, usize) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_video_connections_chart_draws_its_latency_and_bars_for_frames_lost() {
+        use dcontroller_api::{VideoHistory, VideoPoint};
+        let p = |t, l: Option<f64>, lost, dup, skip| VideoPoint {
+            t,
+            latency_ms: l,
+            lost,
+            duplicated: dup,
+            skipped: skip,
+        };
+        let v = VideoHistory {
+            conn: "c".into(),
+            from: 0,
+            to: 30,
+            points: vec![
+                p(10, Some(41.0), 0, 0, 0),
+                p(20, Some(43.5), 2, 1, 0),
+                p(30, None, 0, 0, 3),
+            ],
+        };
+        let j: serde_json::Value =
+            serde_json::from_str(&video_chart_json(&v, "cam3 → strih", 220)).unwrap();
+        assert_eq!(j["t"], serde_json::json!([10, 20, 30]));
+        assert_eq!(j["sources"][0]["label"], "cam3 → strih");
+        assert_eq!(
+            j["sources"][0]["values"],
+            serde_json::json!([41.0, 43.5, null])
+        );
+        assert_eq!(j["sources"][0]["late"], serde_json::json!([0, 3, 3]));
+        assert_eq!(j["lateName"], "frames lost, duplicated or skipped");
+    }
+
     #[test]
     fn a_dsync_nodes_chart_draws_its_phase_error_and_bars_where_it_had_no_lock() {
         use dcontroller_api::{DsyncHistory, DsyncPoint};

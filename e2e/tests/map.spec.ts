@@ -75,7 +75,8 @@ test("the map is the start page: every device a box, every connection a line, a 
   // The network's hour at a glance: connections, the bridge, and the
   // tiles the overview has.
   const top = page.getByTestId("map-tiles-top");
-  await expect(top.getByTestId("tile-connections").locator(".tile-value")).toHaveText(/^\d+ \/ 1$/, { timeout: 40_000 });
+  // The Dante device's own connection and the stand-in video one (#124).
+  await expect(top.getByTestId("tile-connections").locator(".tile-value")).toHaveText(/^\d+ \/ 2$/, { timeout: 40_000 });
   await expect(top.getByTestId("tile-bridges")).toContainText("1 bridge");
   await expect(top.getByTestId("tile-devices").locator(".tile-value")).toHaveText(String(devices.devices.length));
   await expect(top.getByTestId("tile-devices")).toContainText("all there since");
@@ -103,7 +104,7 @@ test("the map is the start page: every device a box, every connection a line, a 
   await page.getByTestId("map-view-links").click();
   await expect(page.getByTestId("map-panel")).toBeHidden();
   const rows = page.getByTestId("map-links").getByTestId("map-dev-row");
-  await expect(rows).toHaveCount(3);
+  await expect(rows).toHaveCount(4);
   await expect(page.getByTestId("map-links")).toContainText(`${DEVICE} → ${DEVICE}`);
   await expect(page.getByTestId("map-links")).toContainText("SoundGrid → Dante");
   await rows.filter({ hasText: "Dante → SoundGrid" }).click();

@@ -39,6 +39,8 @@ pub enum Sel {
     Bridge { device: String, to_dante: bool },
     /// A device: its detail shows, with its connections.
     Device { name: String },
+    /// A video connection camera-box's nodes report (#124 phase 1), by id.
+    Video { id: String },
 }
 
 /// Where a link to a page the Map took over lands (#130): the Overview on
@@ -114,6 +116,7 @@ impl Sel {
                 if *to_dante { "to-dante" } else { "to-asio" }
             ),
             Sel::Device { name } => format!("#map/device/{}", encode(name)),
+            Sel::Video { id } => format!("#map/video/{}", encode(id)),
         }
     }
 
@@ -121,10 +124,11 @@ impl Sel {
     pub fn from_hash(hash: &str) -> Option<Sel> {
         let mut parts = hash.strip_prefix("#map/")?.split('/');
         let (kind, a) = (parts.next()?, parts.next()?);
-        if kind == "device" {
-            return match parts.next() {
-                None => Some(Sel::Device { name: decode(a)? }),
-                Some(_) => None,
+        if kind == "device" || kind == "video" {
+            return match (parts.next(), kind) {
+                (None, "device") => Some(Sel::Device { name: decode(a)? }),
+                (None, _) => Some(Sel::Video { id: decode(a)? }),
+                (Some(_), _) => None,
             };
         }
         let b = parts.next()?;
@@ -152,6 +156,8 @@ impl Sel {
             Sel::Link { to, .. } => Some(to),
             Sel::Bridge { device, .. } => Some(device),
             Sel::Device { name } => Some(name),
+            // Its own history (`/api/video/<id>`), not a device's.
+            Sel::Video { .. } => None,
         }
     }
 
@@ -172,6 +178,7 @@ impl Sel {
                 },
             ) => a.eq_ignore_ascii_case(b) && x == y,
             (Sel::Device { name: a }, Sel::Device { name: b }) => a.eq_ignore_ascii_case(b),
+            (Sel::Video { id: a }, Sel::Video { id: b }) => a == b,
             _ => false,
         }
     }
@@ -185,6 +192,8 @@ pub enum NodeKind {
     Missing,
     /// A bridge's ASIO side: no Dante device.
     Asio,
+    /// A video node camera-box reports (#124) that is no Dante device.
+    Video,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -335,6 +344,88 @@ pub fn with_dsync(g: &mut Graph, c: &dcontroller_api::Clocks) {
                 "warn" => ("dsync limping".to_owned(), false),
                 _ => ("dsync no time".to_owned(), false),
             });
+    }
+}
+
+/// A video connection's state in a window, as a Dante line's (#124): red
+/// with frames lost in it, amber with frames duplicated or skipped, green
+/// otherwise; not measured while its node gave no latency.
+pub fn video_state(c: &dcontroller_api::VideoConn, span: Span) -> State {
+    let (lost, dup, skip) = video_window(c, span);
+    if lost > 0 {
+        State::Bad
+    } else if dup + skip > 0 {
+        State::Warn
+    } else if c.latency_ms.is_none() {
+        State::Unknown
+    } else {
+        State::Ok
+    }
+}
+
+/// A video connection's frames lost, duplicated and skipped in a window.
+pub fn video_window(c: &dcontroller_api::VideoConn, span: Span) -> (u64, u64, u64) {
+    match span {
+        Span::H1 => (c.lost_1h, c.duplicated_1h, c.skipped_1h),
+        Span::H3 => (c.lost_3h, c.duplicated_3h, c.skipped_3h),
+        Span::H24 => (c.lost_24h, c.duplicated_24h, c.skipped_24h),
+    }
+}
+
+/// The video network into the graph (#124 phase 1): a box per video node
+/// that is no Dante device already (one name, one box), a line per video
+/// connection, coloured by the window as a Dante line.
+pub fn with_video(g: &mut Graph, v: &dcontroller_api::VideoReport, span: Span) {
+    let node = |g: &mut Graph, name: &str| -> usize {
+        if let Some(i) = g
+            .nodes
+            .iter()
+            .position(|n| n.kind != NodeKind::Asio && n.name.eq_ignore_ascii_case(name))
+        {
+            return i;
+        }
+        let what = v
+            .nodes
+            .iter()
+            .find(|n| n.name.eq_ignore_ascii_case(name))
+            .map_or_else(|| "video".to_owned(), |n| format!("video · {}", n.kind));
+        g.nodes.push(Node {
+            name: name.to_owned(),
+            kind: NodeKind::Video,
+            lines: [what, String::new()],
+            badge: None,
+            dsync: None,
+            of: None,
+            tx: 0,
+            rx: 0,
+        });
+        g.nodes.len() - 1
+    };
+    for c in &v.connections {
+        let from = node(g, &c.source);
+        let to = node(g, &c.sink);
+        let state = video_state(c, span);
+        let (lost, dup, skip) = video_window(c, span);
+        let label = c
+            .latency_ms
+            .map_or_else(|| "–".to_owned(), |l| format!("{l:.1} ms"));
+        g.edges.push(Edge {
+            sel: Sel::Video { id: c.id.clone() },
+            from,
+            to,
+            state,
+            label: label.clone(),
+            lost: (lost > 0).then(|| format!("{lost} lost")),
+            title: format!(
+                "{} → {} · {} {} · latency {label} · frames lost {lost}, duplicated {dup}, skipped {skip} in the last {}",
+                c.source,
+                c.sink,
+                c.kind,
+                c.sink_input,
+                span.words()
+            ),
+            weight: (lost, u32::try_from(dup + skip).unwrap_or(u32::MAX)),
+        });
     }
 }
 
@@ -562,6 +653,9 @@ pub struct Health {
     pub clean: usize,
     /// Those that lost audio in the last hour, worst first: name and count.
     pub lost: Vec<(String, u64)>,
+    /// Video connections that lost frames in the window (#124), worst
+    /// first: `source → sink` and the frames.
+    pub lost_video: Vec<(String, u64)>,
     /// Those with a peak close to their latency.
     pub warn: usize,
     /// Bridges, and their underruns in the last hour.
@@ -600,6 +694,24 @@ pub fn health(g: &Graph) -> Health {
                 }
                 h.underruns += e.weight.0;
             }
+            // A video connection is one more of the rig's (#124): it is
+            // clean without frames lost in the window.
+            Sel::Video { .. } => {
+                h.links += 1;
+                match e.state {
+                    State::Unknown => continue,
+                    State::Bad => h.lost_video.push((
+                        format!("{} → {}", g.nodes[e.from].name, g.nodes[e.to].name),
+                        e.weight.0,
+                    )),
+                    State::Warn => h.warn += 1,
+                    State::Ok => {}
+                }
+                h.measured += 1;
+                if e.state != State::Bad {
+                    h.clean += 1;
+                }
+            }
             Sel::Device { .. } => {}
         }
     }
@@ -629,7 +741,7 @@ pub fn has(g: &Graph, sel: &Sel) -> bool {
 /// A device's connections: into it, out of it, and inside it (a bridge's
 /// two ways), each in the graph's order.
 pub fn edges_of(g: &Graph, node: usize) -> [Vec<&Edge>; 3] {
-    let dante = |e: &&Edge| matches!(e.sel, Sel::Link { .. });
+    let dante = |e: &&Edge| matches!(e.sel, Sel::Link { .. } | Sel::Video { .. });
     [
         g.edges
             .iter()
@@ -704,7 +816,7 @@ pub struct Placed {
 /// other: a line inside one column is an arc over its boxes, which made a
 /// real network (a dozen such devices) unreadable.
 fn columns(g: &Graph) -> Vec<usize> {
-    let dante = |e: &&Edge| matches!(e.sel, Sel::Link { .. }) && e.from != e.to;
+    let dante = |e: &&Edge| matches!(e.sel, Sel::Link { .. } | Sel::Video { .. }) && e.from != e.to;
     let outs = |i: usize| g.edges.iter().filter(dante).filter(|e| e.from == i).count();
     let ins = |i: usize| g.edges.iter().filter(dante).filter(|e| e.to == i).count();
     let mut cols: Vec<usize> = g
@@ -1105,11 +1217,17 @@ pub fn svg(g: &Graph, p: &Placed, chosen: Option<&Sel>) -> String {
             format!(r#"<tspan class="lost"> · {}</tspan>"#, esc(t))
         });
         s.push_str(&format!(
-            r#"<g class="edge {class}{}{}{}" data-testid="map-edge" data-edge="{}" data-from="{}" data-to="{}" data-state="{class}"><path class="line" d="{}" marker-end="url(#map-arrow-{class})"/><g class="lbl"><rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.0}" rx="10"/><text x="{:.1}" y="{:.1}">{}{lost}</text></g><path class="hit" d="{}"><title>{}</title></path></g>"#,
+            r#"<g class="edge {class}{}{}{}{}" data-testid="map-edge" data-edge="{}" data-from="{}" data-to="{}" data-state="{class}"><path class="line" d="{}" marker-end="url(#map-arrow-{class})"/><g class="lbl"><rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.0}" rx="10"/><text x="{:.1}" y="{:.1}">{}{lost}</text></g><path class="hit" d="{}"><title>{}</title></path></g>"#,
             if on(e) { " sel" } else { "" },
             if of(e) { " of" } else { "" },
             if dense && matches!(e.state, State::Ok | State::Unknown) {
                 " quiet"
+            } else {
+                ""
+            },
+            // A video line is drawn dashed: another kind of signal (#124).
+            if matches!(e.sel, Sel::Video { .. }) {
+                " video"
             } else {
                 ""
             },
@@ -1134,6 +1252,7 @@ pub fn svg(g: &Graph, p: &Placed, chosen: Option<&Sel>) -> String {
             NodeKind::Device => "",
             NodeKind::Missing => " missing",
             NodeKind::Asio => " asio",
+            NodeKind::Video => " video",
         };
         let badge = n.badge.as_ref().map_or(String::new(), |(text, good)| {
             format!(
@@ -1186,6 +1305,101 @@ pub fn svg(g: &Graph, p: &Placed, chosen: Option<&Sel>) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn video_connections_are_lines_of_their_own_kind_coloured_by_frames_lost() {
+        use dcontroller_api::{VideoConn, VideoNode, VideoReport};
+        let mut g = build(&net(), None, Span::H1);
+        let dante = g
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Device)
+            .unwrap()
+            .name
+            .clone();
+        let conn = |id: &str, source: &str, sink: &str| VideoConn {
+            id: id.into(),
+            node: sink.into(),
+            source: source.into(),
+            sink: sink.into(),
+            kind: "jxs".into(),
+            direction: "in".into(),
+            latency_ms: Some(41.0),
+            ..VideoConn::default()
+        };
+        let v = VideoReport {
+            nodes: vec![VideoNode {
+                name: "cam3".into(),
+                kind: "cambox".into(),
+                ..VideoNode::default()
+            }],
+            connections: vec![
+                VideoConn {
+                    lost_1h: 2,
+                    lost_24h: 5,
+                    ..conn("a", "cam3", "strih")
+                },
+                VideoConn {
+                    duplicated_1h: 1,
+                    ..conn("b", "cam3", &dante.to_lowercase())
+                },
+                VideoConn {
+                    lost_24h: 4,
+                    ..conn("c", "cam4", "strih")
+                },
+            ],
+            ..VideoReport::default()
+        };
+        let before = g.nodes.len();
+        with_video(&mut g, &v, Span::H1);
+        // cam3, strih and cam4 are new boxes; the Dante device stays one box.
+        assert_eq!(g.nodes.len(), before + 3);
+        let cam3 = g.nodes.iter().find(|n| n.name == "cam3").unwrap();
+        assert_eq!(
+            (cam3.kind, cam3.lines[0].as_str()),
+            (NodeKind::Video, "video · cambox")
+        );
+        let e = |id: &str| {
+            g.edges
+                .iter()
+                .find(|e| e.sel == Sel::Video { id: id.into() })
+                .unwrap()
+        };
+        assert_eq!(
+            (e("a").state, e("a").label.as_str(), e("a").lost.as_deref()),
+            (State::Bad, "41.0 ms", Some("2 lost"))
+        );
+        assert_eq!(e("b").state, State::Warn);
+        assert_eq!(g.nodes[e("b").to].kind, NodeKind::Device);
+        // Lost a day ago only: green in the hour, red in the day's window.
+        assert_eq!(e("c").state, State::Ok);
+        let mut day = build(&net(), None, Span::H24);
+        with_video(&mut day, &v, Span::H24);
+        assert_eq!(
+            day.edges
+                .iter()
+                .find(|e| e.sel == Sel::Video { id: "c".into() })
+                .unwrap()
+                .state,
+            State::Bad
+        );
+        // Its hash names it, and it counts with the rig's connections.
+        assert_eq!(
+            Sel::from_hash(&e("a").sel.hash()),
+            Some(Sel::Video { id: "a".into() })
+        );
+        assert_eq!(
+            Sel::from_hash("#map/video/jxs%3Acam3-%3Estrih"),
+            Some(Sel::Video {
+                id: "jxs:cam3->strih".into()
+            })
+        );
+        let h = health(&g);
+        assert_eq!(h.lost_video, [("cam3 → strih".to_owned(), 2)]);
+        let s = svg(&g, &layout(&g), None);
+        assert!(s.contains(r#" video" data-testid="map-edge""#));
+        assert!(s.contains(r#"class="node video"#));
+    }
+
     #[test]
     fn a_devices_box_carries_its_own_dsync_clock() {
         use dcontroller_api::{ClockNode, Clocks, Follower};

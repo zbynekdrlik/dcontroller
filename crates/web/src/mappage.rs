@@ -18,6 +18,11 @@ pub struct MapCtl {
     pub view: RwSignal<MapView>,
     /// The window the colours speak of (#142).
     pub span: RwSignal<map::Span>,
+    /// The video network (#124 phase 1), as `/api/video` last gave it.
+    pub video: RwSignal<Option<Result<dcontroller_api::VideoReport, String>>>,
+    /// The video connection shown (its id) and its reads over the range.
+    pub video_sel: RwSignal<Option<String>>,
+    pub video_hist: RwSignal<Option<Result<dcontroller_api::VideoHistory, String>>>,
 }
 
 /// The map's three views of the same network.
@@ -49,24 +54,79 @@ pub fn load_links(m: MapCtl) {
         if m.links.with_untracked(|old| old.as_ref() != Some(&r)) {
             m.links.set(Some(r));
         }
+        let v = pages::get_json::<dcontroller_api::VideoReport>("/api/video").await;
+        if m.video.with_untracked(|old| old.as_ref() != Some(&v)) {
+            m.video.set(Some(v));
+        }
     });
 }
 
-/// A state's chip; a Dante connection's in the window shown, a bridge's
-/// in the last hour (its figures cover the hour).
-fn chip(state: map::State, bridge: bool) -> (&'static str, String) {
+/// Reads the shown video connection's history over `from`..`to`.
+pub fn load_video(m: MapCtl, from: i64, to: i64) {
+    let Some(id) = m.video_sel.get_untracked() else {
+        return;
+    };
+    spawn_local(async move {
+        let url = format!(
+            "/api/video/{}?from={from}&to={to}",
+            String::from(js_sys::encode_uri_component(&id))
+        );
+        let r = pages::get_json::<dcontroller_api::VideoHistory>(&url).await;
+        if m.video_sel.get_untracked().as_deref() == Some(id.as_str()) {
+            m.video_hist.set(Some(r));
+        }
+    });
+}
+
+/// What kind of connection a chip speaks of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Kind {
+    Dante,
+    Bridge,
+    Video,
+}
+
+fn kind_of(sel: &map::Sel) -> Kind {
+    match sel {
+        map::Sel::Bridge { .. } => Kind::Bridge,
+        map::Sel::Video { .. } => Kind::Video,
+        _ => Kind::Dante,
+    }
+}
+
+/// A state's chip; a Dante or video connection's in the window shown, a
+/// bridge's in the last hour (its figures cover the hour).
+fn chip(state: map::State, kind: Kind) -> (&'static str, String) {
     let span = expect_context::<MapCtl>().span.get_untracked();
-    match (state, bridge) {
-        (map::State::Bad, false) => (
+    match (state, kind) {
+        (map::State::Bad, Kind::Dante) => (
             "chip bad",
             format!("late packets in the last {}", span.words()),
         ),
-        (map::State::Bad, true) => ("chip bad", "underruns in the last hour".to_owned()),
+        (map::State::Bad, Kind::Video) => (
+            "chip bad",
+            format!("frames lost in the last {}", span.words()),
+        ),
+        (map::State::Bad, Kind::Bridge) => ("chip bad", "underruns in the last hour".to_owned()),
+        (map::State::Warn, Kind::Video) => (
+            "chip warn",
+            format!("frames duplicated or skipped in the last {}", span.words()),
+        ),
         (map::State::Warn, _) => ("chip warn", "peak close to the latency".to_owned()),
-        (map::State::Ok, false) => ("chip ok", "no late packets".to_owned()),
-        (map::State::Ok, true) => ("chip ok", "no underruns".to_owned()),
+        (map::State::Ok, Kind::Dante) => ("chip ok", "no late packets".to_owned()),
+        (map::State::Ok, Kind::Video) => ("chip ok", "no frames lost".to_owned()),
+        (map::State::Ok, Kind::Bridge) => ("chip ok", "no underruns".to_owned()),
         (map::State::Unknown, _) => ("chip none", "not measured".to_owned()),
     }
+}
+
+/// A video connection's words: what it carries and who reports it.
+fn video_of(m: MapCtl, id: &str) -> Option<dcontroller_api::VideoConn> {
+    m.video.with(|v| {
+        v.as_ref()
+            .and_then(|r| r.as_ref().ok())
+            .and_then(|v| v.connections.iter().find(|c| c.id == id).cloned())
+    })
 }
 
 /// A connection's row: `name` for a Dante connection, the bridge's own
@@ -86,7 +146,7 @@ fn row_of(g: &map::Graph, e: &map::Edge, name: String, links: Option<&Links>) ->
         },
         label: e.label.clone(),
         lost: e.lost.clone(),
-        chip: chip(e.state, bridge),
+        chip: chip(e.state, kind_of(&e.sel)),
         sum,
         bridge,
     }
@@ -186,6 +246,12 @@ pub fn MapPage() -> impl IntoView {
                     map::with_dsync(&mut g, c);
                 }
             });
+            // The video network on the same map (#124 phase 1).
+            m.video.with(|v| {
+                if let Some(Ok(v)) = v {
+                    map::with_video(&mut g, v, m.span.get());
+                }
+            });
             g
         }
         _ => map::Graph::default(),
@@ -199,6 +265,17 @@ pub fn MapPage() -> impl IntoView {
                 .filter(|c| map::has(g, c))
                 .or_else(|| map::worst(g).map(|e| e.sel.clone()))
         })
+    });
+    // A video connection's history comes from its own read (#124).
+    Effect::new(move |_| {
+        let id = match shown.get() {
+            Some(map::Sel::Video { id }) => Some(id),
+            _ => None,
+        };
+        if m.video_sel.get_untracked() != id {
+            m.video_hist.set(None);
+            m.video_sel.set(id);
+        }
     });
     // Its history: the receiver's (a bridge's own), read by the app's
     // history poll.
@@ -302,11 +379,15 @@ pub fn MapPage() -> impl IntoView {
         Some(map::Sel::Bridge { .. }) => h
             .bridge
             .with(|b| b.as_ref().is_some_and(|b| !b.points.is_empty())),
+        Some(map::Sel::Video { .. }) => m
+            .video_hist
+            .with(|v| matches!(v, Some(Ok(v)) if !v.points.is_empty())),
         None => false,
     });
     Effect::new(move |_| {
         let sel = shown.get();
         let (data, bridge) = (h.data.get(), h.bridge.get());
+        let video = m.video_hist.get();
         let Some(el) = chart_ref.get() else {
             return;
         };
@@ -333,6 +414,13 @@ pub fn MapPage() -> impl IntoView {
             (Some(map::Sel::Device { .. }), _, Some(b)) => {
                 pages::draw_chart(el.unchecked_ref(), &hist::bridge_chart_json(&b, 300));
             }
+            (Some(map::Sel::Video { id }), _, _) => {
+                if let Some(Ok(v)) = video {
+                    let name =
+                        video_of(m, &id).map_or(id, |c| format!("{} → {}", c.source, c.sink));
+                    pages::draw_chart(el.unchecked_ref(), &hist::video_chart_json(&v, &name, 300));
+                }
+            }
             _ => {}
         }
     });
@@ -340,6 +428,9 @@ pub fn MapPage() -> impl IntoView {
         shown.get().map(|s| match s {
             map::Sel::Link { from, to } => format!("{from} → {to}"),
             map::Sel::Device { name } => name,
+            map::Sel::Video { id } => {
+                video_of(m, &id).map_or(id, |c| format!("{} → {}", c.source, c.sink))
+            }
             map::Sel::Bridge { device, to_dante } => {
                 let name = graph.with(|g| {
                     map::edge_of(
@@ -362,13 +453,13 @@ pub fn MapPage() -> impl IntoView {
     };
     let state = move || {
         let s = shown.get()?;
-        let bridge = matches!(s, map::Sel::Bridge { .. });
         let st = graph.with(|g| map::edge_of(g, &s).map(|e| e.state))?;
-        let (class, text) = chip(st, bridge);
+        let (class, text) = chip(st, kind_of(&s));
         Some(view! { <span class=class data-testid="map-state">{text}</span> })
     };
-    let what = move || {
-        shown.get().map(|s| match s {
+    let what =
+        move || {
+            shown.get().map(|s| match s {
             map::Sel::Link { from, to } => {
                 let pairs: Vec<String> = ctl.devices.with(|d| match d {
                     Some(Ok(d)) => d
@@ -401,6 +492,18 @@ pub fn MapPage() -> impl IntoView {
                     "how long the bridge {device} holds a sample between its ASIO side and Dante"
                 )
             }
+            map::Sel::Video { id } => video_of(m, &id).map_or_else(
+                || "a video connection its node no longer reports".to_owned(),
+                |c| {
+                    format!(
+                        "video ({}) into {} · reported by {} ({})",
+                        c.kind,
+                        if c.sink_input.is_empty() { &c.sink } else { &c.sink_input },
+                        c.node,
+                        if c.direction == "out" { "its output" } else { "its input" }
+                    )
+                },
+            ),
             map::Sel::Device { name } => graph.with(|g| {
                 map::node_of(g, &name).map_or_else(String::new, |n| {
                     let node = &g.nodes[n];
@@ -416,7 +519,7 @@ pub fn MapPage() -> impl IntoView {
                 })
             }),
         })
-    };
+        };
     let chosen_by = move || {
         let auto = shown.get().is_some()
             && !graph.with(|g| m.chosen.get().is_some_and(|c| map::has(g, &c)));
@@ -429,6 +532,34 @@ pub fn MapPage() -> impl IntoView {
         };
         match sel {
             map::Sel::Device { .. } => ().into_any(),
+            map::Sel::Video { id } => {
+                let c = video_of(m, &id);
+                let last = c.as_ref().map_or_else(String::new, |c| {
+                    format!(
+                        "{} in the last hour · {} in 24 h",
+                        map::num(c.lost_1h),
+                        map::num(c.lost_24h)
+                    )
+                });
+                match m.video_hist.get() {
+                    None => view! { <p class="status" data-testid="map-wait">"Reading the video figures…"</p> }.into_any(),
+                    Some(Err(e)) => view! { <p class="status error">{format!("Not readable: {e}")}</p> }.into_any(),
+                    Some(Ok(v)) => {
+                        let sum = |f: fn(&dcontroller_api::VideoPoint) -> u64| v.points.iter().map(f).sum::<u64>();
+                        let (lost, dup, skip) = (sum(|p| p.lost), sum(|p| p.duplicated), sum(|p| p.skipped));
+                        let most = v.points.iter().filter_map(|p| p.latency_ms).fold(None, |a: Option<f64>, x| Some(a.map_or(x, |a| a.max(x))));
+                        let fmt = |x: Option<f64>| x.map_or_else(|| "–".to_owned(), |x| format!("{x:.1} ms"));
+                        view! {
+                            <div class="figs" data-testid="map-tiles">
+                                {tile("map-video-latency", "Latency now".to_owned(), fmt(c.as_ref().and_then(|c| c.latency_ms)), format!("most in this range {}", fmt(most)), false)}
+                                {tile("map-video-lost", "Frames lost".to_owned(), map::num(lost), format!("in this range · {last}"), lost > 0)}
+                                {tile("map-video-dup", "Frames duplicated".to_owned(), map::num(dup), "in this range: a frame shown twice".to_owned(), dup > 0)}
+                                {tile("map-video-skipped", "Frames skipped".to_owned(), map::num(skip), "in this range: dropped as late".to_owned(), skip > 0)}
+                            </div>
+                        }.into_any()
+                    }
+                }
+            }
             map::Sel::Link { from, to } => {
                 let sum = m.links.with(|l| {
                     map::summary_of(l.as_ref().and_then(|r| r.as_ref().ok()), &from, &to).cloned()
@@ -571,6 +702,17 @@ pub fn MapPage() -> impl IntoView {
                 }
                 .into_any()
             }
+            map::Sel::Video { id } => {
+                let ends = video_of(m, &id).map(|c| (c.source, c.sink));
+                view! {
+                    <p class="actions" data-testid="map-actions">
+                        {ends.map(|(a, b)| view! {
+                            <a class="act" href=map::Sel::Device { name: a.clone() }.hash()>{format!("Device {a}")}</a>
+                            <a class="act" href=map::Sel::Device { name: b.clone() }.hash()>{format!("Device {b}")}</a>
+                        })}
+                    </p>
+                }.into_any()
+            }
             map::Sel::Bridge { device, .. } => {
                 // Its two ways now (#117), as the Devices page showed them.
                 let lines = h
@@ -675,6 +817,15 @@ pub fn MapPage() -> impl IntoView {
             (
                 "bad",
                 format!("losing audio: {name} ({} late){more}", map::num(*n)),
+            )
+        } else if let Some((name, n)) = hl.lost_video.first() {
+            let more = match hl.lost_video.len() {
+                1 => String::new(),
+                k => format!(" and {} more", k - 1),
+            };
+            (
+                "bad",
+                format!("losing video: {name} ({} frames lost){more}", map::num(*n)),
             )
         } else if hl.warn > 0 {
             (
@@ -803,12 +954,12 @@ pub fn MapPage() -> impl IntoView {
                 let (count, worst) = graph.with(|g| {
                     map::node_of(g, &dev.name).map_or((0, None), |n| {
                         let all: Vec<&map::Edge> = map::edges_of(g, n).into_iter().flatten().collect();
-                        let worst = all.iter().map(|e| (e.state, matches!(e.sel, map::Sel::Bridge { .. }))).max();
+                        let worst = all.iter().map(|e| (e.state, kind_of(&e.sel))).max();
                         (all.len(), worst)
                     })
                 });
-                let state = worst.map(|(st, bridge)| {
-                    let (class, text) = chip(st, bridge);
+                let state = worst.map(|(st, kind)| {
+                    let (class, text) = chip(st, kind);
                     view! { <span class=class>{text}</span> }
                 });
                 let what = [dev.manufacturer.clone(), dev.model.clone()].into_iter().flatten().collect::<Vec<_>>().join(" ");

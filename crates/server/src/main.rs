@@ -79,9 +79,17 @@ async fn serve(path: PathBuf) -> anyhow::Result<()> {
         Arc::clone(&history),
         Arc::clone(&stop),
     );
+    let video = dcontroller::video::Latest::default();
+    dcontroller::video::start(
+        cfg.video_nodes_url.clone(),
+        Arc::clone(&video),
+        Arc::clone(&history),
+        Arc::clone(&stop),
+    );
     let shared = dcontroller::Shared {
         clocks,
         dsync,
+        video,
         dante,
         changes,
         history,
