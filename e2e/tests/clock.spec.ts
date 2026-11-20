@@ -76,8 +76,17 @@ test("the clock tab lists every device's clock status as the server read it", as
       { timeout: 30_000 },
     )
     .toBe("LOCK");
+  await expect
+    .poll(
+      async () =>
+        (await page.request.get("/api/clocks").then((r) => r.json())).services.filter(
+          (s: { age_s: number | null }) => s.age_s !== null,
+        ).length,
+      { timeout: 30_000 },
+    )
+    .toBe(3);
   const svc = (await page.request.get("/api/clocks").then((r) => r.json())).services;
-  expect(svc.map((s: { node: string }) => s.node)).toEqual([DSYNC.up, DSYNC.down]);
+  expect(svc.map((s: { node: string }) => s.node)).toEqual([DSYNC.up, DSYNC.down, DSYNC.old, DSYNC.newer]);
   expect(svc[0]).toMatchObject({
     error: null,
     version: "0.9.4",
@@ -101,8 +110,21 @@ test("the clock tab lists every device's clock status as the server read it", as
   await expect(down.getByTestId("dsync-service-state")).toContainText("no answer");
   // The one in trouble reads first.
   await expect(page.getByTestId("dsync-service").first()).toHaveAttribute("data-name", DSYNC.down);
+  // The status contract (#124): an older dsync names none and is read as
+  // before, named old; a newer one is not misread, it says to update.
+  const old = page.locator(`[data-testid="dsync-service"][data-name="${DSYNC.old}"]`);
+  const newer = page.locator(`[data-testid="dsync-service"][data-name="${DSYNC.newer}"]`);
+  expect(svc[2]).toMatchObject({ schema: null, mode: "LOCK", ptp_phase_locked: true });
+  expect(svc[3]).toMatchObject({ schema: 2, version: "0.9.4", mode: null, ptp_phase_locked: null });
+  await expect(old).toHaveAttribute("data-state", "ok");
+  await expect(old.getByTestId("dsync-service-version")).toHaveText("0.9.4 · old dsync");
+  await expect(up.getByTestId("dsync-service-version")).toHaveText("0.9.4");
+  await expect(newer).toHaveAttribute("data-state", "bad");
+  await expect(newer.getByTestId("dsync-service-state")).toHaveText(
+    "its status is schema 2, newer than this dcontroller reads (1): update dcontroller",
+  );
   await expect(page.getByTestId("dsync-service-summary")).toHaveText(
-    `1 of 2 service nodes locked · in trouble: ${DSYNC.down}`,
+    `2 of 4 service nodes locked · in trouble: ${DSYNC.down}, ${DSYNC.newer}`,
   );
 
   // What the state chip says (the phase error) is not a column again, and

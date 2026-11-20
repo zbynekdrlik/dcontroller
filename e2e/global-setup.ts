@@ -6,10 +6,11 @@ import { DSYNC, run, root, routed } from "./env";
 
 // The stand-in dsync service node: its status, as dsync's contract names
 // the fields (the ones it says are no health, `offset_ns` and `settled`,
-// included: the server must not read them).
-function startDsync(): Promise<Server> {
+// included: the server must not read them). `schema` is the contract's
+// version: absent on an older dsync, 2 on one this dcontroller does not read.
+function startDsync(at: string, schema: number | null): Promise<Server> {
   const status = {
-    schema: 1,
+    ...(schema === null ? {} : { schema }),
     version: "0.9.4",
     mode: "LOCK",
     ptp_phase_error_us: 3.25,
@@ -24,7 +25,7 @@ function startDsync(): Promise<Server> {
     offset_ns: 123456789012,
     settled: true,
   };
-  const [host, port] = DSYNC.up.split(":");
+  const [host, port] = at.split(":");
   return new Promise((ok, fail) => {
     const server = createServer((req, res) => {
       if (req.url === "/status") {
@@ -92,9 +93,13 @@ export default async function globalSetup() {
   }
   child.removeAllListeners("exit");
   const bridge = await startBridge();
-  const dsync = await startDsync();
+  const dsync = [
+    await startDsync(DSYNC.up, 1),
+    await startDsync(DSYNC.old, null),
+    await startDsync(DSYNC.newer, 2),
+  ];
   return async () => {
-    await new Promise((done) => dsync.close(done));
+    for (const s of dsync) await new Promise((done) => s.close(done));
     for (const [c, what] of [
       [child, "dstack-dev"],
       [bridge, "bridge_device"],

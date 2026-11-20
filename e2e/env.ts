@@ -22,5 +22,11 @@ export const routed = routedIface();
 // A dsync clock service is another program on another PC (dcontroller #124):
 // the suite stands a small HTTP server in for it, answering `/status` with
 // the fields dsync's contract names. The second address has nothing behind
-// it: a node that does not answer.
-export const DSYNC = { up: "127.0.0.1:18898", down: "127.0.0.1:18899" } as const;
+// it: a node that does not answer. Two more stand in for an older dsync
+// that names no status schema and a newer one on schema 2 (#124).
+export const DSYNC = {
+  up: "127.0.0.1:18898",
+  down: "127.0.0.1:18899",
+  old: "127.0.0.1:18897",
+  newer: "127.0.0.1:18896",
+} as const;

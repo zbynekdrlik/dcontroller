@@ -2603,7 +2603,8 @@ fn DsyncServices() -> impl IntoView {
                         <td data-testid="dsync-service-ptp">{heard}</td>
                         <td class="mono">{gm}</td>
                         <td class="num">{n.drift_ppm.map_or_else(dash, |d| format!("{d:+.2} ppm"))}</td>
-                        <td>{n.version.clone().unwrap_or_else(dash)}</td>
+                        // An older dsync names no status schema (#124).
+                        <td data-testid="dsync-service-version">{n.version.clone().unwrap_or_else(dash)}{n.schema.is_none().then_some(" · old dsync")}</td>
                         <td class="num">{n.age_s.map_or_else(|| "never".to_owned(), |a| format!("{a} s ago"))}</td>
                     </tr>
                 }

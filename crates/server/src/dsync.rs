@@ -78,6 +78,21 @@ pub fn parse(node: &str, body: &str) -> Result<api::DsyncNode, String> {
         _ => None,
     };
     let num = |k: &str| o.get(k).and_then(Value::as_f64);
+    // A newer contract is not read field by field: what its fields mean
+    // may have changed (#124). The node is named with its schema only.
+    let schema = o
+        .get("schema")
+        .and_then(Value::as_u64)
+        .map(|n| u32::try_from(n).unwrap_or(u32::MAX));
+    if let Some(n) = schema.filter(|n| *n > api::DSYNC_SCHEMA) {
+        return Ok(api::DsyncNode {
+            node: node.to_owned(),
+            age_s: Some(0),
+            version: text("version"),
+            schema: Some(n),
+            ..api::DsyncNode::default()
+        });
+    }
     let alarm = o
         .get("clock_alarm")
         .and_then(Value::as_object)
@@ -109,6 +124,7 @@ pub fn parse(node: &str, body: &str) -> Result<api::DsyncNode, String> {
         fallback_role: text("fallback_role"),
         alarm,
         may_be_off: false,
+        schema,
     })
 }
 
@@ -329,6 +345,32 @@ mod tests {
         "clock_alarm": {"active": false, "since": null, "reason": ""},
         "offset_ns": 123456789012, "settled": true, "something_new": [1, 2]
     }"#;
+
+    #[test]
+    fn a_status_names_its_schema_and_a_newer_one_is_not_misread() {
+        assert_eq!(parse("pc:8898", STATUS).unwrap().schema, Some(1));
+        // An older dsync states none: read as before, named old.
+        let old = STATUS.replace(r#""schema": 1, "#, "");
+        let n = parse("pc:8898", &old).unwrap();
+        assert_eq!(n.schema, None);
+        assert_eq!(n.mode.as_deref(), Some("LOCK"));
+        assert_eq!(n.health().0, "ok");
+        // A newer one: none of its fields is taken, the node says why.
+        let new = STATUS.replace(r#""schema": 1, "#, r#""schema": 2, "#);
+        let n = parse("pc:8898", &new).unwrap();
+        assert_eq!(n.schema, Some(2));
+        assert_eq!(n.version.as_deref(), Some("0.9.4"));
+        assert_eq!(
+            (n.mode.as_deref(), n.ptp_phase_locked, n.ptp_phase_error_us),
+            (None, None, None)
+        );
+        let (state, why) = n.health();
+        assert_eq!(state, "bad");
+        assert!(
+            why.contains("schema 2, newer than this dcontroller reads (1)"),
+            "{why}"
+        );
+    }
 
     #[test]
     fn a_status_reads_its_health_fields_and_nothing_else() {

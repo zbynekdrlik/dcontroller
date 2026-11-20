@@ -521,7 +521,15 @@ pub struct DsyncNode {
     /// does not answer.
     #[serde(default)]
     pub may_be_off: bool,
+    /// The `/status` contract's version the node states (dsync v1.35.15 on);
+    /// `None`: an older dsync that names none (#124).
+    #[serde(default)]
+    pub schema: Option<u32>,
 }
+
+/// The newest dsync `/status` contract this dcontroller reads: a node on a
+/// newer one is not misread, it is named as such (#124).
+pub const DSYNC_SCHEMA: u32 = 1;
 
 /// dsync's own line for the phase error, µs: at or over it, it alarms.
 pub const DSYNC_PHASE_ALARM_US: f64 = 50.0;
@@ -530,6 +538,14 @@ impl DsyncNode {
     /// `ok`, `warn` or `bad`, and why, from what the node says and dsync's
     /// own alarm line; `none` for a travelling node that is away.
     pub fn health(&self) -> (&'static str, String) {
+        if let Some(n) = self.schema.filter(|n| *n > DSYNC_SCHEMA) {
+            return (
+                "bad",
+                format!(
+                    "its status is schema {n}, newer than this dcontroller reads ({DSYNC_SCHEMA}): update dcontroller"
+                ),
+            );
+        }
         if self.error.is_some() && self.may_be_off {
             return (
                 "none",
