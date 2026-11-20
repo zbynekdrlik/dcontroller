@@ -804,16 +804,18 @@ fn meter_column(title: &'static str, id: &'static str, levels: Vec<ChannelLevel>
 }
 
 fn meter_report_view(r: MeterReport) -> AnyView {
+    // The device's name leads to its place on the Map (#123), as on
+    // every other page.
     let head = match r.age_ms {
-        Some(a) => format!("{} · {} frames · last {} ms ago", r.device, r.frames, a),
-        None => format!("{} · waiting for the first meter frame", r.device),
+        Some(a) => format!(" · {} frames · last {} ms ago", r.frames, a),
+        None => " · waiting for the first meter frame".to_owned(),
     };
     let error = r
         .error
         .clone()
         .map(|e| view! { <p class="error" data-testid="mtr-error">{e}</p> });
     view! {
-        <p class="status" data-testid="mtr-head">{head}</p>
+        <p class="status" data-testid="mtr-head">{pages::dev_link(&r.device)}{head}</p>
         {error}
         <div class="meter-cols">
             {meter_column("Transmit", "mtr-tx", r.tx)}
