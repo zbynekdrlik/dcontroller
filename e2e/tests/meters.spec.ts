@@ -39,6 +39,8 @@ test("the meters tab subscribes to the chosen device and shows its channel level
   await expect(page.getByTestId("mtr-head")).toHaveText(new RegExp(`^${DEVICE} · \\d+ frames · last \\d+ ms ago$`), {
     timeout: 15_000,
   });
+  // The device's name is a link to its place on the Map (#123).
+  await expect(page.getByTestId("mtr-head").getByTestId("dev-link")).toHaveAttribute("href", `#map/device/${DEVICE}`);
   const tx = page.getByTestId("mtr-tx").getByTestId("mtr-channel");
   const rx = page.getByTestId("mtr-rx").getByTestId("mtr-channel");
   await expect(tx).toHaveCount(4);

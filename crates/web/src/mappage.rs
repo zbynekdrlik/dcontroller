@@ -537,7 +537,7 @@ pub fn MapPage() -> impl IntoView {
                     <h3 class="sub">{format!("Other connections of {to}")}</h3>
                     <div class="table-wrap">
                     <table class="grid links" data-testid="map-others">
-                        <thead><tr><th>"Connection"</th><th>"Last hour"</th><th>"Latency"</th><th>"Typical"</th><th>"Worst peak"</th><th>"Late seconds 1 h"</th><th>"Lost 1 h"</th><th>"Lost 24 h"</th><th>"State"</th></tr></thead>
+                        <thead><tr><th>"Connection"</th><th>"Last hour"</th><th>"Latency"</th><th>"Typical"</th><th>"Worst peak"</th><th>"Late seconds 1 h"</th><th>"Late packets 1 h"</th><th>"Late packets 24 h"</th><th>"State"</th></tr></thead>
                         <tbody>{others.into_iter().map(row).collect_view()}</tbody>
                     </table>
                     </div>
@@ -628,7 +628,7 @@ pub fn MapPage() -> impl IntoView {
                         <h3 class="sub">{title}</h3>
                         <div class="table-wrap">
                         <table class="grid links" data-testid=id>
-                            <thead><tr><th>"Connection"</th><th>"Last hour"</th><th>"Latency"</th><th>"Typical"</th><th>"Worst peak"</th><th>"Late seconds 1 h"</th><th>"Lost 1 h"</th><th>"Lost 24 h"</th><th>"State"</th></tr></thead>
+                            <thead><tr><th>"Connection"</th><th>"Last hour"</th><th>"Latency"</th><th>"Typical"</th><th>"Worst peak"</th><th>"Late seconds 1 h"</th><th>"Late packets 1 h"</th><th>"Late packets 24 h"</th><th>"State"</th></tr></thead>
                             <tbody>{rows.into_iter().map(row).collect_view()}</tbody>
                         </table>
                         </div>
@@ -759,7 +759,7 @@ pub fn MapPage() -> impl IntoView {
         view! {
             <div class="table-wrap">
             <table class="grid links" data-testid="map-links">
-                <thead><tr><th>"Connection"</th><th>"Last hour"</th><th>"Latency"</th><th>"Typical"</th><th>"Worst peak"</th><th>"Late seconds 1 h"</th><th>"Lost 1 h"</th><th>"Lost 24 h"</th><th>"State"</th></tr></thead>
+                <thead><tr><th>"Connection"</th><th>"Last hour"</th><th>"Latency"</th><th>"Typical"</th><th>"Worst peak"</th><th>"Late seconds 1 h"</th><th>"Late packets 1 h"</th><th>"Late packets 24 h"</th><th>"State"</th></tr></thead>
                 <tbody>{rows.into_iter().map(|r| { let sel = on.as_deref() == Some(r.hash.as_str()); row_marked(r, sel) }).collect_view()}</tbody>
             </table>
             </div>

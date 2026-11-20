@@ -100,7 +100,8 @@ pub fn link_of(states: &LinkStates, from: &str, to: &str) -> Option<State> {
 /// A device cross-point's CSS class and its words: the worse of what the
 /// receiver reports now and of the connection's state as the Map names it
 /// (one vocabulary on both pages, #123).
-pub fn point(cell: Cell, link: Option<State>) -> (&'static str, String) {
+/// `span` is the Map's window the state is taken over (#123).
+pub fn point(cell: Cell, link: Option<State>, span: map::Span) -> (&'static str, String) {
     let now = match cell {
         Cell::Empty => return (cell.class(), String::new()),
         Cell::Ok(1) => "1 subscription, receiving".to_owned(),
@@ -113,10 +114,10 @@ pub fn point(cell: Cell, link: Option<State>) -> (&'static str, String) {
         }
     };
     let (rank, past) = match link {
-        Some(State::Bad) => (2, "late packets in the last hour"),
-        Some(State::Warn) => (1, "peak close to the latency"),
-        Some(State::Ok) => (0, "no late packets"),
-        Some(State::Unknown) | None => (0, "latency not measured"),
+        Some(State::Bad) => (2, format!("late packets in the last {}", span.words())),
+        Some(State::Warn) => (1, "peak close to the latency".to_owned()),
+        Some(State::Ok) => (0, "no late packets".to_owned()),
+        Some(State::Unknown) | None => (0, "latency not measured".to_owned()),
     };
     let own = match cell {
         Cell::Err { .. } => 2,
@@ -375,6 +376,19 @@ pub fn problems(d: &Devices) -> Vec<Problem> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_routing_point_names_the_window_the_map_colours_by() {
+        // #123: the state follows the Map's window, so its words do too.
+        let (class, words) = point(Cell::Ok(1), Some(State::Bad), map::Span::H24);
+        assert_eq!(class, "cell err");
+        assert!(
+            words.contains("late packets in the last 24 hours"),
+            "{words}"
+        );
+        let (_, words) = point(Cell::Ok(1), Some(State::Bad), map::Span::H1);
+        assert!(words.contains("late packets in the last hour"), "{words}");
+    }
+
     use super::*;
     use dcontroller_api::{Channels, LinkSummary, Source, TxChannel};
 
@@ -410,16 +424,19 @@ mod tests {
 
         // All receiving now, late packets in the last hour: red, in words.
         assert_eq!(
-            point(Cell::Ok(2), Some(State::Bad)),
+            point(Cell::Ok(2), Some(State::Bad), map::Span::H1),
             (
                 "cell err",
                 "2 subscriptions, all receiving · late packets in the last hour · click: this connection on the Map"
                     .to_owned()
             )
         );
-        assert_eq!(point(Cell::Ok(1), Some(State::Warn)).0, "cell warn");
         assert_eq!(
-            point(Cell::Ok(1), Some(State::Ok)),
+            point(Cell::Ok(1), Some(State::Warn), map::Span::H1).0,
+            "cell warn"
+        );
+        assert_eq!(
+            point(Cell::Ok(1), Some(State::Ok), map::Span::H1),
             (
                 "cell ok",
                 "1 subscription, receiving · no late packets · click: this connection on the Map"
@@ -427,32 +444,32 @@ mod tests {
             )
         );
         // Not measured is no fault.
-        let (class, words) = point(Cell::Ok(1), None);
+        let (class, words) = point(Cell::Ok(1), None, map::Span::H1);
         assert_eq!(class, "cell ok");
         assert!(words.contains("latency not measured"), "{words}");
         // What the receiver reports now is never made better by a clean hour.
         assert_eq!(
-            point(Cell::Err { n: 2, bad: 1 }, Some(State::Ok)).0,
+            point(Cell::Err { n: 2, bad: 1 }, Some(State::Ok), map::Span::H1).0,
             "cell err"
         );
-        let (class, words) = point(Cell::Warn { n: 2, bad: 1 }, Some(State::Ok));
+        let (class, words) = point(Cell::Warn { n: 2, bad: 1 }, Some(State::Ok), map::Span::H1);
         assert_eq!(class, "cell warn");
         assert!(
             words.starts_with("1 of 2 subscriptions not receiving"),
             "{words}"
         );
         assert_eq!(
-            point(Cell::Warn { n: 2, bad: 1 }, Some(State::Bad)).0,
+            point(Cell::Warn { n: 2, bad: 1 }, Some(State::Bad), map::Span::H1).0,
             "cell err"
         );
         assert!(
-            point(Cell::Warn { n: 1, bad: 1 }, None)
+            point(Cell::Warn { n: 1, bad: 1 }, None, map::Span::H1)
                 .1
                 .starts_with("1 subscription, not receiving · "),
         );
         // No subscription: an empty cell with nothing to say.
         assert_eq!(
-            point(Cell::Empty, Some(State::Bad)),
+            point(Cell::Empty, Some(State::Bad), map::Span::H1),
             ("cell", String::new())
         );
     }

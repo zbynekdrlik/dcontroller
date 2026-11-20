@@ -26,10 +26,18 @@ test("the old pages' links land on the Map, which holds what they showed", async
   const row = page.locator(`[data-testid="map-links"] [data-edge="#map/link/${DEVICE}/${DEVICE}"]`);
   await expect(row).toBeVisible({ timeout: 40_000 });
   await expect(page.getByTestId("map-links").locator("thead")).toContainText("Late seconds 1 h");
-  const links = await page.request.get("/api/links").then((r) => r.json());
-  const own = links.links.find((l: any) => l.from === DEVICE && l.to === DEVICE);
-  expect(typeof own.late_s_1h).toBe("number");
-  await expect(row.getByTestId("late-seconds")).toHaveText(/^\d[\d ]*$/);
+  // One word for one thing (#123): late packets, as on every other page.
+  await expect(page.getByTestId("map-links").locator("thead")).toContainText("Late packets 1 h");
+  await expect(page.getByTestId("map-links").locator("thead")).not.toContainText("Lost");
+  // The line comes from the subscriptions at once; its figures once the
+  // recorder has a few seconds of the hour.
+  const own = async () =>
+    (await page.request.get("/api/links").then((r) => r.json())).links.find(
+      (l: any) => l.from === DEVICE && l.to === DEVICE,
+    );
+  await expect.poll(async () => typeof (await own())?.late_s_1h, { timeout: 40_000 }).toBe("number");
+  // The page reads the figures on its own 10 s poll.
+  await expect(row.getByTestId("late-seconds")).toHaveText(/^\d[\d ]*$/, { timeout: 30_000 });
 
   // A Devices link lands on the Map's device table; one device's link (and
   // an old latency link) on that device's detail, with its chart.

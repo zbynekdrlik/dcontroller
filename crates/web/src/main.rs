@@ -804,16 +804,18 @@ fn meter_column(title: &'static str, id: &'static str, levels: Vec<ChannelLevel>
 }
 
 fn meter_report_view(r: MeterReport) -> AnyView {
+    // The device's name leads to its place on the Map (#123), as on
+    // every other page.
     let head = match r.age_ms {
-        Some(a) => format!("{} · {} frames · last {} ms ago", r.device, r.frames, a),
-        None => format!("{} · waiting for the first meter frame", r.device),
+        Some(a) => format!(" · {} frames · last {} ms ago", r.frames, a),
+        None => " · waiting for the first meter frame".to_owned(),
     };
     let error = r
         .error
         .clone()
         .map(|e| view! { <p class="error" data-testid="mtr-error">{e}</p> });
     view! {
-        <p class="status" data-testid="mtr-head">{head}</p>
+        <p class="status" data-testid="mtr-head">{pages::dev_link(&r.device)}{head}</p>
         {error}
         <div class="meter-cols">
             {meter_column("Transmit", "mtr-tx", r.tx)}
@@ -855,6 +857,18 @@ fn pending_for(rx_device: &str, rc: &RxChannel, tx_device: &str, tx_channel: &st
 
 fn name_text(n: &Option<String>) -> String {
     n.clone().unwrap_or_else(|| "default".to_owned())
+}
+
+/// [`change_target`] with the device's name a link to its place on the Map
+/// (#123), as on every other page.
+fn target_view(e: &ChangeEntry) -> AnyView {
+    let text = change_target(e);
+    match changes::device_of(e).and_then(|d| changes::around(&text, d).map(|p| (d, p))) {
+        Some((d, (before, after))) => {
+            view! { {before.to_owned()}{pages::dev_link(d)}{after.to_owned()} }.into_any()
+        }
+        None => text.into_any(),
+    }
 }
 
 /// What a logged change changed, in words.
@@ -1612,7 +1626,7 @@ fn change_row(e: &ChangeEntry) -> AnyView {
         <tr data-testid="change-row" data-kind=e.kind.clone() class=class>
             <td>{when}</td>
             <td>{who}</td>
-            <td>{change_target(e)}</td>
+            <td>{target_view(e)}</td>
             <td>{cell(&e.name_before, &e.before)}</td>
             <td>{cell(&e.name_asked, &e.requested)}</td>
             <td>{cell(&e.name_after, &e.after)}</td>
@@ -1949,7 +1963,11 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
                 let link =
                     (ch.is_none() && n > 0).then(|| matrix::link_of(&states, &t.device, &r.device));
                 let (class, words) = match link {
-                    Some(l) => matrix::point(x, l),
+                    Some(l) => matrix::point(
+                        x,
+                        l,
+                        expect_context::<mappage::MapCtl>().span.get_untracked(),
+                    ),
                     None => (x.class(), String::new()),
                 };
                 let state = link.map(|l| l.unwrap_or(map::State::Unknown).class());
