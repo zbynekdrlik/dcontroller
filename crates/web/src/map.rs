@@ -41,6 +41,37 @@ pub enum Sel {
     Device { name: String },
 }
 
+/// Where a link to a page the Map took over lands (#130): the Overview on
+/// the Map, the Devices list on its Devices table, one device (or an old
+/// latency link) on that device's detail. `None`: not an old page.
+pub fn moved(hash: &str) -> Option<String> {
+    let path = hash.strip_prefix('#')?;
+    let (head, rest) = path.split_once('/').unwrap_or((path, ""));
+    match head {
+        "overview" => Some("#map".to_owned()),
+        "devices" | "latency" => Some(
+            decode(rest)
+                .filter(|n| !n.is_empty() && !n.contains('/'))
+                .map_or_else(
+                    || "#map/devices".to_owned(),
+                    |name| Sel::Device { name }.hash(),
+                ),
+        ),
+        _ => None,
+    }
+}
+
+/// The table of the Map a hash opens on (`#map/links`, `#map/devices`,
+/// `#map/schema`); `None` keeps the one shown.
+pub fn tab_of(hash: &str) -> Option<&'static str> {
+    match hash {
+        "#map/schema" => Some("schema"),
+        "#map/links" => Some("links"),
+        "#map/devices" => Some("devices"),
+        _ => None,
+    }
+}
+
 /// `text` with every byte outside `A-Z a-z 0-9 - _ . ~` as `%XX`.
 pub fn encode(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -114,12 +145,13 @@ impl Sel {
     }
 
     /// The device whose history holds this connection: the receiver, or
-    /// the bridge; none for a device (its connections carry the charts).
+    /// the bridge; a device's own (its chart of every connection in, or
+    /// its bridge's both ways, as the Devices page had them, #130).
     pub fn device(&self) -> Option<&str> {
         match self {
             Sel::Link { to, .. } => Some(to),
             Sel::Bridge { device, .. } => Some(device),
-            Sel::Device { .. } => None,
+            Sel::Device { name } => Some(name),
         }
     }
 
@@ -1123,6 +1155,28 @@ pub fn svg(g: &Graph, p: &Placed, chosen: Option<&Sel>) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_old_pages_link_lands_on_the_map() {
+        assert_eq!(moved("#overview").as_deref(), Some("#map"));
+        assert_eq!(moved("#devices").as_deref(), Some("#map/devices"));
+        assert_eq!(moved("#devices/").as_deref(), Some("#map/devices"));
+        assert_eq!(
+            moved("#devices/DESK%20A").as_deref(),
+            Some("#map/device/DESK%20A")
+        );
+        assert_eq!(moved("#latency/amp").as_deref(), Some("#map/device/amp"));
+        assert_eq!(moved("#devices/%zz").as_deref(), Some("#map/devices"));
+        for kept in ["#map", "#routing", "#map/device/a", "", "#changes/a"] {
+            assert_eq!(moved(kept), None, "{kept}");
+        }
+        assert_eq!(tab_of("#map/devices"), Some("devices"));
+        assert_eq!(tab_of("#map/links"), Some("links"));
+        assert_eq!(tab_of("#map/schema"), Some("schema"));
+        assert_eq!(tab_of("#map/device/a"), None);
+        // A tab's hash chooses nothing.
+        assert_eq!(Sel::from_hash("#map/devices"), None);
+    }
+
     use super::*;
     use dcontroller_api::{
         BridgePoint, BridgeSummary, Channels, Clock, Device, RxChannel, Source, TxChannel,
@@ -1242,7 +1296,7 @@ mod tests {
         };
         assert_eq!(d.hash(), "#map/device/stage%20rack");
         assert_eq!(Sel::from_hash(&d.hash()), Some(d.clone()));
-        assert_eq!(d.device(), None);
+        assert_eq!(d.device(), Some("stage rack"));
         assert!(d.same(&Sel::Device {
             name: "STAGE RACK".into()
         }));

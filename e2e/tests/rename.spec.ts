@@ -94,23 +94,25 @@ test.describe("renames", () => {
   });
 
   test("a device is renamed from the devices view and back", async ({ page }) => {
-    await page.goto("/#devices");
-    const card = page.locator(`[data-testid="device"][data-name="${DEVICE}"]`);
-    await expect(card.getByTestId("device-counts")).toHaveText("4 TX · 4 RX", { timeout: 30_000 });
-    await card.getByTestId("device-name").click();
+    await page.goto(`/#map/device/${DEVICE}`);
+    const card = page.getByTestId("map-device-body");
+    await expect(page.getByTestId("map-what")).toContainText("4 TX · 4 RX", { timeout: 30_000 });
     await card.getByTestId("rename-device").click();
     await expect(page.getByTestId("rename-title")).toHaveText(`Rename device ${DEVICE}`);
     await expect(page.getByTestId("rename-reset")).toHaveCount(0);
     await expect(page.getByTestId("rename-affected")).toContainText(`Stage L @ ${DEVICE}`);
     await rename(page, "dc-e2e-renamed");
     // Its records change name: discovery lists it under the new one.
-    const renamed = page.locator(`[data-testid="device"][data-name="dc-e2e-renamed"]`);
-    await expect(renamed.getByTestId("device-counts")).toHaveText("4 TX · 4 RX", { timeout: 30_000 });
-
-    await renamed.getByTestId("device-name").click();
-    await renamed.getByTestId("rename-device").click();
+    await page.goto("/#map/devices");
+    const renamed = page.locator(`[data-testid="map-device-row"][data-name="dc-e2e-renamed"]`);
+    await expect(renamed).toContainText("4 TX · 4 RX", { timeout: 30_000 });
+    await renamed.click();
+    await expect(page.getByTestId("map-title")).toHaveText("dc-e2e-renamed");
+    await card.getByTestId("rename-device").click();
     await rename(page, DEVICE);
-    await expect(card.getByTestId("device-counts")).toHaveText("4 TX · 4 RX", { timeout: 30_000 });
+    const back = page.locator(`[data-testid="map-device-row"][data-name="${DEVICE}"]`);
+    await page.goto("/#map/devices");
+    await expect(back).toContainText("4 TX · 4 RX", { timeout: 30_000 });
     await expect(renamed).toHaveCount(0, { timeout: 30_000 });
     expect(console_msgs).toEqual([]);
   });

@@ -37,14 +37,19 @@ test("a bridge device's figures show under its latency; a device without a bridg
   // A device without a bridge has nothing stored.
   expect((await page.request.get(`/api/bridge/${PLAIN}`).then((r) => r.json())).points).toEqual([]);
 
-  // On the page: the device's latency, then its bridge, in ms.
-  await page.goto(`/#devices/${BRIDGE}`);
-  await expect(page.getByTestId("lat-title")).toHaveText(`Latency · ${BRIDGE}`);
-  const panel = page.getByTestId("bridge-panel");
-  await expect(panel).toBeVisible({ timeout: 20_000 });
-  // Two plain lines on top: how long the bridge holds a sample each way.
+  // On the Map (#130): the bridge device's own chart holds both ways.
+  await page.goto(`/#map/device/${BRIDGE}`);
+  await expect(page.getByTestId("map-title")).toHaveText(BRIDGE, { timeout: 30_000 });
+  const chart = page.getByTestId("map-chart");
+  await expect(chart.locator("canvas")).toHaveCount(1, { timeout: 20_000 });
+  await expect(chart.locator(".u-legend")).toContainText("SoundGrid → Dante");
+  expect(await chart.evaluate((el) => (el as any)._dcData.axis)).toBe("card to card, ms");
+  // One way of it: two plain lines on top, how long the bridge holds a
+  // sample each way, then its parts, underruns and lateness.
+  await page.goto(`/#map/bridge/${BRIDGE}/to-dante`);
+  const panel = page.getByTestId("map-detail");
   const lineDante = panel.getByTestId("bridge-line-dante");
-  await expect(lineDante.locator("th")).toHaveText("SoundGrid → Dante");
+  await expect(lineDante.locator("th")).toHaveText("SoundGrid → Dante", { timeout: 20_000 });
   await expect(lineDante.locator("td")).toHaveText("7.30 ms");
   const lineAsio = panel.getByTestId("bridge-line-asio");
   await expect(lineAsio.locator("th")).toHaveText("Dante → SoundGrid");
@@ -53,22 +58,18 @@ test("a bridge device's figures show under its latency; a device without a bridg
   for (const th of [lineDante.locator("th"), lineAsio.locator("th")]) {
     expect(await th.evaluate((el) => getComputedStyle(el).textTransform)).toBe("none");
   }
-  await expect(panel.getByTestId("bridge-chart").locator(".u-legend")).toContainText("SoundGrid → Dante");
-  expect(await panel.getByTestId("bridge-chart").evaluate((el) => (el as any)._dcData.axis)).toBe("card to card, ms");
-  // The parts, underruns and lateness sit closed under Details.
-  await expect(panel.getByTestId("bridge-table")).toBeHidden();
-  await panel.getByTestId("bridge-details").locator("summary").click();
   await expect(panel.getByTestId("bridge-table")).toBeVisible();
   await expect(panel.getByTestId("bridge-to").locator("td").first()).toHaveText("2.17 ms");
   await expect(panel.getByTestId("bridge-to")).toContainText("latency 1.00 ms + target 1.00 ms + converter 0.17 ms");
   await expect(panel.getByTestId("bridge-from").locator("td").first()).toHaveText("1.83 ms");
   await expect(panel.getByTestId("bridge-to-under")).toContainText("latest cause: driver callback late");
   await expect(panel.getByTestId("bridge-late")).toContainText("0.25 ms: 40");
-  await expect(panel.getByTestId("bridge-chart").locator("canvas")).toHaveCount(1);
+  await expect(chart.locator("canvas")).toHaveCount(1);
 
   // Another device: no bridge part.
-  await page.goto(`/#devices/${PLAIN}`);
-  await expect(page.getByTestId("lat-title")).toHaveText(`Latency · ${PLAIN}`);
-  await expect(page.getByTestId("bridge-panel")).toBeHidden();
+  await page.goto(`/#map/device/${PLAIN}`);
+  await expect(page.getByTestId("map-title")).toHaveText(PLAIN, { timeout: 30_000 });
+  await expect(page.getByTestId("map-dev-bridge")).toHaveCount(0);
+  await expect(page.getByTestId("bridge-lines")).toHaveCount(0);
   expect(msgs).toEqual([]);
 });

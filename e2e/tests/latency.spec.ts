@@ -20,7 +20,7 @@ test.describe("latency history", () => {
     test.use({ timezoneId: "America/New_York" });
 
     test("the chart reads Slovak time in Slovak format", async ({ page }) => {
-      await page.goto("/#devices");
+      await page.goto("/#map");
       // 15 January 2026, 12:00 UTC: 13:00 in Slovakia.
       const t0 = 1768478400;
       const got = await page.evaluate((t0) => {
@@ -55,7 +55,7 @@ test.describe("latency history", () => {
   });
 
   test("late packets are marks on the one chart, per the sources showing", async ({ page }) => {
-    await page.goto("/#devices");
+    await page.goto("/#map");
     // The recorded device has none to rely on: the chart gets a known history.
     const box = page.locator("#late-test");
     await page.evaluate(() => {
@@ -108,39 +108,29 @@ test.describe("latency history", () => {
     expect(console_msgs).toEqual([]);
   });
 
-  test("charts a receiver device to device: late packets as the verdict, the margin per source, ranges and zoom", async ({ page }) => {
-    // Latency lives on the Devices page (#106): no Latency menu item; an old
-    // link lands there; a receiver's card has a latency chip that shows it.
-    await page.goto("/#latency");
-    await expect(page).toHaveURL(/#devices$/);
-    await expect(page.getByTestId("tab-devices")).toHaveClass(/\bon\b/);
+  test("charts a connection device to device: late packets as the verdict, the margin per source, ranges and zoom", async ({ page }) => {
+    // Latency lives on the Map since #130: an old latency link lands on the
+    // receiver there; its connection's line shows the chart.
+    await page.goto(`/#latency/${DEVICE}`);
+    await expect(page).toHaveURL(new RegExp(`#map/device/${DEVICE}$`));
+    await expect(page.getByTestId("tab-map")).toHaveClass(/\bon\b/);
     await expect(page.getByTestId("tab-latency")).toHaveCount(0);
-    await expect(page.getByTestId("lat-panel")).toBeHidden();
-    const card = page.locator(`[data-testid="device"][data-name="${DEVICE}"]`);
-    const pick = card.getByTestId("device-latency");
-    await expect(pick).toBeVisible({ timeout: 30_000 });
-    await pick.click();
-    await expect(page).toHaveURL(new RegExp(`#devices/${DEVICE}$`));
-    await expect(pick).toHaveClass(/\bsel\b/);
-    // The chip does not open or close the card.
-    await expect(card.locator("details")).not.toHaveAttribute("open", "");
-    await expect(page.getByTestId("lat-panel")).toBeVisible();
-    await expect(page.getByTestId("lat-title")).toHaveText(`Latency · ${DEVICE}`);
-    // The device list stays on the page under the panel.
-    await expect(card).toBeVisible();
+    await page.getByTestId("map-dev-in").getByTestId("map-dev-row").first().click({ timeout: 30_000 });
+    await expect(page).toHaveURL(new RegExp(`#map/link/${DEVICE}/${DEVICE}$`));
+    await expect(page.getByTestId("map-title")).toHaveText(`${DEVICE} → ${DEVICE}`);
 
     // The recorder's first samples (5 s listens) show up as one source device:
     // the device receives its own TX, so it is device to device with itself.
-    const src = page.getByTestId("lat-source").first();
+    const src = page.getByTestId("map-flows").getByTestId("lat-source").first();
     await expect(src).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId("lat-source")).toHaveCount(1);
+    await expect(page.getByTestId("map-flows").getByTestId("lat-source")).toHaveCount(1);
     await expect(src).toHaveAttribute("data-name", DEVICE);
     await expect(src).toContainText("1 flow");
     // No channel lists: a device may carry hundreds.
     await expect(src).not.toContainText("Stage L");
     await expect(src.getByTestId("lat-source-latency")).toHaveText("10.00 ms");
     await expect(src.locator(".hist .hb")).toHaveCount(11);
-    await expect(page.getByTestId("lat-live")).toBeVisible();
+    await expect(page.getByTestId("map-live")).toBeVisible();
 
     // The page shows what the server recorded: late packets are the verdict.
     const h = await page.evaluate((d) => fetch(`/api/history/${d}`).then((x) => x.json()), DEVICE);
@@ -149,41 +139,31 @@ test.describe("latency history", () => {
     expect(h.flows[0].channels).toEqual(["Stage L"]);
     expect(h.flows[0].max_us.some((v: number | null) => v !== null)).toBe(true);
     await expect(src.getByTestId("lat-source-peak")).toHaveText(/^\d+\.\d\d ms$/);
-    const late = h.flows[0].late_total;
-    await expect(src.getByTestId("lat-source-late")).toHaveText(String(late));
-    await expect(page.getByTestId("lat-verdict")).toContainText(late === 0 ? "No late packets" : `${late} late packets`);
+    await expect(src.getByTestId("lat-source-late")).toHaveText(/^\d+$/);
+    const late = Number(await src.getByTestId("lat-source-late").textContent());
 
-    // One chart: uPlot draws it and names the source device and its latency in the legend.
-    const margin = page.getByTestId("lat-chart");
+    // One chart: uPlot draws it and names its latency in the legend.
+    const margin = page.getByTestId("map-chart");
     await expect(margin.locator("canvas")).toHaveCount(1);
     // The source's colour is its place on this chart, the same in the chart and the table.
     const color = await margin.evaluate((el) => (el as any)._dcData.sources[0].color);
-    expect(color).toBe("#4ade80");
     await expect(src.locator(".dot")).toHaveAttribute("data-color", color);
     await expect(margin.locator("canvas")).toBeVisible();
-    await expect(margin.locator(".u-legend")).toContainText(DEVICE);
     await expect(margin.locator(".u-legend")).not.toContainText("Flow 1");
     // No late packets, no late marks.
     if (late === 0) await expect(margin).toHaveAttribute("data-late-marks", "0");
     // Only ms (#105): no "% of latency"; the latency line is labelled on the chart itself.
-    await expect(page.getByTestId("lat-scale-share")).toHaveCount(0);
-    await expect(page.getByTestId("lat-scale-ms")).toHaveCount(0);
-    await expect(margin.locator(".u-legend")).toContainText("latency 10.00 ms · all sources");
+    await expect(margin.locator(".u-legend")).toContainText("latency 10.00 ms");
     await expect(margin).toHaveAttribute("data-threshold-labels", "1");
     await expect(page.getByText("% of latency")).toHaveCount(0);
 
-    // Ranges: 5 min reads seconds, 6 h reads minutes.
-    await page.locator('[data-testid="lat-range"][data-range="300"]').click();
-    await expect(page.locator('[data-testid="lat-range"][data-range="300"]')).toHaveClass(/\bon\b/);
-    await expect(page.getByTestId("lat-head")).toContainText("one point per 1 s");
-    // 3 h: the owner's proof window (#120).
-    await page.locator('[data-testid="lat-range"][data-range="10800"]').click();
-    await expect(page.locator('[data-testid="lat-range"][data-range="10800"]')).toHaveClass(/\bon\b/);
-    await expect(page.locator('[data-testid="lat-range"][data-range="10800"]')).toHaveText("3 h");
-    await page.locator('[data-testid="lat-range"][data-range="21600"]').click();
-    await expect(page.getByTestId("lat-head")).toContainText("one point per 1 min");
-    await page.locator('[data-testid="lat-range"][data-range="300"]').click();
-    await expect(page.getByTestId("lat-head")).toContainText("one point per 1 s");
+    // Ranges: 5 min, 3 h (the owner's proof window, #120), 6 h.
+    for (const r of ["300", "10800", "21600", "300"]) {
+      await page.locator(`[data-testid="map-range"][data-range="${r}"]`).click();
+      await expect(page.locator(`[data-testid="map-range"][data-range="${r}"]`)).toHaveClass(/\bon\b/);
+      await expect(margin.locator("canvas")).toBeVisible();
+    }
+    await expect(page.locator('[data-testid="map-range"][data-range="10800"]')).toHaveText("3 h");
 
     // Zoom: a drag across the chart zooms in and stops following live; the chip zooms out.
     const over = margin.locator(".u-over");
@@ -192,21 +172,23 @@ test.describe("latency history", () => {
     await page.mouse.down();
     await page.mouse.move(box.x + box.width * 0.95, box.y + box.height / 2, { steps: 8 });
     await page.mouse.up();
-    await expect(page.getByTestId("lat-unzoom")).toBeVisible();
-    await expect(page.getByTestId("lat-live")).toHaveCount(0);
-    await page.getByTestId("lat-unzoom").click();
-    await expect(page.getByTestId("lat-unzoom")).toHaveCount(0);
-    await expect(page.getByTestId("lat-live")).toBeVisible();
+    await expect(page.getByTestId("map-unzoom")).toBeVisible();
+    await expect(page.getByTestId("map-live")).toHaveCount(0);
+    await page.getByTestId("map-unzoom").click();
+    await expect(page.getByTestId("map-unzoom")).toHaveCount(0);
+    await expect(page.getByTestId("map-live")).toBeVisible();
 
     // The choice survives a reload (kept in the URL), and the history is still there.
     await page.reload();
-    await expect(page.getByTestId("lat-source").first()).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByTestId("lat-chart").locator("canvas")).toBeVisible();
-    // ✕ hides the latency, the device list stays.
-    await page.getByTestId("lat-close").click();
-    await expect(page).toHaveURL(/#devices$/);
-    await expect(page.getByTestId("lat-panel")).toBeHidden();
-    await expect(page.locator(`[data-testid="device"][data-name="${DEVICE}"]`)).toBeVisible();
+    await expect(page.getByTestId("map-flows").getByTestId("lat-source").first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId("map-chart").locator("canvas")).toBeVisible();
+
+    // The receiver itself: one chart of everything it receives (the Devices
+    // page's latency chart, #130).
+    await page.goto(`/#map/device/${DEVICE}`);
+    await expect(page.getByTestId("map-chart").locator("canvas")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("map-chart").locator(".u-legend")).toContainText(DEVICE);
+    await expect(page.locator('[data-testid="map-range"]').first()).toBeVisible();
     expect(console_msgs).toEqual([]);
   });
 

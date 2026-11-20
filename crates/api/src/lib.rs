@@ -677,6 +677,10 @@ pub struct LinkSummary {
     /// Late packets in the last hour and the last day.
     pub late_1h: u64,
     pub late_24h: u64,
+    /// Seconds of the last hour with a late packet, as the Overview's
+    /// receivers count them (#130).
+    #[serde(default)]
+    pub late_s_1h: u64,
     /// The last 3 hours and the last day as the hour's figures say it
     /// (#142): late packets, and the peak closest to its flow's latency
     /// with that latency. The Map colours a connection by the window shown.

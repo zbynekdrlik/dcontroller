@@ -187,13 +187,13 @@ test.describe("routing matrix", () => {
     expect(console_msgs).toEqual([]);
   });
 
-  test("tabs switch between routing and devices and keep the view in the URL", async ({ page }) => {
+  test("tabs switch between routing and the map and keep the view in the URL", async ({ page }) => {
     await page.goto("/#routing");
-    await page.getByTestId("tab-devices").click();
-    await expect(page).toHaveURL(/#devices$/);
-    await expect(page.locator(`[data-testid="device"][data-name="${DEVICE}"]`)).toBeVisible({ timeout: 30_000 });
+    await page.getByTestId("tab-map").click();
+    await expect(page).toHaveURL(/#map$/);
+    await expect(page.locator(`[data-testid="map-node"][data-node="${DEVICE}"]`)).toBeVisible({ timeout: 30_000 });
     await page.reload();
-    await expect(page.getByTestId("tab-devices")).toHaveClass(/\bon\b/);
+    await expect(page.getByTestId("tab-map")).toHaveClass(/\bon\b/);
     await page.getByTestId("tab-routing").click();
     await expect(page.getByTestId("matrix")).toBeVisible();
     expect(console_msgs).toEqual([]);

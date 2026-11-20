@@ -70,10 +70,8 @@ test("the network tab lists every device's interfaces as the server read them", 
   await expect(page.getByTestId("tab-map")).toHaveClass(/\bon\b/);
   await expect(page.getByTestId("map-title")).toHaveText(DEVICE, { timeout: 30_000 });
 
-  // The device table shows the same interface.
-  await page.getByTestId("tab-devices").click();
-  const card = page.locator(`[data-testid="device"][data-name="${DEVICE}"]`);
-  await card.getByTestId("device-name").click();
+  // The device's detail shows the same interface.
+  const card = page.getByTestId("map-device-body");
   const prim = card
     .getByTestId("settings-table")
     .locator("tr", { has: page.getByRole("rowheader", { name: "Primary network", exact: true }) })

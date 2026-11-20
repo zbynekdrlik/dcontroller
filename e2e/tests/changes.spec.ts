@@ -27,9 +27,8 @@ test("a channel renamed outside dcontroller shows in Changes", async ({ page }) 
   });
   page.on("pageerror", (e) => msgs.push(`pageerror: ${e.message}`));
 
-  await page.goto("/#devices");
-  const card3 = page.locator(`[data-testid="device"][data-name="${DEVICE}"]`);
-  await expect(card3.getByTestId("device-counts")).toHaveText("4 TX · 4 RX", { timeout: 30_000 });
+  await page.goto(`/#map/device/${DEVICE}`);
+  await expect(page.getByTestId("map-what")).toContainText("4 TX · 4 RX", { timeout: 30_000 });
 
   const devices = await page.evaluate(() => fetch("/api/devices").then((r) => r.json()));
   const arc = devices.devices.find((d: { name: string }) => d.name === DEVICE).address;

@@ -1,4 +1,4 @@
-//! The Devices page's order and "joined" line: a device that just joined
+//! The Map device table's order and "joined" line: a device that just joined
 //! the network is found by sorting newest first. Pure, so it is tested on
 //! the host.
 
