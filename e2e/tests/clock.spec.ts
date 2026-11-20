@@ -119,6 +119,8 @@ test("the clock tab lists every device's clock status as the server read it", as
   await expect(old).toHaveAttribute("data-state", "ok");
   await expect(old.getByTestId("dsync-service-version")).toHaveText("0.9.4 · old dsync");
   await expect(up.getByTestId("dsync-service-version")).toHaveText("0.9.4");
+  // A node that never answered says nothing of its dsync, old or not.
+  await expect(down.getByTestId("dsync-service-version")).toHaveText("–");
   await expect(newer).toHaveAttribute("data-state", "bad");
   await expect(newer.getByTestId("dsync-service-state")).toHaveText(
     "its status is schema 2, newer than this dcontroller reads (1): update dcontroller",

@@ -47,6 +47,12 @@ test("the map is the start page: every device a box, every connection a line, a 
   await expect(line).toHaveCount(1);
   await expect(line).not.toHaveAttribute("data-state", "unknown", { timeout: 40_000 });
   await expect(line.locator(".lbl text")).toContainText("10.00 ms");
+  // #124: a dstack device's box carries its own dsync clock next to the
+  // Dante PTP word, as the device says it (/api/clocks).
+  await expect(map.locator(`[data-testid="map-node"][data-node="${DEVICE}"] [data-testid="map-node-dsync"]`)).toHaveText(
+    /^dsync (locked|limping|no time)$/,
+    { timeout: 30_000 },
+  );
 
   // #142: the colours speak of a window, 1 h by default; the switch moves
   // them to 3 h or 24 h, and the line's state follows /api/links for it.

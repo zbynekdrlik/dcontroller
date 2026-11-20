@@ -195,6 +195,9 @@ pub struct Node {
     pub lines: [String; 2],
     /// The clock's word and whether it is good.
     pub badge: Option<(String, bool)>,
+    /// Its own dsync clock (the device's follower or its PC's service,
+    /// #124): the word and whether it is good; `None` when it gives none.
+    pub dsync: Option<(String, bool)>,
     /// For an ASIO side: its bridge's node.
     pub of: Option<usize>,
     /// TX and RX channel counts (the column of a device with no connection).
@@ -319,6 +322,22 @@ fn per_mille(l: &LinkSummary) -> u32 {
     u32::try_from(u64::from(l.peak_us) * 1000 / u64::from(l.latency_us)).unwrap_or(u32::MAX)
 }
 
+/// Each device's own dsync clock as its box's second badge (#124), from
+/// what the devices say of their clocks (`/api/clocks`).
+pub fn with_dsync(g: &mut Graph, c: &dcontroller_api::Clocks) {
+    for n in g.nodes.iter_mut().filter(|n| n.kind == NodeKind::Device) {
+        n.dsync = c
+            .nodes
+            .iter()
+            .find(|x| x.device.eq_ignore_ascii_case(&n.name))
+            .map(|x| match x.health().0 {
+                "ok" => ("dsync locked".to_owned(), true),
+                "warn" => ("dsync limping".to_owned(), false),
+                _ => ("dsync no time".to_owned(), false),
+            });
+    }
+}
+
 /// The summary of the connection `from` into `to`, the names' case aside.
 pub fn summary_of<'a>(links: Option<&'a Links>, from: &str, to: &str) -> Option<&'a LinkSummary> {
     links?
@@ -357,6 +376,7 @@ pub fn build(d: &Devices, links: Option<&Links>, span: Span) -> Graph {
             kind: NodeKind::Device,
             lines: [what, format!("{tx} TX · {rx} RX")],
             badge,
+            dsync: None,
             of: None,
             tx,
             rx,
@@ -395,6 +415,7 @@ pub fn build(d: &Devices, links: Option<&Links>, span: Span) -> Graph {
                         kind: NodeKind::Missing,
                         lines: ["not on the network".to_owned(), String::new()],
                         badge: None,
+                        dsync: None,
                         of: None,
                         tx: 1,
                         rx: 0,
@@ -463,6 +484,7 @@ pub fn build(d: &Devices, links: Option<&Links>, span: Span) -> Graph {
                 "not a Dante device".to_owned(),
             ],
             badge: None,
+            dsync: None,
             of: Some(dev),
             tx: 0,
             rx: 0,
@@ -1122,9 +1144,18 @@ pub fn svg(g: &Graph, p: &Placed, chosen: Option<&Sel>) -> String {
                 esc(text)
             )
         });
+        let dsync = n.dsync.as_ref().map_or(String::new(), |(text, good)| {
+            format!(
+                r#"<text class="badge{}" data-testid="map-node-dsync" x="{:.1}" y="{:.1}" text-anchor="end">{}</text>"#,
+                if *good { "" } else { " bad" },
+                r.x + r.w - 10.0,
+                r.y + 52.0,
+                esc(text)
+            )
+        });
         let room = if n.badge.is_some() { 17 } else { 24 };
         s.push_str(&format!(
-            r#"<g class="node{kind}{}" data-testid="map-node" data-node="{}"><title>{}</title><rect x="{:.1}" y="{:.1}" width="{:.0}" height="{:.0}" rx="10"/><text class="name" x="{:.1}" y="{:.1}">{}</text><text class="sub" x="{:.1}" y="{:.1}">{}</text><text class="sub" x="{:.1}" y="{:.1}">{}</text>{badge}</g>"#,
+            r#"<g class="node{kind}{}" data-testid="map-node" data-node="{}"><title>{}</title><rect x="{:.1}" y="{:.1}" width="{:.0}" height="{:.0}" rx="10"/><text class="name" x="{:.1}" y="{:.1}">{}</text><text class="sub" x="{:.1}" y="{:.1}">{}</text><text class="sub" x="{:.1}" y="{:.1}">{}</text>{badge}{dsync}</g>"#,
             if device == Some(i) {
                 " sel"
             } else if ends.contains(&i) {
@@ -1155,6 +1186,61 @@ pub fn svg(g: &Graph, p: &Placed, chosen: Option<&Sel>) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_devices_box_carries_its_own_dsync_clock() {
+        use dcontroller_api::{ClockNode, Clocks, Follower};
+        let mut g = build(&net(), None, Span::H1);
+        let name = g
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Device)
+            .unwrap()
+            .name
+            .clone();
+        let locked = ClockNode {
+            device: name.to_uppercase(),
+            ready: true,
+            source: "follower".into(),
+            follower: Some(Follower {
+                locked: true,
+                settled: true,
+                ..Follower::default()
+            }),
+            ..ClockNode::default()
+        };
+        with_dsync(
+            &mut g,
+            &Clocks {
+                nodes: vec![locked.clone()],
+                ..Clocks::default()
+            },
+        );
+        let n = g.nodes.iter().find(|n| n.name == name).unwrap();
+        assert_eq!(n.dsync, Some(("dsync locked".to_owned(), true)));
+        assert!(
+            g.nodes
+                .iter()
+                .filter(|n| n.name != name)
+                .all(|n| n.dsync.is_none())
+        );
+        let s = svg(&g, &layout(&g), None);
+        assert!(s.contains(r#"data-testid="map-node-dsync""#));
+        assert!(s.contains(">dsync locked</text>"));
+        let lost = ClockNode {
+            ready: false,
+            ..locked
+        };
+        with_dsync(
+            &mut g,
+            &Clocks {
+                nodes: vec![lost],
+                ..Clocks::default()
+            },
+        );
+        let n = g.nodes.iter().find(|n| n.name == name).unwrap();
+        assert_eq!(n.dsync, Some(("dsync no time".to_owned(), false)));
+    }
+
     #[test]
     fn an_old_pages_link_lands_on_the_map() {
         assert_eq!(moved("#overview").as_deref(), Some("#map"));

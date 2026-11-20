@@ -174,10 +174,20 @@ pub fn MapPage() -> impl IntoView {
     let ctl = expect_context::<Ctl>();
     let h = expect_context::<Hist>();
     let m = expect_context::<MapCtl>();
+    let crate::Clk(clk) = expect_context::<crate::Clk>();
     let graph = Memo::new(move |_| match ctl.devices.get() {
-        Some(Ok(d)) => m
-            .links
-            .with(|l| map::build(&d, l.as_ref().and_then(|r| r.as_ref().ok()), m.span.get())),
+        Some(Ok(d)) => {
+            let mut g = m
+                .links
+                .with(|l| map::build(&d, l.as_ref().and_then(|r| r.as_ref().ok()), m.span.get()));
+            // Each box's own dsync clock (#124), as the devices say it.
+            clk.with(|c| {
+                if let Some(Ok(c)) = c {
+                    map::with_dsync(&mut g, c);
+                }
+            });
+            g
+        }
         _ => map::Graph::default(),
     });
     // The connection that shows: the chosen one while the network has it,
@@ -398,7 +408,11 @@ pub fn MapPage() -> impl IntoView {
                         .badge
                         .as_ref()
                         .map_or_else(String::new, |(text, _)| format!(" · {text}"));
-                    format!("{} · {}{clock}", node.lines[0], node.lines[1])
+                    let dsync = node
+                        .dsync
+                        .as_ref()
+                        .map_or_else(String::new, |(text, _)| format!(" · {text}"));
+                    format!("{} · {}{clock}{dsync}", node.lines[0], node.lines[1])
                 })
             }),
         })
