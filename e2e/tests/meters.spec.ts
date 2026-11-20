@@ -63,5 +63,11 @@ test("the meters tab subscribes to the chosen device and shows its channel level
   await page.reload();
   await expect(page.locator(`[data-testid="mtr-device"][data-name="${DEVICE}"]`)).toHaveClass(/on/, { timeout: 30_000 });
   await expect(page.getByTestId("mtr-tx").getByTestId("mtr-channel")).toHaveCount(4, { timeout: 15_000 });
+  // The hash is the address: moving it (back, a link) moves the view too.
+  await page.evaluate(() => { location.hash = "#meters"; });
+  await expect(page.getByTestId("mtr-all")).toBeVisible({ timeout: 15_000 });
+  await page.goBack();
+  await expect(page).toHaveURL(new RegExp(`#meters/${DEVICE}$`));
+  await expect(page.getByTestId("mtr-tx").getByTestId("mtr-channel")).toHaveCount(4, { timeout: 15_000 });
   expect(msgs).toEqual([]);
 });
