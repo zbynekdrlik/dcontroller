@@ -77,6 +77,9 @@ h1, h2, h3 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
 .panel-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 1rem; margin-bottom: 0.8rem; }
 .panel-head h2 { font-size: 1.05rem; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.9rem; margin-bottom: 1.2rem; }
+/* A desktop holds every tile in one row, as mockup v2 (#142): a seventh
+   tile (a bridge's) no longer wraps to a row of its own. */
+@media (min-width: 1200px) { .tiles { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); } }
 .tile { display: flex; flex-direction: column; gap: 0.2rem; padding: 0.9rem 1rem; text-decoration: none;
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); position: relative; overflow: hidden; }
 .tile::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--ok); }
