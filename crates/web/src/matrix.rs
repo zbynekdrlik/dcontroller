@@ -100,7 +100,8 @@ pub fn link_of(states: &LinkStates, from: &str, to: &str) -> Option<State> {
 /// A device cross-point's CSS class and its words: the worse of what the
 /// receiver reports now and of the connection's state as the Map names it
 /// (one vocabulary on both pages, #123).
-pub fn point(cell: Cell, link: Option<State>) -> (&'static str, String) {
+/// `span` is the Map's window the state is taken over (#123).
+pub fn point(cell: Cell, link: Option<State>, span: map::Span) -> (&'static str, String) {
     let now = match cell {
         Cell::Empty => return (cell.class(), String::new()),
         Cell::Ok(1) => "1 subscription, receiving".to_owned(),
@@ -113,10 +114,10 @@ pub fn point(cell: Cell, link: Option<State>) -> (&'static str, String) {
         }
     };
     let (rank, past) = match link {
-        Some(State::Bad) => (2, "late packets in the last hour"),
-        Some(State::Warn) => (1, "peak close to the latency"),
-        Some(State::Ok) => (0, "no late packets"),
-        Some(State::Unknown) | None => (0, "latency not measured"),
+        Some(State::Bad) => (2, format!("late packets in the last {}", span.words())),
+        Some(State::Warn) => (1, "peak close to the latency".to_owned()),
+        Some(State::Ok) => (0, "no late packets".to_owned()),
+        Some(State::Unknown) | None => (0, "latency not measured".to_owned()),
     };
     let own = match cell {
         Cell::Err { .. } => 2,

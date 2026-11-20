@@ -1963,7 +1963,11 @@ fn routing_view(d: &Devices, ex: Expanded) -> AnyView {
                 let link =
                     (ch.is_none() && n > 0).then(|| matrix::link_of(&states, &t.device, &r.device));
                 let (class, words) = match link {
-                    Some(l) => matrix::point(x, l),
+                    Some(l) => matrix::point(
+                        x,
+                        l,
+                        expect_context::<mappage::MapCtl>().span.get_untracked(),
+                    ),
                     None => (x.class(), String::new()),
                 };
                 let state = link.map(|l| l.unwrap_or(map::State::Unknown).class());
