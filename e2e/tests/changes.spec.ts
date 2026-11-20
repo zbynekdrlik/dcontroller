@@ -48,6 +48,8 @@ test("a channel renamed outside dcontroller shows in Changes", async ({ page }) 
     const row = page.getByTestId("change-row").filter({ hasText: "Ext 3" }).first();
     await expect(row).toContainText("outside dcontroller");
     await expect(row).toContainText(`rename RX 3 @ ${DEVICE}`);
+    // The device's name is a link to its place on the Map (#123).
+    await expect(row.getByTestId("dev-link")).toHaveAttribute("href", `#map/device/${DEVICE}`);
     const logged = await page.evaluate(() => fetch("/api/changes").then((r) => r.json()));
     const at = logged.find((e: { name_after: string }) => e.name_after === "Ext 3").at;
     await expect(row).toContainText(new Date(at * 1000).toLocaleString("sk-SK", { timeZone: "Europe/Bratislava" }));

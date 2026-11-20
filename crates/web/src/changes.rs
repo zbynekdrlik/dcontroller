@@ -190,8 +190,53 @@ pub fn span(seconds: u64) -> String {
     }
 }
 
+/// The Dante device a logged change names, to link it to its place on the
+/// Map (#123); `None` for a status entry about an mDNS host or this server.
+pub fn device_of(e: &ChangeEntry) -> Option<&str> {
+    match (e.kind.as_str(), e.what.as_str()) {
+        ("status", "mdns" | "mdns-browser" | "network-floor") => None,
+        _ if e.rx_device.is_empty() => None,
+        _ => Some(&e.rx_device),
+    }
+}
+
+/// `text` around the device `name` in it (the first `@ name`, else the last
+/// `name`): what comes before and after, so the name itself can be a link.
+pub fn around<'a>(text: &'a str, name: &str) -> Option<(&'a str, &'a str)> {
+    let at = text
+        .find(&format!("@ {name}"))
+        .map(|i| i + 2)
+        .or_else(|| text.rfind(name))?;
+    Some((&text[..at], &text[at + name.len()..]))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_changes_device_is_found_in_its_words_for_the_maps_link() {
+        let e = |kind: &str, what: &str, dev: &str| ChangeEntry {
+            kind: kind.into(),
+            what: what.into(),
+            rx_device: dev.into(),
+            ..ChangeEntry::default()
+        };
+        assert_eq!(device_of(&e("rename", "device", "desk")), Some("desk"));
+        assert_eq!(device_of(&e("setting", "latency", "amp")), Some("amp"));
+        assert_eq!(device_of(&e("status", "rx", "amp")), Some("amp"));
+        assert_eq!(device_of(&e("status", "mdns", "amp, this server")), None);
+        assert_eq!(device_of(&e("status", "network-floor", "v1")), None);
+        assert_eq!(device_of(&e("subscribe", "", "")), None);
+        assert_eq!(
+            around("Stage L @ desk ← Mix L @ desk", "desk"),
+            Some(("Stage L @ ", " ← Mix L @ desk"))
+        );
+        assert_eq!(
+            around("rename device amp", "amp"),
+            Some(("rename device ", ""))
+        );
+        assert_eq!(around("latency @ amp", "desk"), None);
+    }
+
     use super::*;
     use dcontroller_api::Source;
 

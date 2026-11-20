@@ -859,6 +859,18 @@ fn name_text(n: &Option<String>) -> String {
     n.clone().unwrap_or_else(|| "default".to_owned())
 }
 
+/// [`change_target`] with the device's name a link to its place on the Map
+/// (#123), as on every other page.
+fn target_view(e: &ChangeEntry) -> AnyView {
+    let text = change_target(e);
+    match changes::device_of(e).and_then(|d| changes::around(&text, d).map(|p| (d, p))) {
+        Some((d, (before, after))) => {
+            view! { {before.to_owned()}{pages::dev_link(d)}{after.to_owned()} }.into_any()
+        }
+        None => text.into_any(),
+    }
+}
+
 /// What a logged change changed, in words.
 fn change_target(e: &ChangeEntry) -> String {
     match (e.kind.as_str(), e.what.as_str()) {
@@ -1614,7 +1626,7 @@ fn change_row(e: &ChangeEntry) -> AnyView {
         <tr data-testid="change-row" data-kind=e.kind.clone() class=class>
             <td>{when}</td>
             <td>{who}</td>
-            <td>{change_target(e)}</td>
+            <td>{target_view(e)}</td>
             <td>{cell(&e.name_before, &e.before)}</td>
             <td>{cell(&e.name_asked, &e.requested)}</td>
             <td>{cell(&e.name_after, &e.after)}</td>
