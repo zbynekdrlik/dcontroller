@@ -567,8 +567,82 @@ pub fn spark_path(values: &[Option<u32>], w: f64, h: f64, top: u32) -> String {
     out.trim_end().to_owned()
 }
 
+/// A dsync service node's chart (#124 2c): its phase error, µs (the size
+/// of it: dsync alarms at 50 either way), with dsync's alarm line, and a
+/// red bar at the bottom where it had no lock (not locked, or no answer).
+pub fn dsync_chart_json(h: &dcontroller_api::DsyncHistory, label: &str, height: u32) -> String {
+    let t: Vec<i64> = h.points.iter().map(|p| p.t).collect();
+    let chart = Chart {
+        t: &t,
+        unit: "µs",
+        sources: vec![ChartSource {
+            label: label.to_owned(),
+            color: LINK_COLOR.to_owned(),
+            values: h
+                .points
+                .iter()
+                .map(|p| p.phase_error_us.map(f64::abs))
+                .collect(),
+            late: h.points.iter().map(|p| u64::from(p.lost())).collect(),
+        }],
+        thresholds: vec![Threshold {
+            label: format!(
+                "dsync alarms at {} µs",
+                dcontroller_api::DSYNC_PHASE_ALARM_US
+            ),
+            color: "#f87171",
+            value: dcontroller_api::DSYNC_PHASE_ALARM_US,
+        }],
+        late_name: "no lock",
+        axis: "phase error, µs",
+        floor: 0.0,
+        height,
+    };
+    serde_json::to_string(&chart).unwrap_or_else(|_| "{}".into())
+}
+
+/// How long a dsync node had no lock in `h`, in its points, and of how
+/// many: the chart's words under it.
+pub fn dsync_lost(h: &dcontroller_api::DsyncHistory) -> (usize, usize) {
+    (h.points.iter().filter(|p| p.lost()).count(), h.points.len())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_dsync_nodes_chart_draws_its_phase_error_and_bars_where_it_had_no_lock() {
+        use dcontroller_api::{DsyncHistory, DsyncPoint};
+        let p = |t, answered, locked, e| DsyncPoint {
+            t,
+            answered,
+            locked,
+            phase_error_us: e,
+            mode: None,
+        };
+        let h = DsyncHistory {
+            node: "pc:8898".into(),
+            from: 0,
+            to: 30,
+            points: vec![
+                p(10, true, Some(true), Some(-2.5)),
+                p(20, true, Some(false), Some(70.0)),
+                p(30, false, None, None),
+            ],
+        };
+        let v: serde_json::Value = serde_json::from_str(&dsync_chart_json(&h, "pc", 220)).unwrap();
+        assert_eq!(v["t"], serde_json::json!([10, 20, 30]));
+        assert_eq!(v["unit"], "µs");
+        assert_eq!(v["sources"][0]["label"], "pc");
+        assert_eq!(
+            v["sources"][0]["values"],
+            serde_json::json!([2.5, 70.0, null])
+        );
+        assert_eq!(v["sources"][0]["late"], serde_json::json!([0, 1, 1]));
+        assert_eq!(v["thresholds"][0]["value"], 50.0);
+        assert_eq!(v["lateName"], "no lock");
+        assert_eq!(dsync_lost(&h), (2, 3));
+    }
+
     use super::*;
 
     fn flow(slot: u16, lat: u32, max: Vec<Option<u32>>, late: Vec<u64>) -> FlowHistory {

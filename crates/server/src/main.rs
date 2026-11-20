@@ -73,7 +73,12 @@ async fn serve(path: PathBuf) -> anyhow::Result<()> {
     let clocks = dcontroller::clocks::Latest::default();
     dcontroller::clocks::start(Arc::clone(&dante), Arc::clone(&clocks), Arc::clone(&stop));
     let dsync = dcontroller::dsync::Latest::default();
-    dcontroller::dsync::start(&cfg.dsync_nodes, Arc::clone(&dsync), Arc::clone(&stop));
+    dcontroller::dsync::start(
+        &cfg.dsync_nodes,
+        Arc::clone(&dsync),
+        Arc::clone(&history),
+        Arc::clone(&stop),
+    );
     let shared = dcontroller::Shared {
         clocks,
         dsync,

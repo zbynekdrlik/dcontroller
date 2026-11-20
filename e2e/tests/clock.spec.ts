@@ -127,6 +127,39 @@ test("the clock tab lists every device's clock status as the server read it", as
     `2 of 4 service nodes locked · in trouble: ${DSYNC.down}, ${DSYNC.newer}`,
   );
 
+  // #124 2c: a node's row opens its chart under the table, from the states
+  // the server stores every 10 s; the node with nothing behind it had no
+  // lock the whole time.
+  await expect
+    .poll(
+      async () =>
+        (await page.request.get(`/api/dsync/${encodeURIComponent(DSYNC.up)}`).then((r) => r.json())).points.at(-1)
+          ?.answered,
+      { timeout: 30_000 },
+    )
+    .toBe(true);
+  const hist = await page.request.get(`/api/dsync/${encodeURIComponent(DSYNC.up)}`).then((r) => r.json());
+  expect(hist.points.at(-1)).toMatchObject({ answered: true, locked: true, phase_error_us: 3.25, mode: "LOCK" });
+  await up.getByTestId("dsync-service-open").click();
+  await expect(page).toHaveURL(new RegExp(`#clock/dsync/${encodeURIComponent(DSYNC.up)}$`));
+  await expect(page.getByTestId("dsync-chart-title")).toHaveText("127.0.0.1:18898 · phase error".replace("127.0.0.1:18898", await up.locator("td").first().innerText()));
+  await expect(page.getByTestId("dsync-chart").locator("canvas")).toHaveCount(1, { timeout: 20_000 });
+  await expect(page.getByTestId("dsync-chart").locator(".u-legend")).toContainText("dsync alarms at 50 µs");
+  // The suite's server may store a state before the stand-in listens: the
+  // words count what is stored, the chart has its red bars only there.
+  await expect(page.getByTestId("dsync-chart-words")).toHaveText(
+    /^(Locked the whole range \(\d+ states|No lock in \d+ of \d+ states)/,
+  );
+  await expect(up).toHaveClass(/\bsel\b/);
+  await page.locator('[data-testid="dsync-range"][data-range="86400"]').click();
+  await expect(page.locator('[data-testid="dsync-range"][data-range="86400"]')).toHaveClass(/\bon\b/);
+  await expect(page.getByTestId("dsync-chart").locator("canvas")).toBeVisible();
+  await down.getByTestId("dsync-service-open").click();
+  await expect(page.getByTestId("dsync-chart-words")).toHaveText(/^No lock in (\d+) of \1 states/, { timeout: 20_000 });
+  await expect(page.getByTestId("dsync-chart")).toHaveAttribute("data-late-marks", /^[1-9]\d*$/);
+  await page.getByTestId("dsync-chart-close").click();
+  await expect(page.getByTestId("dsync-chart-panel")).toBeHidden();
+
   // What the state chip says (the phase error) is not a column again, and
   // the PTP figures are one.
   await expect(up.getByTestId("dsync-service-ptp")).toHaveText(/^\d+\/s · last \d+\.\d s ago$/);

@@ -527,6 +527,35 @@ pub struct DsyncNode {
     pub schema: Option<u32>,
 }
 
+/// A dsync service node's stored states from `from` to `to` (unix
+/// seconds), at most [`HISTORY_POINTS`], oldest first (#124 2c).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DsyncHistory {
+    pub node: String,
+    pub from: i64,
+    pub to: i64,
+    pub points: Vec<DsyncPoint>,
+}
+
+/// One stored state of a dsync service node.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DsyncPoint {
+    pub t: i64,
+    /// It answered the last ask (a newer-schema node answers with no figures).
+    pub answered: bool,
+    pub locked: Option<bool>,
+    pub phase_error_us: Option<f64>,
+    pub mode: Option<String>,
+}
+
+impl DsyncPoint {
+    /// Its clock had no usable lock then: it did not answer, or said it is
+    /// not locked.
+    pub fn lost(&self) -> bool {
+        !self.answered || self.locked == Some(false)
+    }
+}
+
 /// The newest dsync `/status` contract this dcontroller reads: a node on a
 /// newer one is not misread, it is named as such (#124).
 pub const DSYNC_SCHEMA: u32 = 1;
