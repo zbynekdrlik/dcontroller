@@ -112,6 +112,11 @@ fn App() -> impl IntoView {
         mp.links
             .with(|l| matrix::link_states(l.as_ref().and_then(|r| r.as_ref().ok()), mp.span.get()))
     })));
+    let mtr = Mtr {
+        device: RwSignal::new(hash_device("#meters/")),
+        report: RwSignal::new(None),
+    };
+    provide_context(mtr);
     // The hash is the page's address: a link, back or forward moves the view
     // (and the chosen latency receiver) with it.
     {
@@ -144,6 +149,13 @@ fn App() -> impl IntoView {
                             Duration::from_millis(60),
                         );
                     }
+                }
+            }
+            if v == View::Meters {
+                let d = hash_device("#meters/");
+                if mtr.device.get_untracked() != d {
+                    mtr.report.set(None);
+                    mtr.device.set(d);
                 }
             }
             if v == View::Changes {
@@ -199,11 +211,6 @@ fn App() -> impl IntoView {
         },
         pages::OVERVIEW_POLL,
     );
-    let mtr = Mtr {
-        device: RwSignal::new(hash_device("#meters/")),
-        report: RwSignal::new(None),
-    };
-    provide_context(mtr);
     // The devices' dsync clock figures, while the clock view is open (#124).
     let clk = Clk(RwSignal::new(None));
     provide_context(clk);
