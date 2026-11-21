@@ -282,6 +282,9 @@ pub fn num(n: u64) -> String {
 /// last hour unless the 3 h or 24 h switch is on.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Span {
+    /// What is wrong now: a fault that is over stops colouring the map
+    /// after five minutes, not after an hour (#122).
+    M5,
     #[default]
     H1,
     H3,
@@ -289,10 +292,11 @@ pub enum Span {
 }
 
 impl Span {
-    pub const ALL: [Span; 3] = [Span::H1, Span::H3, Span::H24];
+    pub const ALL: [Span; 4] = [Span::M5, Span::H1, Span::H3, Span::H24];
 
     pub fn label(self) -> &'static str {
         match self {
+            Span::M5 => "5 min",
             Span::H1 => "1 h",
             Span::H3 => "3 h",
             Span::H24 => "24 h",
@@ -302,6 +306,7 @@ impl Span {
     /// In words, after "in the last …".
     pub fn words(self) -> &'static str {
         match self {
+            Span::M5 => "5 minutes",
             Span::H1 => "hour",
             Span::H3 => "3 hours",
             Span::H24 => "24 hours",
@@ -311,6 +316,7 @@ impl Span {
     /// Late packets in the window.
     pub fn late(self, l: &LinkSummary) -> u64 {
         match self {
+            Span::M5 => l.late_5m,
             Span::H1 => l.late_1h,
             Span::H3 => l.late_3h.max(l.late_1h),
             Span::H24 => l.late_24h,
@@ -321,6 +327,10 @@ impl Span {
     /// server without the longer windows: the hour's).
     pub fn peak(self, l: &LinkSummary) -> (u32, u32) {
         let (p, lat) = match self {
+            // Nothing came in the 5 minutes: no peak, against the hour's
+            // latency (never the hour's peak: that is what M5 leaves out).
+            Span::M5 if l.latency_5m_us == 0 => (0, l.latency_us),
+            Span::M5 => (l.peak_5m_us, l.latency_5m_us),
             Span::H1 => (l.peak_us, l.latency_us),
             Span::H3 => (l.peak_3h_us, l.latency_3h_us),
             Span::H24 => (l.peak_24h_us, l.latency_24h_us),
@@ -390,6 +400,7 @@ pub fn video_state(c: &dcontroller_api::VideoConn, span: Span) -> State {
 /// A video connection's frames lost, duplicated and skipped in a window.
 pub fn video_window(c: &dcontroller_api::VideoConn, span: Span) -> (u64, u64, u64) {
     match span {
+        Span::M5 => (c.lost_5m, c.duplicated_5m, c.skipped_5m),
         Span::H1 => (c.lost_1h, c.duplicated_1h, c.skipped_1h),
         Span::H3 => (c.lost_3h, c.duplicated_3h, c.skipped_3h),
         Span::H24 => (c.lost_24h, c.duplicated_24h, c.skipped_24h),
@@ -609,8 +620,24 @@ pub fn build(d: &Devices, links: Option<&Links>, span: Span) -> Graph {
             .unwrap_or((b.last.asio_to_dante_us(), b.last.dante_to_asio_us()));
         // To Dante: what the bridge plays out of ASIO (its from-ASIO side).
         for (dante, us, under) in [
-            (true, to_dante, b.from_asio_underruns_1h),
-            (false, to_asio, b.to_asio_underruns_1h),
+            (
+                true,
+                to_dante,
+                if span == Span::M5 {
+                    b.from_asio_underruns_5m
+                } else {
+                    b.from_asio_underruns_1h
+                },
+            ),
+            (
+                false,
+                to_asio,
+                if span == Span::M5 {
+                    b.to_asio_underruns_5m
+                } else {
+                    b.to_asio_underruns_1h
+                },
+            ),
         ] {
             let (a, z) = if dante {
                 (name.as_str(), "Dante")
@@ -1729,6 +1756,8 @@ mod tests {
                 },
                 to_asio_underruns_1h: 2,
                 from_asio_underruns_1h: 0,
+                to_asio_underruns_5m: 0,
+                from_asio_underruns_5m: 0,
                 to_asio_underruns_24h: 5,
                 from_asio_underruns_24h: 1,
             }],
@@ -2018,6 +2047,53 @@ mod tests {
         assert_eq!(s.matches(r#"data-testid="map-area""#).count(), 3);
         assert!(s.contains(">Stage</text>") && s.contains(">no place set</text>"));
         assert!(s.contains(&format!(r#"viewBox="0 0 {:.0} "#, p.width)));
+    }
+
+    #[test]
+    fn the_five_minute_window_shows_what_is_wrong_now() {
+        // Late packets within the hour, none in the last 5 minutes: the PC
+        // was restarted and is fine again.
+        let mut l = sum("pc", "desk", 5000, 32_000, 2041, 2041);
+        assert_eq!(link_state(&l, Span::H1), State::Bad);
+        // Nothing came in the 5 minutes at all: not the hour's peak.
+        assert_eq!(Span::M5.peak(&l), (0, 5000));
+        assert_eq!(link_state(&l, Span::M5), State::Ok);
+        // Packets came, well inside the latency.
+        (l.peak_5m_us, l.latency_5m_us) = (900, 5000);
+        assert_eq!(link_state(&l, Span::M5), State::Ok);
+        // Late again a minute ago: red in both.
+        l.late_5m = 3;
+        assert_eq!(link_state(&l, Span::M5), State::Bad);
+        assert_eq!(Span::M5.late(&l), 3);
+        assert_eq!((Span::M5.label(), Span::M5.words()), ("5 min", "5 minutes"));
+        assert_eq!(Span::ALL[0], Span::M5);
+        // A bridge: its underruns of the hour do not colour the 5 minutes.
+        let d = Devices {
+            devices: vec![dev("BRIDGE", 2, &[])],
+            ..Devices::default()
+        };
+        let bridge = |g: &Graph| {
+            g.edges
+                .iter()
+                .find(|e| {
+                    matches!(
+                        e.sel,
+                        Sel::Bridge {
+                            to_dante: false,
+                            ..
+                        }
+                    )
+                })
+                .map(|e| e.state)
+        };
+        assert_eq!(
+            bridge(&build(&d, Some(&links()), Span::H1)),
+            Some(State::Bad)
+        );
+        assert_eq!(
+            bridge(&build(&d, Some(&links()), Span::M5)),
+            Some(State::Ok)
+        );
     }
 
     #[test]

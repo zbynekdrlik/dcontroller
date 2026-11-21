@@ -1297,7 +1297,7 @@ pub fn MapPage() -> impl IntoView {
                 <span><i class="ok"></i>"no late packets"</span>
                 <span><i class="warn"></i>"peak close to the latency"</span>
                 <span><i class="bad"></i>{move || format!("late packets (underruns for a bridge) in the last {}: audio lost", m.span.get().words())}</span>
-                <span>"colours speak of the window on the right of the tabs: 1 h, 3 h or 24 h"</span>
+                <span>"colours speak of the window on the right of the tabs: 5 min, 1 h, 3 h or 24 h"</span>
                 <span><i class="unknown"></i>"not measured"</span>
                 <span>"number on a line: the receiver's latency for that connection"</span>
                 <span>"click a device: only its connections stay bright; click it again for all"</span>

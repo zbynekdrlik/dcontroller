@@ -640,6 +640,10 @@ pub struct VideoConn {
     pub lost_3h: u64,
     pub duplicated_3h: u64,
     pub skipped_3h: u64,
+    /// The same in the last 5 minutes: what is wrong now (#122).
+    pub lost_5m: u64,
+    pub duplicated_5m: u64,
+    pub skipped_5m: u64,
     pub lost_24h: u64,
     pub duplicated_24h: u64,
     pub skipped_24h: u64,
@@ -848,6 +852,12 @@ pub struct LinkSummary {
     /// (#142): late packets, and the peak closest to its flow's latency
     /// with that latency. The Map colours a connection by the window shown.
     #[serde(default)]
+    /// Late packets in the last 5 minutes, and those minutes' peak closest
+    /// to its latency with that latency (0: nothing came): what is wrong
+    /// now, not what was wrong within the hour (#122).
+    pub late_5m: u64,
+    pub peak_5m_us: u32,
+    pub latency_5m_us: u32,
     pub late_3h: u64,
     #[serde(default)]
     pub peak_3h_us: u32,
@@ -896,6 +906,11 @@ pub struct BridgeSummary {
     pub last: BridgePoint,
     pub to_asio_underruns_1h: u64,
     pub from_asio_underruns_1h: u64,
+    /// The same in the last 5 minutes (#122).
+    #[serde(default)]
+    pub to_asio_underruns_5m: u64,
+    #[serde(default)]
+    pub from_asio_underruns_5m: u64,
     /// The same over the last 24 hours (#142).
     #[serde(default)]
     pub to_asio_underruns_24h: u64,

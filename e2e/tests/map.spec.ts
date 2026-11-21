@@ -329,6 +329,33 @@ test("the map has the screen: a burger menu, a status strip, a device's click di
   await page.getByTestId("map-problems").click();
   await expect(map.locator(".quiet")).toHaveCount(0);
 
+  // The 5 min window (#122): what is wrong now. The server gives each
+  // connection's last 5 minutes, and the map can be coloured by them.
+  const five = await page.request.get("/api/links").then((r) => r.json());
+  for (const l of five.links) {
+    expect(typeof l.late_5m).toBe("number");
+    expect(l.late_5m).toBeLessThanOrEqual(l.late_1h);
+  }
+  expect(typeof five.bridges[0].to_asio_underruns_5m).toBe("number");
+  expect(five.bridges[0].to_asio_underruns_5m).toBeLessThanOrEqual(five.bridges[0].to_asio_underruns_1h);
+  await expect(page.getByTestId("map-span").locator("button")).toHaveText(["5 min", "1 h", "3 h", "24 h"]);
+  await expect(page.getByTestId("map-span-1h")).toHaveClass(/\bon\b/);
+  await page.getByTestId("map-span-5min").click();
+  await expect(page.getByTestId("map-span-5min")).toHaveClass(/\bon\b/);
+  await expect(page.locator(".legend")).toContainText("in the last 5 minutes");
+  await expect(node(DEVICE)).toBeVisible();
+  // The bridge's way to ASIO is red in 5 min only for underruns of those
+  // 5 minutes, not for the hour's.
+  const toAsio = map.locator(`[data-edge="#map/bridge/${BRIDGE}/to-asio"]`);
+  const b5 = (await page.request.get("/api/links").then((r) => r.json())).bridges[0];
+  if (b5.to_asio_underruns_1h > 0 && b5.to_asio_underruns_5m === 0) {
+    await expect(toAsio).toHaveAttribute("data-state", "ok");
+  } else if (b5.to_asio_underruns_5m > 0) {
+    await expect(toAsio).toHaveAttribute("data-state", "bad");
+  }
+  await page.getByTestId("map-span-1h").click();
+  await expect(page.locator(".legend")).toContainText("in the last hour");
+
   // A name looked for marks its device and no other.
   await page.getByTestId("map-find").fill("E2E-BRIDGE");
   await expect(node(BRIDGE)).toHaveClass(/\bhit\b/);
