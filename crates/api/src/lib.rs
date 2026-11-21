@@ -18,6 +18,29 @@ pub struct Devices {
     /// its first sweep was already on the network then.
     #[serde(default)]
     pub started_at: u64,
+    /// Devices this server listed before that are not listed now (#122):
+    /// switched off or gone. Each with its last record, so the Map keeps its
+    /// box, its place and its last subscriptions.
+    #[serde(default)]
+    pub absent: Vec<Absent>,
+}
+
+/// A device that was on the network and is not now.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Absent {
+    /// Its last record, as read while it was listed.
+    pub device: Device,
+    /// When it was last listed (unix seconds), and how long ago that is.
+    pub last_seen: u64,
+    pub ago_s: u64,
+}
+
+/// `POST /api/forget`: a device that is gone for good leaves the Map.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Forget {
+    pub device: String,
 }
 
 /// One Dante device: what its mDNS records say, and its last ARC read.

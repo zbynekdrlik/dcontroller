@@ -590,6 +590,8 @@ impl State {
             interface: self.interface.clone(),
             error: self.error.clone(),
             started_at: self.started_at,
+            // Filled by the server from what it remembers (`history`).
+            absent: Vec::new(),
             devices: self
                 .devices
                 .values()

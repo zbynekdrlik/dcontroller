@@ -265,6 +265,11 @@ pub struct Show {
     pub find: String,
 }
 
+/// How long ago a device was last seen, in words.
+pub fn ago_text(_s: u64) -> String {
+    String::new()
+}
+
 /// `n` with a space between thousands.
 pub fn num(n: u64) -> String {
     let digits = n.to_string();
@@ -1820,6 +1825,47 @@ mod tests {
         }));
         assert!(!l.same(&b));
         assert_eq!(decode(&encode("zvuk ô→")).as_deref(), Some("zvuk ô→"));
+    }
+
+    #[test]
+    fn a_switched_off_device_keeps_its_box_and_its_last_lines() {
+        // #122: the PCs of a site were switched off and their boxes went
+        // from the map. A receiver nothing subscribes to left no trace.
+        let mut d = net();
+        let mut off = dev("obs-pc", 0, &[Some("player"), Some("player")]);
+        off.manufacturer = Some("OBS".into());
+        d.absent = vec![dcontroller_api::Absent {
+            device: off,
+            last_seen: 1000,
+            ago_s: 2 * 3600 + 60,
+        }];
+        let g = build(&d, Some(&links()), Span::H1);
+        let i = node_of(&g, "obs-pc").expect("its box stays");
+        assert_eq!(g.nodes[i].kind, NodeKind::Missing);
+        assert_eq!(
+            g.nodes[i].lines,
+            [
+                "not on the network".to_owned(),
+                "last seen 2 h ago".to_owned()
+            ]
+        );
+        // Its last subscriptions, one line per source, not measured.
+        let e = edge(&g, "player", "obs-pc");
+        assert_eq!(e.state, State::Unknown);
+        assert!(e.title.contains("2 channels"));
+        // A source it subscribed to that is gone too is one box, not two.
+        d.absent[0].device = dev("obs-pc", 0, &[Some("gone")]);
+        let g = build(&d, None, Span::H1);
+        assert_eq!(g.nodes.iter().filter(|n| n.name == "gone").count(), 1);
+        // An absent device that is listed again is the listed one.
+        d.absent[0].device.name = "player".into();
+        let g = build(&d, None, Span::H1);
+        let p = node_of(&g, "player").unwrap();
+        assert_eq!(g.nodes[p].kind, NodeKind::Device);
+        assert_eq!(g.nodes.iter().filter(|n| n.name == "player").count(), 1);
+        assert_eq!(ago_text(59), "just now");
+        assert_eq!(ago_text(5 * 60), "5 min ago");
+        assert_eq!(ago_text(3 * 86_400), "3 days ago");
     }
 
     #[test]
