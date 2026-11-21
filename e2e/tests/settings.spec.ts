@@ -1,4 +1,5 @@
 import { test, expect, type ConsoleMessage, type Page } from "@playwright/test";
+import { nav } from "../env";
 
 // Setting writes go only to dstack's own device (global-setup.ts), never to
 // a site device. It takes a latency write within its config's rules (as
@@ -128,7 +129,7 @@ test.describe("settings", () => {
       name_after: "24 bit",
       ok: false,
     });
-    await page.getByTestId("tab-changes").click();
+    await nav(page, "changes");
     const row = page.locator('[data-testid="change-row"]:not([data-kind="status"])').first();
     await expect(row).toContainText(`encoding @ ${DEVICE}`);
     await expect(row).toHaveClass(/err/);

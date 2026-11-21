@@ -1,7 +1,7 @@
 import { test, expect, type ConsoleMessage } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
-import { root, routed } from "../env";
+import { root, routed, nav } from "../env";
 
 // A change made outside dcontroller (here a rename straight over ARC by the
 // `arc_rename` helper, through dstack, as Dante Controller or a mixer would)
@@ -44,7 +44,7 @@ test("a channel renamed outside dcontroller shows in Changes", async ({ page }) 
         { timeout: 45_000, intervals: [2_000] },
       )
       .toMatchObject({ user: "outside dcontroller", kind: "rename", rx_channel: 3, name_before: "Spare 3", ok: true });
-    await page.getByTestId("tab-changes").click();
+    await nav(page, "changes");
     const row = page.getByTestId("change-row").filter({ hasText: "Ext 3" }).first();
     await expect(row).toContainText("outside dcontroller");
     await expect(row).toContainText(`rename RX 3 @ ${DEVICE}`);

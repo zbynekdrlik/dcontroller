@@ -1,6 +1,6 @@
 import { test, expect, type ConsoleMessage } from "@playwright/test";
 import { createSocket } from "node:dgram";
-import { routed } from "../env";
+import { routed, nav } from "../env";
 
 // dcontroller #86 (dstack #289): the server counts the mDNS senders on its
 // Dante leg with dstack's meter, one closed minute at a time. This test
@@ -63,10 +63,10 @@ test("an mDNS flood on the Dante leg raises an alarm naming its source, and its 
     await expect(row).toHaveClass(/warn/);
     await expect(row.getByTestId("mdns-rate")).toHaveText(api.minute.top.find((s: { source: string }) => s.source === routed.ip).per_s.toFixed(1));
 
-    await page.getByTestId("tab-map").click();
+    await nav(page, "map");
     await expect(alarm).toBeVisible();
 
-    await page.getByTestId("tab-changes").click();
+    await nav(page, "changes");
     const started = page
       .locator('[data-testid="change-row"][data-kind="status"]')
       .filter({ hasText: `mDNS sender ${routed.ip}` })
@@ -86,7 +86,7 @@ test("an mDNS flood on the Dante leg raises an alarm naming its source, and its 
     .filter({ hasText: `mDNS sender ${routed.ip}` })
     .filter({ hasText: "back under the cap" });
   await expect(ended.first()).toBeVisible({ timeout: 10_000 });
-  await page.getByTestId("tab-network").click();
+  await nav(page, "network");
   await expect(page.getByTestId("mdns-summary")).not.toHaveClass(/error/);
 
   expect(msgs).toEqual([]);

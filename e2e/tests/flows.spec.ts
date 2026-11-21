@@ -1,4 +1,5 @@
 import { test, expect, type ConsoleMessage, type Page } from "@playwright/test";
+import { nav } from "../env";
 
 // TX flows on dstack's own device (global-setup.ts), never a site device.
 // It lists, creates and deletes TX flows over ARC 2.8.9 like an UltimoX2
@@ -130,7 +131,7 @@ test.describe("TX flows", () => {
     expect(deleted[0]).toMatchObject({ kind: "multicast", what: "delete", rx_device: DEVICE, rx_channel: 3, name_after: "gone", ok: true });
 
     // The Changes tab lists both.
-    await page.getByTestId("tab-changes").click();
+    await nav(page, "changes");
     const logRows = page.locator('[data-testid="change-row"]:not([data-kind="status"])');
     await expect(logRows.first()).toContainText(`delete multicast flow slot 3 @ ${DEVICE}`);
     await expect(logRows.nth(1)).toContainText(`new multicast flow @ ${DEVICE}`);
