@@ -40,7 +40,7 @@ input.find { background: var(--surface); border: 1px solid var(--border); border
 .main { flex: 1; min-height: 0; display: flex; gap: 10px; padding: 0 16px 12px; }
 .main.below { flex-direction: column; overflow-y: auto; }
 .mapwrap { flex: 1; min-width: 0; min-height: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); position: relative; overflow: hidden; }
-.main.below .mapwrap { flex: none; height: 62vh; }
+.main.below .mapwrap { flex: none; height: calc(100vh - 104px); }
 svg { width: 100%; height: 100%; display: block; cursor: grab; user-select: none; }
 .zoomer { position: absolute; right: 10px; top: 10px; display: flex; flex-direction: column; gap: 4px; }
 .zoomer button { width: 32px; height: 32px; border-radius: var(--radius-s); border: 1px solid var(--border); background: var(--surface-2); cursor: pointer; font-weight: 700; }
@@ -102,9 +102,8 @@ td { padding: 5px 6px; border-top: 1px solid var(--border); white-space: nowrap;
   <span class="try">try:</span>
   <button class="tog" id="t-prob">Problems only</button>
   <button class="tog" id="t-grp">Fold listeners into a group</button>
-  <span class="seg" id="t-det"><button data-v="side">Detail at the side</button><button class="on" data-v="dock">Detail docked at the bottom</button><button data-v="below">Detail below (today)</button></span>
 </div>
-<div class="main dock" id="main">
+<div class="main below" id="main">
   <div class="mapwrap">
     <svg id="svg"><defs>
       <marker id="a-ok" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#34d399"/></marker>
@@ -112,7 +111,7 @@ td { padding: 5px 6px; border-top: 1px solid var(--border); white-space: nowrap;
       <marker id="a-bad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" fill="#f87171"/></marker>
     </defs><g id="view"></g></svg>
     <div class="zoomer"><button id="zi">+</button><button id="zo">−</button><button id="zf" class="fit">FIT</button></div>
-    <div class="hint">click a device: only its connections stay · click a line: its detail · wheel: zoom · drag: move</div>
+    <div class="hint">click a device: only its connections stay · click a line: its detail below the map · wheel: zoom · drag: move</div>
   </div>
   <div class="drawer" id="drawer"></div>
 </div>
@@ -130,7 +129,8 @@ const E = [
  ["mixer-1","edit-pc",5,"ok"],["mixer-1","intercom",5,"ok"],["mixer-1","mix-listen",13.67,"warn"],["foh-console","intercom",5,"ok"],
  ["stage-rack","band-pc",5,"ok"],["foh-console","band-pc",5,"ok"],["band-pc","foh-console",5,"ok"],["band-pc","presenter",5,"ok"],["foh-console","speakers",1,"ok"]];
 const BW=178,BH=46,GY=30,ZP=22,ZG=170,LANE=64;
-let S={sel:null,prob:false,grp:false,find:"",k:1,tx:0,ty:0,det:"dock"};
+let S={sel:null,prob:false,grp:false,find:"",k:1,tx:0,ty:0,det:"below"};
+const ms=v=>String(+v.toFixed(2))+" ms";
 const $=id=>document.getElementById(id), svgNS="http://www.w3.org/2000/svg";
 function model(){
   let nodes=N.map(n=>({id:n[0],z:n[1],sub:n[2],fold:!!n[3]})), edges=E.map(e=>({a:e[0],b:e[1],ms:e[2],st:e[3],late:e[4]||0}));
@@ -172,12 +172,12 @@ function draw(){
       pt=t=>[x1+s*r*1.5+(x2-x1-s*r*3)*t,yl]; }
     const dim=(S.sel&&e.a!==S.sel&&e.b!==S.sel)||(S.prob&&e.st==="ok");
     const cls="edge "+e.st+(dim?" dim":""), g=el("g",{class:cls},gE); el("path",{d,"marker-end":`url(#a-${e.st})`},g);
-    const txt=e.ms.toFixed(2)+" ms"+(e.late?" · "+e.late.toLocaleString("en").replace(/,/g," ")+" late":""), w=txt.length*6+12;
+    const txt=ms(e.ms)+(e.late?" · "+e.late.toLocaleString("en").replace(/,/g," ")+" late":""), w=txt.length*6+12;
     let r=null; for(const t of [0.5,0.4,0.6,0.3,0.7,0.2,0.8,0.15,0.85]){ const [x,y]=pt(t), q={x:x-w/2,y:y-9,w,h:18}; if(!boxes.some(b=>hitR(q,b))&&!labels.some(b=>hitR(q,b))){ r=q; break; } if(!r) r=q; }
     labels.push(r); const lx=r.x+w/2, ly=r.y+9, gl=el("g",{class:cls},gL);
     el("rect",{x:r.x,y:r.y,width:w,height:18,rx:9},gl); const t=el("text",{x:lx,y:ly+4},gl);
-    if(e.late){ t.appendChild(document.createTextNode(e.ms.toFixed(2)+" ms · ")); el("tspan",{},t).textContent=txt.split("· ")[1]; } else t.textContent=txt;
-    g.onclick=gl.onclick=ev=>{ ev.stopPropagation(); detail(`${e.a} → ${e.b}`,e.st,[["Latency",e.ms.toFixed(2)+" ms"],["Typical lateness","0.42 ms"],["Worst peak",e.late?"32.81 ms":"1.90 ms"],["Late packets 1 h",e.late||0]]); };
+    if(e.late){ t.appendChild(document.createTextNode(ms(e.ms)+" · ")); el("tspan",{},t).textContent=txt.split("· ")[1]; } else t.textContent=txt;
+    g.onclick=gl.onclick=ev=>{ ev.stopPropagation(); detail(`${e.a} → ${e.b}`,e.st,[["Latency",ms(e.ms)],["Typical lateness","0.42 ms"],["Worst peak",e.late?"32.81 ms":"1.90 ms"],["Late packets 1 h",e.late||0]]); };
   });
   for(const n of nodes){ const p=L.pos[n.id]; const dim=(S.sel&&!near.has(n.id))||(S.prob&&!probN.has(n.id));
     const hit=S.find&&(n.id+" "+n.sub).toLowerCase().includes(S.find);
@@ -207,7 +207,6 @@ function detail(title,st,kv){ const d=$("drawer"); d.classList.add("open");
   $("dx").onclick=()=>{ d.classList.remove("open"); setTimeout(fit,0); }; setTimeout(fit,0); if(S.det==="below") d.scrollIntoView({behavior:"smooth"}); }
 $("t-prob").onclick=e=>{ S.prob=!S.prob; e.target.classList.toggle("on",S.prob); draw(); };
 $("t-grp").onclick=e=>{ S.grp=!S.grp; S.sel=null; e.target.classList.toggle("on",S.grp); draw(); fit(); };
-$("t-det").onclick=e=>{ const v=e.target.dataset.v; if(!v) return; S.det=v; [...$("t-det").children].forEach(b=>b.classList.toggle("on",b===e.target)); $("main").classList.toggle("below",v==="below"); $("main").classList.toggle("dock",v==="dock"); setTimeout(fit,0); };
 $("find").oninput=e=>{ S.find=e.target.value.trim().toLowerCase(); draw(); };
 $("zi").onclick=()=>zoom(1.25); $("zo").onclick=()=>zoom(0.8); $("zf").onclick=fit;
 const svg=$("svg"); svg.onclick=()=>{ if(S.sel){ S.sel=null; draw(); } };
