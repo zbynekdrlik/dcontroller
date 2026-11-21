@@ -477,6 +477,86 @@ async fn setting(
         })
 }
 
+/// What is wrong with a place asked for, if anything.
+pub fn validate_place(req: &dcontroller_api::Place) -> Result<(), String> {
+    let bad = |s: &str| s.chars().any(char::is_control);
+    if req.device.is_empty() || req.device.chars().count() > 64 || bad(&req.device) {
+        return Err("not a device name".to_owned());
+    }
+    if req.place != req.place.trim() || bad(&req.place) {
+        return Err("a place is plain text with no space at its ends".to_owned());
+    }
+    if req.place.chars().count() > dcontroller_api::PLACE_LEN {
+        return Err(format!(
+            "a place has at most {} characters",
+            dcontroller_api::PLACE_LEN
+        ));
+    }
+    Ok(())
+}
+
+/// `GET /api/places`: where the owner put each device on the Map (#122).
+async fn places(
+    State(s): State<Shared>,
+) -> Result<axum::Json<dcontroller_api::Places>, StatusCode> {
+    tokio::task::spawn_blocking(move || s.history.places())
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "places: task failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .map(axum::Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "places: not read");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+/// `POST /api/place`: puts a device in a place (empty: in none), and logs
+/// it with the changes.
+async fn place(
+    State(s): State<Shared>,
+    headers: axum::http::HeaderMap,
+    axum::Json(req): axum::Json<dcontroller_api::Place>,
+) -> Result<axum::Json<dcontroller_api::Places>, (StatusCode, String)> {
+    let who = user(&headers);
+    validate_place(&req).map_err(|e| {
+        tracing::warn!(user = %who, device = %req.device, place = %req.place, error = %e, "place: refused");
+        (StatusCode::BAD_REQUEST, e)
+    })?;
+    tokio::task::spawn_blocking(move || {
+        let done = s.history.set_place(&req.device, &req.place);
+        let asked = (!req.place.is_empty()).then(|| req.place.clone());
+        s.changes.log_made(&dcontroller_api::ChangeEntry {
+            at: u64::try_from(history::unix_now()).unwrap_or(0),
+            user: who,
+            kind: "place".to_owned(),
+            what: "place".to_owned(),
+            rx_device: req.device.clone(),
+            name_before: done.as_ref().ok().and_then(Clone::clone),
+            name_asked: asked.clone(),
+            name_after: if done.is_ok() { asked } else { None },
+            ok: done.is_ok(),
+            message: match &done {
+                Ok(_) => "place on the Map set".to_owned(),
+                Err(e) => format!("not stored: {e}"),
+            },
+            ..dcontroller_api::ChangeEntry::default()
+        });
+        done.and_then(|_| s.history.places())
+    })
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "place: task failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, "task failed".to_owned())
+    })?
+    .map(axum::Json)
+    .map_err(|e| {
+        tracing::error!(error = %e, "place: not stored");
+        (StatusCode::INTERNAL_SERVER_ERROR, e)
+    })
+}
+
 async fn changes(
     State(s): State<Shared>,
 ) -> Result<axum::Json<Vec<dcontroller_api::ChangeEntry>>, StatusCode> {
@@ -525,6 +605,8 @@ pub fn app(web_dir: &Path, shared: Shared) -> Router {
         .route("/api/video/{conn}", get(video_report))
         .route("/api/overview", get(overview))
         .route("/api/links", get(links))
+        .route("/api/places", get(places))
+        .route("/api/place", axum::routing::post(place))
         .route("/api/usage", get(usage).post(record_use))
         .route("/api/clocks", get(clocks_now))
         .route("/api/meters/{device}", get(meter_report))

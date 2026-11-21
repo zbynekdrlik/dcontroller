@@ -315,6 +315,27 @@ pub struct ChangeEntry {
     pub message: String,
 }
 
+/// `GET /api/places`: where the owner put each device on the Map (#122),
+/// the places in the order their areas stand (as first used).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Places {
+    pub places: Vec<Place>,
+    /// Every place ever named, in that order: what the page offers.
+    pub names: Vec<String>,
+}
+
+/// A device's place; as `POST /api/place`, an empty `place` takes it away.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Place {
+    pub device: String,
+    pub place: String,
+}
+
+/// The longest place name kept.
+pub const PLACE_LEN: usize = 40;
+
 /// `GET /api/meters/{device}`: the device's channel levels, as Dante
 /// Controller's meters show them, from the frames it sends while someone
 /// watches.

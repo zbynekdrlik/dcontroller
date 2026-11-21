@@ -110,6 +110,9 @@ fn App() -> impl IntoView {
         video_hist: RwSignal::new(None),
         problems: RwSignal::new(false),
         find: RwSignal::new(String::new()),
+        places: RwSignal::new(None),
+        place_draft: RwSignal::new(None),
+        place_note: RwSignal::new(String::new()),
     };
     provide_context(mp);
     // The routing matrix takes each connection's state from the same read.
@@ -988,6 +991,7 @@ fn change_target(e: &ChangeEntry) -> String {
             e.rx_channel, e.rx_device
         ),
         ("multicast", _) => format!("new multicast flow @ {}", e.rx_device),
+        ("place", _) => format!("place on the Map @ {}", e.rx_device),
         ("status", "mdns") => format!("mDNS sender {} ({})", e.rx_label, e.rx_device),
         ("status", "mdns-browser") => {
             format!("96 s browser {} ({})", e.rx_label, e.rx_device)
@@ -1710,7 +1714,7 @@ fn change_row(e: &ChangeEntry) -> AnyView {
     let when = pages::time_text(e.at as i64);
     let names = matches!(
         e.kind.as_str(),
-        "rename" | "setting" | "multicast" | "status"
+        "rename" | "setting" | "multicast" | "status" | "place"
     );
     let cell = |n: &Option<String>, s: &Option<Source>| {
         if names { name_text(n) } else { source_text(s) }
