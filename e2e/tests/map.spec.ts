@@ -549,6 +549,53 @@ test("a device is dragged on the map: to a new place, into another place, up and
   expect(msgs).toEqual([]);
 });
 
+// #122: a device that is switched off has a box too ("not on the network"),
+// and the owner must be able to put it in its place. Its box is drawn with
+// no fill, and the mouse fell through it onto the area behind.
+test("the box of a device that is not on the network is dragged to a place like any other", async ({ page }) => {
+  const msgs: string[] = [];
+  page.on("console", (m: ConsoleMessage) => {
+    if (m.type() === "error" || m.type() === "warning") msgs.push(`${m.type()}: ${m.text()}`);
+  });
+  page.on("pageerror", (e) => msgs.push(`pageerror: ${e.message}`));
+  const OFF = "dc-e2e-switched-off";
+  const place = (device: string, name: string) => page.request.post("/api/place", { data: { device, place: name } });
+  const subscribe = (source: { channel: string; device: string } | null) =>
+    page.request.post("/api/subscription", { data: { rx_device: DEVICE, rx_channel: 2, source } });
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await page.goto("/#map");
+  const map = page.getByTestId("map");
+  const node = (name: string) => map.locator(`[data-testid="map-node"][data-node="${name}"]`);
+  await expect(node(DEVICE)).toBeVisible({ timeout: 40_000 });
+  try {
+    expect((await subscribe({ channel: "Mic", device: OFF })).status()).toBe(200);
+    expect((await place(DEVICE, "Stage")).status()).toBe(200);
+    await expect(node(OFF)).toHaveClass(/\bmissing\b/, { timeout: 40_000 });
+    await expect(map.locator('[data-testid="map-area"][data-place="Stage"]')).toHaveCount(1, { timeout: 30_000 });
+    // The pointer over the middle of its box is over the box.
+    const b = (await node(OFF).locator("rect").first().boundingBox())!;
+    const [x, y] = [b.x + b.width / 2, b.y + b.height / 2];
+    expect(await page.evaluate(([px, py]) => document.elementFromPoint(px, py)?.closest("g.node")?.getAttribute("data-node") ?? null, [x, y])).toBe(OFF);
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 30, y + 10, { steps: 4 });
+    await expect(page.locator(".map-drag-ghost")).toHaveText(OFF);
+    const a = (await map.locator('[data-testid="map-area"][data-place="Stage"]').boundingBox())!;
+    await page.mouse.move(a.x + a.width / 2, a.y + a.height - 30, { steps: 8 });
+    await page.mouse.up();
+    await expect
+      .poll(async () => (await page.request.get("/api/places").then((r) => r.json())).places.map((p: any) => `${p.device}@${p.place}`))
+      .toEqual([`${DEVICE}@Stage`, `${OFF}@Stage`]);
+    await expect(node(OFF)).toHaveAttribute("data-place", "Stage");
+  } finally {
+    await page.mouse.up();
+    await subscribe(null);
+    await place(OFF, "");
+    await place(DEVICE, "");
+  }
+  expect(msgs).toEqual([]);
+});
+
 test("on a phone the map opens on the connections' table and no page scrolls sideways", async ({ page }) => {
   const msgs: string[] = [];
   page.on("console", (m: ConsoleMessage) => {
