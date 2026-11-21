@@ -41,7 +41,7 @@ input.find { background: var(--surface); border: 1px solid var(--border); border
 .main.below { flex-direction: column; overflow-y: auto; }
 .mapwrap { flex: 1; min-width: 0; min-height: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); position: relative; overflow: hidden; }
 .main.below .mapwrap { flex: none; height: calc(100vh - 104px); }
-svg { width: 100%; height: 100%; display: block; cursor: grab; user-select: none; }
+svg { width: 100%; height: 100%; display: block; user-select: none; }
 .zoomer { position: absolute; right: 10px; top: 10px; display: flex; flex-direction: column; gap: 4px; }
 .zoomer button { width: 32px; height: 32px; border-radius: var(--radius-s); border: 1px solid var(--border); background: var(--surface-2); cursor: pointer; font-weight: 700; }
 .zoomer button.fit { font-size: 0.62rem; }
@@ -110,8 +110,7 @@ td { padding: 5px 6px; border-top: 1px solid var(--border); white-space: nowrap;
       <marker id="a-warn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#fbbf24"/></marker>
       <marker id="a-bad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" fill="#f87171"/></marker>
     </defs><g id="view"></g></svg>
-    <div class="zoomer"><button id="zi">+</button><button id="zo">−</button><button id="zf" class="fit">FIT</button></div>
-    <div class="hint">click a device: only its connections stay · click a line: its detail below the map · wheel: zoom · drag: move</div>
+    <div class="hint">click a device: only its connections stay · click a line or a device: its detail appears under the map</div>
   </div>
   <div class="drawer" id="drawer"></div>
 </div>
@@ -204,15 +203,11 @@ function detail(title,st,kv){ const d=$("drawer"); d.classList.add("open");
   <div><table><tr><th>Other connections</th><th>Latency</th><th>Worst peak</th><th>Late 1 h</th></tr>
   <tr><td>from foh-console</td><td>5.00 ms</td><td>32.76 ms</td><td class="b">1 012</td></tr><tr><td>from stream-pc</td><td>13.04 ms</td><td>33.40 ms</td><td class="b">191</td></tr>
   <tr><td>to stream-pc</td><td>13.04 ms</td><td>24.68 ms</td><td class="b">72</td></tr><tr><td>to edit-pc</td><td>5.00 ms</td><td>1.90 ms</td><td>0</td></tr><tr><td>to intercom</td><td>5.00 ms</td><td>2.10 ms</td><td>0</td></tr></table></div></div>`;
-  $("dx").onclick=()=>{ d.classList.remove("open"); setTimeout(fit,0); }; setTimeout(fit,0); if(S.det==="below") d.scrollIntoView({behavior:"smooth"}); }
+  $("dx").onclick=()=>{ d.classList.remove("open"); setTimeout(fit,0); }; setTimeout(fit,0); }
 $("t-prob").onclick=e=>{ S.prob=!S.prob; e.target.classList.toggle("on",S.prob); draw(); };
 $("t-grp").onclick=e=>{ S.grp=!S.grp; S.sel=null; e.target.classList.toggle("on",S.grp); draw(); fit(); };
 $("find").oninput=e=>{ S.find=e.target.value.trim().toLowerCase(); draw(); };
-$("zi").onclick=()=>zoom(1.25); $("zo").onclick=()=>zoom(0.8); $("zf").onclick=fit;
 const svg=$("svg"); svg.onclick=()=>{ if(S.sel){ S.sel=null; draw(); } };
-svg.addEventListener("wheel",e=>{ e.preventDefault(); const r=svg.getBoundingClientRect(); zoom(e.deltaY<0?1.12:0.89,e.clientX-r.left,e.clientY-r.top); },{passive:false});
-let drag=null; svg.onpointerdown=e=>{ drag={x:e.clientX,y:e.clientY,tx:S.tx,ty:S.ty}; };
-window.onpointermove=e=>{ if(drag){ S.tx=drag.tx+e.clientX-drag.x; S.ty=drag.ty+e.clientY-drag.y; apply(); } }; window.onpointerup=()=>drag=null;
 window.onresize=fit; draw(); fit();
 </script>
 </body>
