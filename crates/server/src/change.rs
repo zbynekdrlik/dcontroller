@@ -120,6 +120,16 @@ impl Changes {
         }
     }
 
+    /// Logs a change made here that no device took part in (a device's
+    /// place on the Map, #122).
+    pub fn log_made(&self, e: &api::ChangeEntry) {
+        info!(user = %e.user, device = %e.rx_device, kind = %e.kind, before = ?e.name_before,
+            asked = ?e.name_asked, ok = e.ok, message = %e.message, "change: made");
+        if let Err(err) = self.append(e) {
+            warn!(error = %err, "changes log: entry not written (it is in the journal above)");
+        }
+    }
+
     fn append(&self, e: &api::ChangeEntry) -> Result<(), String> {
         let line = serde_json::to_string(e).map_err(|e| e.to_string())?;
         let mut f = OpenOptions::new()

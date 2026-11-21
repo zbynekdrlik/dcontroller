@@ -235,6 +235,10 @@ pub struct Edge {
 pub struct Graph {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
+    /// Where the owner put each device (#122): (device, place), the places
+    /// in the order their areas stand. Empty: the map is laid out by who
+    /// sends and who receives.
+    pub places: Vec<(String, String)>,
 }
 
 pub fn ms(us: u32) -> String {
@@ -820,11 +824,64 @@ pub struct Geo {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Placed {
+    pub width: f64,
     pub height: f64,
     pub nodes: Vec<Rect>,
-    /// Each node's column: 0 sends, 1 and 2 send and receive, 3 receives.
+    /// Each node's column: 0 sends, 1 and 2 send and receive, 3 receives;
+    /// with places set, its place's column.
     pub cols: Vec<usize>,
     pub edges: Vec<Geo>,
+    /// The words over the columns: where each starts, and what it says.
+    pub titles: Vec<(f64, String)>,
+    /// With places set: each place's frame.
+    pub areas: Vec<Rect>,
+}
+
+/// What stands over the devices no place was given to.
+pub const NO_PLACE: &str = "no place set";
+/// From one place's column to the next: room for the lines, their labels
+/// and the arcs between two devices of one place.
+const PLACE_PITCH: f64 = BOX_W + 190.0;
+const PLACE_EDGE: f64 = 120.0;
+
+/// With places set: each node's column, where the columns start, and their
+/// names. A place stands where it was first used; a device with no place
+/// goes to a last column of its own; an ASIO side stays under its bridge.
+fn by_place(g: &Graph) -> (Vec<usize>, Vec<f64>, Vec<String>) {
+    let of = |n: &Node| {
+        g.places
+            .iter()
+            .find(|(d, _)| *d == n.name)
+            .map(|(_, p)| p.as_str())
+    };
+    let mut names: Vec<String> = Vec::new();
+    for (_, p) in &g.places {
+        if !names.contains(p) && g.nodes.iter().any(|n| of(n) == Some(p.as_str())) {
+            names.push(p.clone());
+        }
+    }
+    let alone = |n: &Node| n.kind != NodeKind::Asio && of(n).is_none();
+    if g.nodes.iter().any(alone) {
+        names.push(NO_PLACE.to_owned());
+    }
+    let last = names.len().saturating_sub(1);
+    let col = |n: &Node| {
+        of(n)
+            .and_then(|p| names.iter().position(|x| x == p))
+            .unwrap_or(last)
+    };
+    let cols = g
+        .nodes
+        .iter()
+        .map(|n| match n.of {
+            Some(bridge) if n.kind == NodeKind::Asio => col(&g.nodes[bridge]),
+            _ => col(n),
+        })
+        .collect();
+    let xs = (0..names.len())
+        .map(|c| PLACE_EDGE + c as f64 * PLACE_PITCH)
+        .collect();
+    (cols, xs, names)
 }
 
 /// Each node's column by its part: only sending (0), only receiving (3),
@@ -919,10 +976,25 @@ fn label_width(e: &Edge) -> f64 {
 /// subscribed to itself; each label on its line where it covers no box and
 /// no other label.
 pub fn layout(g: &Graph) -> Placed {
-    let cols = columns(g);
+    // Places set and a device there to stand in one: the columns are the
+    // places. Else, as ever, who sends and who receives.
+    let placed = g
+        .places
+        .iter()
+        .any(|(d, _)| g.nodes.iter().any(|n| n.name == *d));
+    let (cols, xs, names) = if placed {
+        by_place(g)
+    } else {
+        (columns(g), COL_X.to_vec(), Vec::new())
+    };
+    let width = if placed {
+        (PLACE_EDGE * 2.0 + BOX_W + (xs.len() - 1) as f64 * PLACE_PITCH).max(900.0)
+    } else {
+        WIDTH
+    };
     let lower = |i: usize| g.nodes[i].name.to_lowercase();
     // A column's order: its devices (an ASIO side follows its bridge).
-    let mut order: [Vec<usize>; 4] = Default::default();
+    let mut order: Vec<Vec<usize>> = vec![Vec::new(); xs.len()];
     for (i, n) in g.nodes.iter().enumerate() {
         if n.kind != NodeKind::Asio {
             order[cols[i]].push(i);
@@ -932,7 +1004,7 @@ pub fn layout(g: &Graph) -> Placed {
         col.sort_by_key(|&i| lower(i));
     }
     let asio_of = |i: usize| g.nodes.iter().position(|n| n.of == Some(i));
-    let place = |order: &[Vec<usize>; 4]| -> (Vec<Rect>, f64) {
+    let place = |order: &[Vec<usize>]| -> (Vec<Rect>, f64) {
         let mut rects = vec![
             Rect {
                 x: 0.0,
@@ -942,12 +1014,12 @@ pub fn layout(g: &Graph) -> Placed {
             };
             g.nodes.len()
         ];
-        let mut heights = [0.0f64; 4];
+        let mut heights = vec![0.0f64; order.len()];
         for (c, col) in order.iter().enumerate() {
             let mut y = 0.0;
             for &i in col {
                 rects[i] = Rect {
-                    x: COL_X[c],
+                    x: xs[c],
                     y,
                     w: BOX_W,
                     h: BOX_H,
@@ -956,7 +1028,7 @@ pub fn layout(g: &Graph) -> Placed {
                 if let Some(a) = asio_of(i) {
                     y += ASIO_GAP - GAP;
                     rects[a] = Rect {
-                        x: COL_X[c],
+                        x: xs[c],
                         y,
                         w: BOX_W,
                         h: BOX_H,
@@ -975,8 +1047,13 @@ pub fn layout(g: &Graph) -> Placed {
     let (mut rects, mut height) = place(&order);
     // Each column in turn by the mean height of its devices' partners in
     // the other columns: connected devices end up at the same height.
+    let turns: Vec<usize> = if placed {
+        (0..xs.len()).collect()
+    } else {
+        vec![1, 2, 0, 3]
+    };
     for _ in 0..3 {
-        for c in [1, 2, 0, 3] {
+        for &c in &turns {
             let key = |i: usize| -> f64 {
                 let partners: Vec<f64> = g
                     .edges
@@ -1010,7 +1087,7 @@ pub fn layout(g: &Graph) -> Placed {
         Right,
     }
     let sides = |e: &Edge| -> Option<(Side, Side)> {
-        if !matches!(e.sel, Sel::Link { .. }) || e.from == e.to {
+        if !matches!(e.sel, Sel::Link { .. } | Sel::Video { .. }) || e.from == e.to {
             return None;
         }
         Some(match cols[e.from].cmp(&cols[e.to]) {
@@ -1142,11 +1219,46 @@ pub fn layout(g: &Graph) -> Placed {
             label: label.expect("every line has its label"),
         })
         .collect();
+    let (titles, areas) = if placed {
+        (
+            names
+                .into_iter()
+                .enumerate()
+                .map(|(c, n)| (xs[c] - 8.0, n))
+                .collect(),
+            xs.iter()
+                .map(|&x| Rect {
+                    x: x - 20.0,
+                    y: 4.0,
+                    w: BOX_W + 40.0,
+                    h: height - 8.0,
+                })
+                .collect(),
+        )
+    } else {
+        // The two middle columns share one title, over the first in use.
+        let middle = if cols.contains(&1) { 1 } else { 2 };
+        let titles = [
+            "sends",
+            "sends and receives",
+            "sends and receives",
+            "receives",
+        ]
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| cols.contains(i) && (!matches!(i, 1 | 2) || *i == middle))
+        .map(|(i, t)| (COL_X[i], (*t).to_owned()))
+        .collect();
+        (titles, Vec::new())
+    };
     Placed {
+        width,
         height,
         nodes: rects,
         cols,
         edges,
+        titles,
+        areas,
     }
 }
 
@@ -1200,11 +1312,12 @@ pub fn svg_with(g: &Graph, p: &Placed, chosen: Option<&Sel>, show: &Show) -> Str
     });
     let dense = g.edges.len() > QUIET_OVER;
     let mut s = format!(
-        r#"<svg class="map{}{}{}{}" viewBox="0 0 {WIDTH} {:.0}" role="img" aria-label="Devices and their connections">"#,
+        r#"<svg class="map{}{}{}{}" viewBox="0 0 {:.0} {:.0}" role="img" aria-label="Devices and their connections">"#,
         if chosen.is_some() { " has-sel" } else { "" },
         if device.is_some() { " has-device" } else { "" },
         if dense { " dense" } else { "" },
         if show.problems { " problems" } else { "" },
+        p.width,
         p.height
     );
     s.push_str("<defs>");
@@ -1214,23 +1327,17 @@ pub fn svg_with(g: &Graph, p: &Placed, chosen: Option<&Sel>, show: &Show) -> Str
         ));
     }
     s.push_str("</defs>");
-    // The two middle columns share one title, over the first in use.
-    let middle = if p.cols.contains(&1) { 1 } else { 2 };
-    for (i, title) in [
-        "sends",
-        "sends and receives",
-        "sends and receives",
-        "receives",
-    ]
-    .iter()
-    .enumerate()
-    {
-        if p.cols.contains(&i) && (!matches!(i, 1 | 2) || i == middle) {
-            s.push_str(&format!(
-                r#"<text class="col-title" x="{}" y="22">{title}</text>"#,
-                COL_X[i]
-            ));
-        }
+    for r in &p.areas {
+        s.push_str(&format!(
+            r#"<rect class="area" data-testid="map-area" x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}" rx="14"/>"#,
+            r.x, r.y, r.w, r.h
+        ));
+    }
+    for (x, title) in &p.titles {
+        s.push_str(&format!(
+            r#"<text class="col-title" x="{x}" y="22">{}</text>"#,
+            esc(title)
+        ));
     }
     let of = |e: &Edge| device.is_some_and(|d| e.from == d || e.to == d);
     let ends: Vec<usize> = g
@@ -1811,6 +1918,59 @@ mod tests {
         assert_eq!(s.matches(" calm").count(), 13);
         // rx00 to rx09 carry the name looked for.
         assert_eq!(s.matches(" hit\"").count(), 10);
+    }
+
+    #[test]
+    fn with_places_set_the_devices_stand_in_their_places() {
+        let d = Devices {
+            devices: vec![
+                dev("rack", 2, &[]),
+                dev("desk", 2, &[Some("rack")]),
+                dev("amp", 0, &[Some("desk")]),
+                dev("spare", 0, &[]),
+            ],
+            ..Devices::default()
+        };
+        let mut g = build(&d, None, Span::H1);
+        // No place set: the columns of who sends and who receives.
+        let p = layout(&g);
+        assert_eq!(p.width, WIDTH);
+        assert!(p.areas.is_empty());
+        assert_eq!(p.titles[0].1, "sends");
+        // A place of a device that is not there changes nothing.
+        g.places = vec![("gone".into(), "Attic".into())];
+        assert!(layout(&g).areas.is_empty());
+        g.places = vec![
+            ("desk".into(), "FOH".into()),
+            ("rack".into(), "Stage".into()),
+            ("amp".into(), "FOH".into()),
+            ("gone".into(), "Attic".into()),
+        ];
+        let p = layout(&g);
+        let titles: Vec<&str> = p.titles.iter().map(|t| t.1.as_str()).collect();
+        // The places as first used; no area for a place with no device.
+        assert_eq!(titles, ["FOH", "Stage", NO_PLACE]);
+        let col = |name: &str| p.cols[g.nodes.iter().position(|n| n.name == name).unwrap()];
+        assert_eq!(
+            (col("desk"), col("amp"), col("rack"), col("spare")),
+            (0, 0, 1, 2)
+        );
+        assert_eq!(p.areas.len(), 3);
+        for (i, r) in p.nodes.iter().enumerate() {
+            let a = p.areas[p.cols[i]];
+            assert!(
+                r.x >= a.x && r.x + r.w <= a.x + a.w && r.y >= a.y && r.y + r.h <= a.y + a.h,
+                "{} inside its place",
+                g.nodes[i].name
+            );
+        }
+        for e in &p.edges {
+            assert!(e.label.x >= 0.0 && e.label.x + e.label.w <= p.width);
+        }
+        let s = svg(&g, &p, None);
+        assert_eq!(s.matches(r#"data-testid="map-area""#).count(), 3);
+        assert!(s.contains(">Stage</text>") && s.contains(">no place set</text>"));
+        assert!(s.contains(&format!(r#"viewBox="0 0 {:.0} "#, p.width)));
     }
 
     #[test]

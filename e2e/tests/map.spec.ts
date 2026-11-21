@@ -339,6 +339,94 @@ test("the map has the screen: a burger menu, a status strip, a device's click di
   expect(msgs).toEqual([]);
 });
 
+// #122, places: the owner names where a device stands; the devices of one
+// place stand in one area, and a site with no place set keeps its columns.
+test("a device gets a place: the map draws the places as areas, the change is logged, and without places the columns are back", async ({ page }) => {
+  const msgs: string[] = [];
+  page.on("console", (m: ConsoleMessage) => {
+    if (m.type() === "error" || m.type() === "warning") msgs.push(`${m.type()}: ${m.text()}`);
+  });
+  page.on("pageerror", (e) => msgs.push(`pageerror: ${e.message}`));
+  const clear = async () => {
+    for (const device of [DEVICE, BRIDGE]) {
+      expect((await page.request.post("/api/place", { data: { device, place: "" } })).status()).toBe(200);
+    }
+  };
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await page.goto(`/#map/device/${DEVICE}`);
+  const map = page.getByTestId("map");
+  const node = (name: string) => map.locator(`[data-testid="map-node"][data-node="${name}"]`);
+  await expect(node(DEVICE)).toBeVisible({ timeout: 40_000 });
+  try {
+    // No place yet: the columns, no area.
+    await expect(map.locator('[data-testid="map-area"]')).toHaveCount(0);
+    await expect(map.locator(".col-title").first()).toContainText(/sends|receives/);
+    await expect(page.getByTestId("place-input")).toHaveValue("");
+
+    // The server refuses what is not a place's name.
+    const long = await page.request.post("/api/place", { data: { device: DEVICE, place: "x".repeat(41) } });
+    expect(long.status()).toBe(400);
+    expect(await long.text()).toContain("at most 40 characters");
+
+    await page.getByTestId("place-input").fill("Stage");
+    await page.getByTestId("place-save").click();
+    await expect(page.getByTestId("place-note")).toHaveText(`${DEVICE}: in Stage`);
+    const places = await page.request.get("/api/places").then((r) => r.json());
+    expect(places.places).toEqual([{ device: DEVICE, place: "Stage" }]);
+    expect(places.names).toContain("Stage");
+    // The areas: Stage, and one for what has no place.
+    await expect(map.locator('[data-testid="map-area"]')).toHaveCount(2);
+    await expect(map.locator(".col-title")).toHaveText(["Stage", "no place set"]);
+    // The device stands inside its area, the bridge in the other.
+    const inside = async (name: string, area: number) => {
+      const n = (await node(name).locator("rect").boundingBox())!;
+      const a = (await map.locator('[data-testid="map-area"]').nth(area).boundingBox())!;
+      return n.x >= a.x && n.x + n.width <= a.x + a.width && n.y >= a.y && n.y + n.height <= a.y + a.height;
+    };
+    expect(await inside(DEVICE, 0)).toBe(true);
+    expect(await inside(BRIDGE, 1)).toBe(true);
+    expect(await inside(BRIDGE, 0)).toBe(false);
+
+    // A second place, offered from the ones known; the bridge's ASIO side follows it.
+    await page.goto(`/#map/device/${BRIDGE}`);
+    await expect(page.getByTestId("map-title")).toHaveText(BRIDGE);
+    await expect(page.locator("#place-names option")).toHaveCount(places.names.length);
+    await page.getByTestId("place-input").fill("FOH");
+    await page.getByTestId("place-save").click();
+    await expect(page.getByTestId("place-note")).toHaveText(`${BRIDGE}: in FOH`);
+    await expect(map.locator(".col-title")).toHaveText(["Stage", "FOH", "no place set"]);
+    expect(await inside(BRIDGE, 1)).toBe(true);
+    expect(await inside("SoundGrid", 1)).toBe(true);
+    await page.screenshot({ path: "test-results/map-places.png", fullPage: true });
+
+    // It stays after a reload, and the change is in the log.
+    await page.reload();
+    await expect(map.locator('[data-testid="map-area"]')).toHaveCount(3, { timeout: 40_000 });
+    await expect(page.getByTestId("place-input")).toHaveValue("FOH");
+    const log = await page.request.get("/api/changes").then((r) => r.json());
+    const made = log.find((e: any) => e.kind === "place" && e.rx_device === BRIDGE);
+    expect(made).toMatchObject({ ok: true, name_before: null, name_asked: "FOH", name_after: "FOH" });
+    await nav(page, "changes");
+    await expect(page.getByText(`place on the Map @ ${BRIDGE}`).first()).toBeVisible();
+
+    // Emptied: no place, and with none left the columns are back.
+    await page.goto(`/#map/device/${BRIDGE}`);
+    await expect(page.getByTestId("place-input")).toHaveValue("FOH", { timeout: 40_000 });
+    await page.getByTestId("place-input").fill("");
+    await page.getByTestId("place-save").click();
+    await expect(page.getByTestId("place-note")).toHaveText(`${BRIDGE}: no place`);
+    await expect(map.locator('[data-testid="map-area"]')).toHaveCount(2);
+    await clear();
+    await page.reload();
+    await expect(node(DEVICE)).toBeVisible({ timeout: 40_000 });
+    await expect(map.locator('[data-testid="map-area"]')).toHaveCount(0);
+    await expect(map.locator(".col-title").first()).toContainText(/sends|receives/);
+  } finally {
+    await clear();
+  }
+  expect(msgs).toEqual([]);
+});
+
 test("on a phone the map opens on the connections' table and no page scrolls sideways", async ({ page }) => {
   const msgs: string[] = [];
   page.on("console", (m: ConsoleMessage) => {

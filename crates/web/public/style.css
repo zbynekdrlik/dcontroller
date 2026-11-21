@@ -67,7 +67,7 @@ h1, h2, h3 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
 .icon { width: 18px; height: 18px; flex: none; }
 .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 0.25rem; padding: 0 0.4rem; font-size: 0.78rem; }
 .iface { color: var(--muted); }
-.version { font-family: var(--mono); font-size: 0.75rem; color: var(--warn); word-break: break-all; }
+.version { font-family: var(--mono); font-size: 0.75rem; color: var(--warn); white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .main { padding: 0.8rem 1.2rem 3rem; min-width: 0; position: relative; }
 .page-head { display: flex; align-items: center; gap: 0.8rem; margin-bottom: 0.7rem; min-height: 34px; }
 .page-head h1 { font-size: 1.5rem; }
@@ -81,7 +81,7 @@ h1, h2, h3 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
 .panel-head h2 { font-size: 1.05rem; }
 /* The Map's status strip (#122): one thin row beside the burger and the
    title; a dot, the name and the figure; the small text when pointed at. */
-.tiles { position: absolute; top: 0.8rem; left: 9.2rem; right: 12.5rem; height: 34px; display: flex; align-items: center; gap: 2px;
+.tiles { position: absolute; top: 0.8rem; left: 9.2rem; right: 15rem; height: 34px; display: flex; align-items: center; gap: 2px;
   padding: 0 4px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-s); }
 .tile { display: flex; align-items: center; gap: 0.45rem; padding: 3px 9px; min-width: 0; flex: 0 1 auto; text-decoration: none;
   border-radius: 6px; white-space: nowrap; position: relative; font-size: 0.86rem; }
@@ -368,6 +368,13 @@ svg.map .node.calm:hover, svg.map .node.calm.sel, svg.map .node.calm.rel { opaci
 svg.map.has-device .edge:not(.of):not(.sel) { opacity: 0.1; }
 svg.map.has-device .edge.of { opacity: 1; }
 svg.map.has-device .node:not(.sel):not(.rel) { opacity: 0.3; }
+svg.map .area { fill: rgb(255 255 255 / 2.5%); stroke: var(--border); stroke-dasharray: 6 5; }
+.place { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; margin: 0.3rem 0 0.6rem; }
+.place label { color: var(--muted); font-size: 0.85rem; }
+.place input { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-s); color: var(--text);
+  font: inherit; font-size: 0.88rem; padding: 0.3rem 0.6rem; width: 15rem; max-width: 100%; }
+.place input:focus { outline: none; border-color: var(--accent); }
+.place .act { margin: 0; }
 svg.map .node.hit rect { stroke: var(--warn); stroke-width: 2.6; }
 .bar-group { display: inline-flex; align-items: center; gap: 0.5rem; }
 input.find { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-s); color: var(--text);

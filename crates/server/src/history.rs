@@ -91,6 +91,10 @@ const MIGRATIONS: &[&str] = &[
          lost INTEGER NOT NULL, duplicated INTEGER NOT NULL, skipped INTEGER NOT NULL,
          PRIMARY KEY (conn, t)) WITHOUT ROWID;
      CREATE INDEX video_t ON video (t);",
+    // 9: where the owner put each device on the Map (#122). A place keeps
+    // its position among the places from its first use on.
+    "CREATE TABLE place (device TEXT PRIMARY KEY, place TEXT NOT NULL) WITHOUT ROWID;
+     CREATE TABLE place_name (name TEXT PRIMARY KEY, pos INTEGER NOT NULL) WITHOUT ROWID;",
 ];
 
 /// How long the record of use is kept, and how far back it is counted.
@@ -379,6 +383,69 @@ impl Store {
 
     /// Each view and thing opened in the last [`USAGE_DAYS`], the most
     /// opened first.
+    /// Every device's place, the places in the order of their first use.
+    pub fn places(&self) -> Result<api::Places, String> {
+        let db = self.conn();
+        let mut q = db
+            .prepare(
+                "SELECT p.device, p.place FROM place p JOIN place_name n ON n.name = p.place
+                 ORDER BY n.pos, p.device",
+            )
+            .map_err(|e| e.to_string())?;
+        let places = q
+            .query_map([], |r| {
+                Ok(api::Place {
+                    device: r.get(0)?,
+                    place: r.get(1)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        let mut q = db
+            .prepare("SELECT name FROM place_name ORDER BY pos")
+            .map_err(|e| e.to_string())?;
+        let names = q
+            .query_map([], |r| r.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<String>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(api::Places { places, names })
+    }
+
+    /// Puts `device` in `place` (empty: in none). Gives the place before.
+    pub fn set_place(&self, device: &str, place: &str) -> Result<Option<String>, String> {
+        let mut db = self.conn();
+        let tx = db.transaction().map_err(|e| e.to_string())?;
+        let before: Option<String> = tx
+            .query_row(
+                "SELECT place FROM place WHERE device = ?1",
+                params![device],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if place.is_empty() {
+            tx.execute("DELETE FROM place WHERE device = ?1", params![device])
+                .map_err(|e| e.to_string())?;
+        } else {
+            tx.execute(
+                "INSERT OR IGNORE INTO place_name (name, pos)
+                 VALUES (?1, (SELECT COALESCE(MAX(pos), 0) + 1 FROM place_name))",
+                params![place],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT INTO place (device, place) VALUES (?1, ?2)
+                 ON CONFLICT (device) DO UPDATE SET place = excluded.place",
+                params![device, place],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(before)
+    }
+
     pub fn usage(&self, now: i64) -> Result<api::Usage, String> {
         let db = self.conn();
         let mut q = db
@@ -1584,6 +1651,40 @@ mod tests {
             channels: vec!["In 1".into()],
             sources: vec!["desk".into()],
         }
+    }
+
+    #[test]
+    fn a_device_keeps_its_place_and_a_place_its_position() {
+        let st = Store::memory().unwrap();
+        assert_eq!(st.places().unwrap(), api::Places::default());
+        assert_eq!(st.set_place("desk", "FOH").unwrap(), None);
+        assert_eq!(st.set_place("rack", "Stage").unwrap(), None);
+        assert_eq!(st.set_place("amp", "FOH").unwrap(), None);
+        let place = |d: &str, p: &str| api::Place {
+            device: d.into(),
+            place: p.into(),
+        };
+        let got = st.places().unwrap();
+        // FOH was used first: its devices first, by name.
+        assert_eq!(
+            got.places,
+            [
+                place("amp", "FOH"),
+                place("desk", "FOH"),
+                place("rack", "Stage")
+            ]
+        );
+        assert_eq!(got.names, ["FOH", "Stage"]);
+        // Moved: the place before comes back; FOH keeps its position even
+        // with its first device gone from it.
+        assert_eq!(st.set_place("desk", "Stage").unwrap(), Some("FOH".into()));
+        assert_eq!(st.set_place("amp", "").unwrap(), Some("FOH".into()));
+        assert_eq!(st.set_place("amp", "").unwrap(), None);
+        let got = st.places().unwrap();
+        assert_eq!(got.places, [place("desk", "Stage"), place("rack", "Stage")]);
+        assert_eq!(got.names, ["FOH", "Stage"]);
+        assert_eq!(st.set_place("amp", "FOH").unwrap(), None);
+        assert_eq!(st.places().unwrap().places[0], place("amp", "FOH"));
     }
 
     #[test]

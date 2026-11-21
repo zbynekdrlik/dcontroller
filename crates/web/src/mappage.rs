@@ -27,6 +27,91 @@ pub struct MapCtl {
     pub problems: RwSignal<bool>,
     /// A device looked for by name (#122).
     pub find: RwSignal<String>,
+    /// Where the owner put each device (#122), as `/api/places` gave it.
+    pub places: RwSignal<Option<dcontroller_api::Places>>,
+    /// A place being typed (device, text) and what the last save said:
+    /// kept here, since the detail is drawn again on every change.
+    pub place_draft: RwSignal<Option<(String, String)>>,
+    pub place_note: RwSignal<String>,
+}
+
+async fn send_place(req: &dcontroller_api::Place) -> Result<dcontroller_api::Places, String> {
+    let res = gloo_net::http::Request::post("/api/place")
+        .json(req)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.ok() {
+        let why = res.text().await.unwrap_or_default();
+        return Err(format!(
+            "not stored: server answered {} {why}",
+            res.status()
+        ));
+    }
+    res.json().await.map_err(|e| e.to_string())
+}
+
+/// A device's place on the Map (#122): named here, stored on the box and
+/// logged with the changes. Devices of one place stand in one area.
+#[component]
+fn PlaceEdit(device: String) -> impl IntoView {
+    let m = expect_context::<MapCtl>();
+    let dev = StoredValue::new(device);
+    let text = Memo::new(move |_| {
+        let d = dev.get_value();
+        match m.place_draft.get() {
+            Some((of, t)) if of == d => t,
+            _ => m.places.with(|p| {
+                p.as_ref()
+                    .and_then(|p| p.places.iter().find(|x| x.device == d))
+                    .map(|x| x.place.clone())
+                    .unwrap_or_default()
+            }),
+        }
+    });
+    let save = move |_| {
+        let req = dcontroller_api::Place {
+            device: dev.get_value(),
+            place: text.get_untracked().trim().to_owned(),
+        };
+        spawn_local(async move {
+            match send_place(&req).await {
+                Ok(p) => {
+                    m.places.set(Some(p));
+                    m.place_draft.set(None);
+                    m.place_note.set(if req.place.is_empty() {
+                        format!("{}: no place", req.device)
+                    } else {
+                        format!("{}: in {}", req.device, req.place)
+                    });
+                }
+                Err(e) => m.place_note.set(e),
+            }
+        });
+    };
+    let names = move || {
+        m.places.with(|p| {
+            p.as_ref().map(|p| {
+                p.names
+                    .iter()
+                    .map(|n| view! { <option value=n.clone()></option> })
+                    .collect_view()
+            })
+        })
+    };
+    view! {
+        <div class="place" data-testid="place-edit">
+            <label for="place-input">"Place on the Map"</label>
+            <input id="place-input" list="place-names" data-testid="place-input" maxlength="40"
+                placeholder="Stage, FOH 1 … (empty: none)"
+                prop:value=move || text.get()
+                on:input=move |ev| m.place_draft.set(Some((dev.get_value(), event_target_value(&ev))))/>
+            <datalist id="place-names">{names}</datalist>
+            <button class="act" data-testid="place-save" on:click=save>"Set place"</button>
+            <span class="muted small" data-testid="place-note">{move || m.place_note.get()}</span>
+        </div>
+    }
 }
 
 /// The map's three views of the same network.
@@ -57,6 +142,11 @@ pub fn load_links(m: MapCtl) {
         // The schema is redrawn only when something changed.
         if m.links.with_untracked(|old| old.as_ref() != Some(&r)) {
             m.links.set(Some(r));
+        }
+        if let Ok(p) = pages::get_json::<dcontroller_api::Places>("/api/places").await
+            && m.places.with_untracked(|old| old.as_ref() != Some(&p))
+        {
+            m.places.set(Some(p));
         }
         let v = pages::get_json::<dcontroller_api::VideoReport>("/api/video").await;
         if m.video.with_untracked(|old| old.as_ref() != Some(&v)) {
@@ -254,6 +344,16 @@ pub fn MapPage() -> impl IntoView {
             m.video.with(|v| {
                 if let Some(Ok(v)) = v {
                     map::with_video(&mut g, v, m.span.get());
+                }
+            });
+            // The places the owner gave the devices (#122).
+            m.places.with(|p| {
+                if let Some(p) = p {
+                    g.places = p
+                        .places
+                        .iter()
+                        .map(|x| (x.device.clone(), x.place.clone()))
+                        .collect();
                 }
             });
             g
@@ -813,6 +913,7 @@ pub fn MapPage() -> impl IntoView {
                     {tables}
                     {none.then(|| view! { <p class="muted" data-testid="map-dev-none">"No connection: nothing is subscribed to this device and it is subscribed to nothing."</p> })}
                     <h3 class="sub">"Device"</h3>
+                    <PlaceEdit device=dev.name.clone()/>
                     <div class="device map-device" data-testid="map-device-body"><DeviceBody dev=dev/></div>
                 }.into_any()
             }
