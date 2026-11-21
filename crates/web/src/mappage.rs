@@ -55,8 +55,25 @@ async fn send_place(req: &dcontroller_api::Place) -> Result<dcontroller_api::Pla
 /// A device's place on the Map (#122): named here, stored on the box and
 /// logged with the changes. Devices of one place stand in one area.
 #[component]
-fn PlaceEdit(device: String) -> impl IntoView {
+fn PlaceEdit(
+    device: String,
+    /// Names the device in the field's label: a video connection's detail
+    /// holds one field for each of its two ends.
+    #[prop(optional)]
+    named: bool,
+) -> impl IntoView {
     let m = expect_context::<MapCtl>();
+    // The field's ids: one per device, so two fields can share a page.
+    let slug: String = device
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let (input_id, list_id) = (format!("place-of-{slug}"), format!("places-for-{slug}"));
+    let label = if named {
+        format!("Place of {device} on the Map")
+    } else {
+        "Place on the Map".to_owned()
+    };
     let dev = StoredValue::new(device);
     let text = Memo::new(move |_| {
         let d = dev.get_value();
@@ -101,13 +118,13 @@ fn PlaceEdit(device: String) -> impl IntoView {
         })
     };
     view! {
-        <div class="place" data-testid="place-edit">
-            <label for="place-input">"Place on the Map"</label>
-            <input id="place-input" list="place-names" data-testid="place-input" maxlength="40"
+        <div class="place" data-testid="place-edit" data-device=dev.get_value()>
+            <label for=input_id.clone()>{label}</label>
+            <input id=input_id list=list_id.clone() data-testid="place-input" maxlength="40"
                 placeholder="Stage, FOH 1 … (empty: none)"
                 prop:value=move || text.get()
                 on:input=move |ev| m.place_draft.set(Some((dev.get_value(), event_target_value(&ev))))/>
-            <datalist id="place-names">{names}</datalist>
+            <datalist id=list_id data-testid="place-names">{names}</datalist>
             <button class="act" data-testid="place-save" on:click=save>"Set place"</button>
             <span class="muted small" data-testid="place-note">{move || m.place_note.get()}</span>
         </div>
@@ -823,6 +840,14 @@ pub fn MapPage() -> impl IntoView {
             }
             map::Sel::Video { id } => {
                 let ends = video_of(m, &id).map(|c| (c.source, c.sink));
+                // A video node has no detail of its own: its place is set
+                // here, from a connection it is an end of (#122).
+                let fields = ends.clone().map(|(a, b)| {
+                    view! {
+                        <PlaceEdit device=a named=true/>
+                        <PlaceEdit device=b named=true/>
+                    }
+                });
                 view! {
                     <p class="actions" data-testid="map-actions">
                         {ends.map(|(a, b)| view! {
@@ -830,6 +855,7 @@ pub fn MapPage() -> impl IntoView {
                             <a class="act" href=map::Sel::Device { name: b.clone() }.hash()>{format!("Device {b}")}</a>
                         })}
                     </p>
+                    {fields}
                 }.into_any()
             }
             map::Sel::Bridge { device, .. } => {

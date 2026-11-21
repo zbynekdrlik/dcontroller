@@ -348,7 +348,7 @@ test("a device gets a place: the map draws the places as areas, the change is lo
   });
   page.on("pageerror", (e) => msgs.push(`pageerror: ${e.message}`));
   const clear = async () => {
-    for (const device of [DEVICE, BRIDGE]) {
+    for (const device of [DEVICE, BRIDGE, "cam-e2e"]) {
       expect((await page.request.post("/api/place", { data: { device, place: "" } })).status()).toBe(200);
     }
   };
@@ -390,7 +390,7 @@ test("a device gets a place: the map draws the places as areas, the change is lo
     // A second place, offered from the ones known; the bridge's ASIO side follows it.
     await page.goto(`/#map/device/${BRIDGE}`);
     await expect(page.getByTestId("map-title")).toHaveText(BRIDGE);
-    await expect(page.locator("#place-names option")).toHaveCount(places.names.length);
+    await expect(page.locator('[data-testid="place-names"] option')).toHaveCount(places.names.length);
     await page.getByTestId("place-input").fill("FOH");
     await page.getByTestId("place-save").click();
     await expect(page.getByTestId("place-note")).toHaveText(`${BRIDGE}: in FOH`);
@@ -408,6 +408,25 @@ test("a device gets a place: the map draws the places as areas, the change is lo
     expect(made).toMatchObject({ ok: true, name_before: null, name_asked: "FOH", name_after: "FOH" });
     await nav(page, "changes");
     await expect(page.getByText(`place on the Map @ ${BRIDGE}`).first()).toBeVisible();
+
+    // A video node has no detail of its own: a connection it ends holds
+    // the field for each of its two ends.
+    const video = await page.request.get("/api/video").then((r) => r.json());
+    const conn = video.connections.find((c: any) => c.source === "cam-e2e");
+    await page.goto(`/#map/video/${encodeURIComponent(conn.id)}`);
+    const cam = page.locator('[data-testid="place-edit"][data-device="cam-e2e"]');
+    await expect(cam).toContainText("Place of cam-e2e on the Map", { timeout: 40_000 });
+    await expect(page.locator(`[data-testid="place-edit"][data-device="${conn.sink}"]`)).toBeVisible();
+    await cam.getByTestId("place-input").fill("Stage");
+    await cam.getByTestId("place-save").click();
+    await expect(cam.getByTestId("place-note")).toHaveText("cam-e2e: in Stage");
+    await expect.poll(() => inside("cam-e2e", 0)).toBe(true);
+    expect((await page.request.post("/api/place", { data: { device: "cam-e2e", place: "" } })).status()).toBe(200);
+    // A place no device stands in is no longer offered.
+    await page.request.post("/api/place", { data: { device: "cam-e2e", place: "Typo" } });
+    expect((await page.request.get("/api/places").then((r) => r.json())).names).toContain("Typo");
+    await page.request.post("/api/place", { data: { device: "cam-e2e", place: "" } });
+    expect((await page.request.get("/api/places").then((r) => r.json())).names).toEqual(["Stage", "FOH"]);
 
     // Emptied: no place, and with none left the columns are back.
     await page.goto(`/#map/device/${BRIDGE}`);
