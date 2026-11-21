@@ -564,7 +564,7 @@ impl Store {
 
     /// A video connection's frames lost, duplicated and skipped in the last
     /// hour, 3 hours and day before `now`.
-    pub fn video_windows(&self, conn: &str, now: i64) -> Result<[(u64, u64, u64); 3], String> {
+    pub fn video_windows(&self, conn: &str, now: i64) -> Result<[(u64, u64, u64); 4], String> {
         let db = self.conn();
         let mut q = db
             .prepare_cached(
@@ -572,8 +572,8 @@ impl Store {
                  FROM video WHERE conn = ?1 AND t > ?2 AND t <= ?3",
             )
             .map_err(|e| e.to_string())?;
-        let mut out = [(0, 0, 0); 3];
-        for (i, span) in [3600, 3 * 3600, 24 * 3600].into_iter().enumerate() {
+        let mut out = [(0, 0, 0); 4];
+        for (i, span) in [3600, 3 * 3600, 24 * 3600, 300].into_iter().enumerate() {
             let (a, b, c): (i64, i64, i64) = q
                 .query_row(params![conn, now - span, now], |r| {
                     Ok((r.get(0)?, r.get(1)?, r.get(2)?))
@@ -1146,7 +1146,8 @@ impl Store {
             // The hour's best (share of the latency, peak), and the 3 h and
             // day's best (share, peak, latency).
             type Best = Option<(u32, u32, u32)>;
-            type Found = (api::LinkSummary, Flows, Option<(u32, u32)>, [Best; 2]);
+            // The third: the last 5 minutes' best.
+            type Found = (api::LinkSummary, Flows, Option<(u32, u32)>, [Best; 3]);
             let mut found: Vec<Found> = Vec::new();
             let rows = per
                 .query_map(params![id, hour, now, step, hour_floor], |r| {
@@ -1182,7 +1183,7 @@ impl Store {
                             },
                             Vec::new(),
                             None,
-                            [None, None],
+                            [None, None, None],
                         ));
                         found.len() - 1
                     }
@@ -1191,7 +1192,7 @@ impl Store {
                 l.late_24h += count(late);
                 // Everything in the second tier is inside 3 hours.
                 l.late_3h += count(late);
-                for span in spans.iter_mut() {
+                for span in spans.iter_mut().take(2) {
                     keep_best(span, peak, lat);
                 }
                 if b < 0 {
@@ -1199,6 +1200,11 @@ impl Store {
                     continue;
                 }
                 l.late_1h += count(late);
+                // The hour's last buckets are the last 5 minutes (#122).
+                if b >= api::SPARK_POINTS - 300 / step {
+                    l.late_5m += count(late);
+                    keep_best(&mut spans[2], peak, lat);
+                }
                 l.age_s = Some(l.age_s.map_or(now - last, |a| a.min(now - last)));
                 match flows.iter_mut().find(|(k, _, _)| *k == flow) {
                     Some((_, s, c)) => {
@@ -1284,6 +1290,9 @@ impl Store {
                 if let Some((_, p, lat)) = spans[1] {
                     (l.peak_24h_us, l.latency_24h_us) = (p, lat);
                 }
+                if let Some((_, p, lat)) = spans[2] {
+                    (l.peak_5m_us, l.latency_5m_us) = (p, lat);
+                }
                 l.flows = u16::try_from(flows.len()).unwrap_or(u16::MAX);
                 l.typical_us = flows
                     .iter()
@@ -1319,9 +1328,11 @@ impl Store {
             let Some(last) = points.last().cloned() else {
                 continue;
             };
-            let grown = |count: fn(&api::BridgePoint) -> u64| -> u64 {
+            // What a count grew by over the points read after `since`.
+            let grown_since = |since: i64, count: fn(&api::BridgePoint) -> u64| -> u64 {
                 points
                     .windows(2)
+                    .filter(|w| w[1].t > since)
                     .map(|w| {
                         let (p, c) = (count(&w[0]), count(&w[1]));
                         // A restart (a new run, or a count that fell)
@@ -1334,11 +1345,14 @@ impl Store {
                     })
                     .sum()
             };
+            let grown = |count: fn(&api::BridgePoint) -> u64| grown_since(hour, count);
             let (to_24h, from_24h) = self.bridge_underruns(&device, now - 86_400, now)?;
             out.bridges.push(api::BridgeSummary {
                 device,
                 to_asio_underruns_1h: grown(|p| p.to_asio_underruns),
                 from_asio_underruns_1h: grown(|p| p.from_asio_underruns),
+                to_asio_underruns_5m: grown_since(now - 300, |p| p.to_asio_underruns),
+                from_asio_underruns_5m: grown_since(now - 300, |p| p.from_asio_underruns),
                 to_asio_underruns_24h: to_24h,
                 from_asio_underruns_24h: from_24h,
                 last,
@@ -1586,7 +1600,8 @@ mod bridge_tests {
             .unwrap();
         st.add_video("other", &p(now, 10.0, 9, 9, 9)).unwrap();
         let w = st.video_windows("jxs:cam3->strih", now).unwrap();
-        assert_eq!(w, [(1, 0, 0), (4, 0, 0), (4, 5, 2)]);
+        // The last: the 5 minutes (the newest loss is 500 s old).
+        assert_eq!(w, [(1, 0, 0), (4, 0, 0), (4, 5, 2), (0, 0, 0)]);
         let spark = st.video_spark("jxs:cam3->strih", now).unwrap();
         assert_eq!(spark.len(), 60);
         assert!(spark.iter().flatten().all(|v| (40.0..=42.0).contains(v)));
@@ -1922,6 +1937,14 @@ mod tests {
         // #142: 3 h holds the hour only (the other samples are 5 h old);
         // the day's peak closest to its latency is the same 1900 of 2000.
         assert_eq!(p.late_3h, 3);
+        // #122: nothing of player's came in the last 5 minutes; video's
+        // late packet did, 10 s ago, with its peak of 4000 against 10 000.
+        assert_eq!((p.late_5m, p.peak_5m_us, p.latency_5m_us), (0, 0, 0));
+        let five = &l.links[1];
+        assert_eq!(
+            (five.late_5m, five.peak_5m_us, five.latency_5m_us),
+            (1, 4000, 10_000)
+        );
         assert_eq!((p.peak_3h_us, p.latency_3h_us), (1900, 2000));
         assert_eq!((p.peak_24h_us, p.latency_24h_us), (1900, 2000));
         assert_eq!(p.age_s, Some(1799));
