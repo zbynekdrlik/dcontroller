@@ -57,7 +57,16 @@ svg { width: 100%; height: 100%; display: block; cursor: grab; user-select: none
 .kv div { background: var(--surface-2); border-radius: var(--radius-s); padding: 8px 10px; }
 .kv small { display: block; color: var(--muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; }
 .kv b { font-size: 1.15rem; }
-.chart { height: 120px; background: var(--surface-2); border-radius: var(--radius-s); margin: 8px 0; display: grid; place-items: center; color: var(--muted); font-size: 0.8rem; }
+.chart { height: 170px; background: var(--surface-2); border-radius: var(--radius-s); margin: 8px 0; position: relative; overflow: hidden; }
+.chart svg { cursor: default; } .chart span { position: absolute; font-size: 0.7rem; color: var(--muted); }
+.chart .lat { right: 8px; top: 22%; color: var(--bad); } .chart .t0 { left: 8px; bottom: 3px; } .chart .t1 { right: 8px; bottom: 3px; } .chart .ax { left: 8px; top: 4px; }
+.rng { float: right; margin-right: 10px; }
+table { width: 100%; border-collapse: collapse; font-size: 0.8rem; } th { text-align: left; color: var(--muted); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; padding: 4px 6px; }
+td { padding: 5px 6px; border-top: 1px solid var(--border); white-space: nowrap; } td.b { color: var(--bad); font-weight: 650; }
+.main.dock { flex-direction: column; } .main.dock .drawer { width: auto; height: 42vh; }
+.main.dock .body { display: grid; grid-template-columns: 250px minmax(0,1fr) 360px; gap: 12px; align-items: start; }
+.main.dock .kv { margin: 8px 0; } .main.dock .chart { height: calc(42vh - 95px); }
+.main.below .body { display: grid; grid-template-columns: 250px minmax(0,1fr) 360px; gap: 12px; } .main.below .chart { height: 230px; }
 .zone { fill: rgb(255 255 255 / 2.5%); stroke: var(--border); stroke-dasharray: 5 5; }
 .zname { fill: var(--muted); font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 650; }
 .node rect { fill: var(--surface-2); stroke: var(--border); }
@@ -93,9 +102,9 @@ svg { width: 100%; height: 100%; display: block; cursor: grab; user-select: none
   <span class="try">try:</span>
   <button class="tog" id="t-prob">Problems only</button>
   <button class="tog" id="t-grp">Fold listeners into a group</button>
-  <span class="seg" id="t-det"><button class="on" data-v="side">Detail at the side</button><button data-v="below">Detail below</button></span>
+  <span class="seg" id="t-det"><button data-v="side">Detail at the side</button><button class="on" data-v="dock">Detail docked at the bottom</button><button data-v="below">Detail below (today)</button></span>
 </div>
-<div class="main" id="main">
+<div class="main dock" id="main">
   <div class="mapwrap">
     <svg id="svg"><defs>
       <marker id="a-ok" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#34d399"/></marker>
@@ -121,7 +130,7 @@ const E = [
  ["mixer-1","edit-pc",5,"ok"],["mixer-1","intercom",5,"ok"],["mixer-1","mix-listen",13.67,"warn"],["foh-console","intercom",5,"ok"],
  ["stage-rack","band-pc",5,"ok"],["foh-console","band-pc",5,"ok"],["band-pc","foh-console",5,"ok"],["band-pc","presenter",5,"ok"],["foh-console","speakers",1,"ok"]];
 const BW=178,BH=46,GY=30,ZP=22,ZG=170,LANE=64;
-let S={sel:null,prob:false,grp:false,find:"",k:1,tx:0,ty:0,det:"side"};
+let S={sel:null,prob:false,grp:false,find:"",k:1,tx:0,ty:0,det:"dock"};
 const $=id=>document.getElementById(id), svgNS="http://www.w3.org/2000/svg";
 function model(){
   let nodes=N.map(n=>({id:n[0],z:n[1],sub:n[2],fold:!!n[3]})), edges=E.map(e=>({a:e[0],b:e[1],ms:e[2],st:e[3],late:e[4]||0}));
@@ -184,14 +193,21 @@ function draw(){
 function apply(){ $("view").setAttribute("transform",`translate(${S.tx} ${S.ty}) scale(${S.k})`); }
 function fit(){ const r=$("svg").getBoundingClientRect(); S.k=Math.min(r.width/L.W,r.height/L.H,1.6); S.tx=(r.width-L.W*S.k)/2; S.ty=(r.height-L.H*S.k)/2; apply(); }
 function zoom(f,cx,cy){ const r=$("svg").getBoundingClientRect(); cx=cx??r.width/2; cy=cy??r.height/2; const k=Math.min(4,Math.max(0.3,S.k*f)); S.tx=cx-(cx-S.tx)*k/S.k; S.ty=cy-(cy-S.ty)*k/S.k; S.k=k; apply(); }
+function chartSvg(st){ let pts=[],bars=""; for(let i=0;i<=300;i++){ let y=6+Math.abs(Math.sin(i*1.7)*5+Math.sin(i*0.31)*4); if(st==="bad"&&(i===262||i===263)) y=96; if(i%47===0) y+=14; pts.push((i/3*10).toFixed(0)+","+(100-y*0.9).toFixed(1)); }
+  if(st==="bad") bars='<rect x="870" y="88" width="8" height="12" fill="#f87171"/>';
+  return `<svg viewBox="0 0 1000 100" preserveAspectRatio="none"><line x1="0" x2="1000" y1="30" y2="30" stroke="#f87171" stroke-dasharray="6 5" vector-effect="non-scaling-stroke"/><polyline points="${pts.join(" ")}" fill="none" stroke="#5b9dff" stroke-width="1.4" vector-effect="non-scaling-stroke"/>${bars}</svg>`; }
 function detail(title,st,kv){ const d=$("drawer"); d.classList.add("open");
-  d.innerHTML=`<button class="x" id="dx">✕</button><h2>${title}</h2><span class="chip ${st}">${st==="bad"?"late packets in the last hour":st==="warn"?"peak close to the latency":"clean"}</span>
-  <div class="kv">${kv.map(([a,b])=>`<div><small>${a}</small><b>${b}</b></div>`).join("")}</div><div class="chart">chart: how late packets arrive, 1 h</div>
-  <div class="chart" style="height:150px">other connections of this device</div>`;
+  d.innerHTML=`<button class="x" id="dx">✕</button><span class="seg rng"><button>5 min</button><button class="on">1 h</button><button>3 h</button><button>24 h</button><button>7 d</button></span>
+  <h2>${title} <span class="chip ${st}">${st==="bad"?"late packets in the last hour":st==="warn"?"peak close to the latency":"clean"}</span></h2>
+  <div class="body"><div class="kv">${kv.map(([a,b])=>`<div><small>${a}</small><b>${b}</b></div>`).join("")}</div>
+  <div class="chart">${chartSvg(st)}<span class="ax">how late packets arrive, ms</span><span class="lat">latency: a later packet is not played</span><span class="t0">22:05</span><span class="t1">23:05</span></div>
+  <div><table><tr><th>Other connections</th><th>Latency</th><th>Worst peak</th><th>Late 1 h</th></tr>
+  <tr><td>from foh-console</td><td>5.00 ms</td><td>32.76 ms</td><td class="b">1 012</td></tr><tr><td>from stream-pc</td><td>13.04 ms</td><td>33.40 ms</td><td class="b">191</td></tr>
+  <tr><td>to stream-pc</td><td>13.04 ms</td><td>24.68 ms</td><td class="b">72</td></tr><tr><td>to edit-pc</td><td>5.00 ms</td><td>1.90 ms</td><td>0</td></tr><tr><td>to intercom</td><td>5.00 ms</td><td>2.10 ms</td><td>0</td></tr></table></div></div>`;
   $("dx").onclick=()=>{ d.classList.remove("open"); setTimeout(fit,0); }; setTimeout(fit,0); if(S.det==="below") d.scrollIntoView({behavior:"smooth"}); }
 $("t-prob").onclick=e=>{ S.prob=!S.prob; e.target.classList.toggle("on",S.prob); draw(); };
 $("t-grp").onclick=e=>{ S.grp=!S.grp; S.sel=null; e.target.classList.toggle("on",S.grp); draw(); fit(); };
-$("t-det").onclick=e=>{ const v=e.target.dataset.v; if(!v) return; S.det=v; [...$("t-det").children].forEach(b=>b.classList.toggle("on",b===e.target)); $("main").classList.toggle("below",v==="below"); setTimeout(fit,0); };
+$("t-det").onclick=e=>{ const v=e.target.dataset.v; if(!v) return; S.det=v; [...$("t-det").children].forEach(b=>b.classList.toggle("on",b===e.target)); $("main").classList.toggle("below",v==="below"); $("main").classList.toggle("dock",v==="dock"); setTimeout(fit,0); };
 $("find").oninput=e=>{ S.find=e.target.value.trim().toLowerCase(); draw(); };
 $("zi").onclick=()=>zoom(1.25); $("zo").onclick=()=>zoom(0.8); $("zf").onclick=fit;
 const svg=$("svg"); svg.onclick=()=>{ if(S.sel){ S.sel=null; draw(); } };
