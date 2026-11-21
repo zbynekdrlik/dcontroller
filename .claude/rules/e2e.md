@@ -17,3 +17,4 @@ paths:
 - The suite's server can start before global-setup's stand-ins (dsync nodes, the video node list): a reader's first read fails and is stored as such. Poll the API until the stand-in's answer is there; never assert on the first stored point.
 - The menu is behind a burger (#122): a spec changes page with `nav(page, "clock")` from `e2e/env.ts`, never a bare click on `tab-…` (it is off the screen until the burger opens it).
 - On the Map `.hit` is also every line's wide click path (`path.hit`): a device looked for is `.node.hit`.
+- The Map's SVG is replaced whenever its data changes: a `boundingBox()` of a box can come back `null` for a moment; retry it. Video nodes appear only after the server's first good read of the stand-in list (up to a minute after start): a spec that counts areas or columns waits for `cam-e2e` first.

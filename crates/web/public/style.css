@@ -369,6 +369,17 @@ svg.map.has-device .edge:not(.of):not(.sel) { opacity: 0.1; }
 svg.map.has-device .edge.of { opacity: 1; }
 svg.map.has-device .node:not(.sel):not(.rel) { opacity: 0.3; }
 svg.map .area { fill: rgb(255 255 255 / 2.5%); stroke: var(--border); stroke-dasharray: 6 5; }
+/* A box being dragged (`mapdrag.js`): its name at the pointer, the place it
+   would land in, the line where it would stand, the "new place" target. */
+svg.map .area.drop { stroke: var(--accent); stroke-dasharray: none; fill: var(--accent-soft); }
+svg.map { user-select: none; }
+body.map-dragging { cursor: grabbing; user-select: none; }
+.map-drag-ghost { position: fixed; z-index: 40; pointer-events: none; padding: 0.35rem 0.7rem; font-weight: 650; font-size: 0.88rem;
+  background: var(--surface-3); border: 1px solid var(--accent); border-radius: var(--radius-s); box-shadow: 0 8px 24px rgb(0 0 0 / 50%); }
+.map-drag-line { position: fixed; z-index: 39; display: none; height: 3px; border-radius: 2px; background: var(--accent); pointer-events: none; }
+.map-drag-new { position: fixed; z-index: 38; width: 140px; display: grid; place-items: center; text-align: center; color: var(--muted);
+  font-weight: 650; font-size: 0.9rem; background: rgb(11 15 23 / 85%); border: 2px dashed var(--border); border-radius: var(--radius); }
+.map-drag-new.drop { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
 .place { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; margin: 0.3rem 0 0.6rem; }
 .place label { color: var(--muted); font-size: 0.85rem; }
 .place input { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-s); color: var(--text);

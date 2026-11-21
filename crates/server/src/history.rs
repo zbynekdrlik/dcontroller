@@ -95,6 +95,8 @@ const MIGRATIONS: &[&str] = &[
     // its position among the places from its first use on.
     "CREATE TABLE place (device TEXT PRIMARY KEY, place TEXT NOT NULL) WITHOUT ROWID;
      CREATE TABLE place_name (name TEXT PRIMARY KEY, pos INTEGER NOT NULL) WITHOUT ROWID;",
+    // 10: a device's position inside its place, as the owner dragged it.
+    "ALTER TABLE place ADD COLUMN ord INTEGER NOT NULL DEFAULT 0;",
 ];
 
 /// How long the record of use is kept, and how far back it is counted.
@@ -389,7 +391,7 @@ impl Store {
         let mut q = db
             .prepare(
                 "SELECT p.device, p.place FROM place p JOIN place_name n ON n.name = p.place
-                 ORDER BY n.pos, p.device",
+                 ORDER BY n.pos, p.ord, p.device",
             )
             .map_err(|e| e.to_string())?;
         let places = q
@@ -397,6 +399,7 @@ impl Store {
                 Ok(api::Place {
                     device: r.get(0)?,
                     place: r.get(1)?,
+                    before: None,
                 })
             })
             .map_err(|e| e.to_string())?
@@ -415,8 +418,15 @@ impl Store {
         Ok(api::Places { places, names })
     }
 
-    /// Puts `device` in `place` (empty: in none). Gives the place before.
-    pub fn set_place(&self, device: &str, place: &str) -> Result<Option<String>, String> {
+    /// Puts `device` in `place` (empty: in none), before the device
+    /// `ahead` there (`Some("")`: at the end; `None`: where it is when it
+    /// is in that place already, else at the end). Gives the place before.
+    pub fn set_place(
+        &self,
+        device: &str,
+        place: &str,
+        ahead: Option<&str>,
+    ) -> Result<Option<String>, String> {
         let mut db = self.conn();
         let tx = db.transaction().map_err(|e| e.to_string())?;
         let before: Option<String> = tx
@@ -437,12 +447,34 @@ impl Store {
                 params![place],
             )
             .map_err(|e| e.to_string())?;
-            tx.execute(
-                "INSERT INTO place (device, place) VALUES (?1, ?2)
-                 ON CONFLICT (device) DO UPDATE SET place = excluded.place",
-                params![device, place],
-            )
-            .map_err(|e| e.to_string())?;
+            // The place's devices in their order, without this one.
+            let mut order: Vec<String> = {
+                let mut q = tx
+                    .prepare("SELECT device FROM place WHERE place = ?1 ORDER BY ord, device")
+                    .map_err(|e| e.to_string())?;
+                q.query_map(params![place], |r| r.get(0))
+                    .map_err(|e| e.to_string())?
+                    .collect::<Result<Vec<String>, _>>()
+                    .map_err(|e| e.to_string())?
+            };
+            let was = order.iter().position(|d| d == device);
+            order.retain(|d| d != device);
+            let at = match ahead {
+                Some(b) => order
+                    .iter()
+                    .position(|d| d.as_str() == b)
+                    .unwrap_or(order.len()),
+                None => was.unwrap_or(order.len()),
+            };
+            order.insert(at.min(order.len()), device.to_owned());
+            for (i, d) in order.iter().enumerate() {
+                tx.execute(
+                    "INSERT INTO place (device, place, ord) VALUES (?1, ?2, ?3)
+                     ON CONFLICT (device) DO UPDATE SET place = excluded.place, ord = excluded.ord",
+                    params![d, place, i as i64 + 1],
+                )
+                .map_err(|e| e.to_string())?;
+            }
         }
         tx.commit().map_err(|e| e.to_string())?;
         Ok(before)
@@ -1659,38 +1691,60 @@ mod tests {
     fn a_device_keeps_its_place_and_a_place_its_position() {
         let st = Store::memory().unwrap();
         assert_eq!(st.places().unwrap(), api::Places::default());
-        assert_eq!(st.set_place("desk", "FOH").unwrap(), None);
-        assert_eq!(st.set_place("rack", "Stage").unwrap(), None);
-        assert_eq!(st.set_place("amp", "FOH").unwrap(), None);
+        assert_eq!(st.set_place("desk", "FOH", None).unwrap(), None);
+        assert_eq!(st.set_place("rack", "Stage", None).unwrap(), None);
+        assert_eq!(st.set_place("amp", "FOH", None).unwrap(), None);
         let place = |d: &str, p: &str| api::Place {
             device: d.into(),
             place: p.into(),
+            before: None,
         };
-        let got = st.places().unwrap();
-        // FOH was used first: its devices first, by name.
+        let all = || st.places().unwrap().places;
+        // FOH was used first: its devices first, as they came.
         assert_eq!(
-            got.places,
+            all(),
             [
-                place("amp", "FOH"),
                 place("desk", "FOH"),
+                place("amp", "FOH"),
                 place("rack", "Stage")
             ]
         );
-        assert_eq!(got.names, ["FOH", "Stage"]);
-        // Moved: the place before comes back; FOH keeps its position even
-        // with its first device gone from it.
-        assert_eq!(st.set_place("desk", "Stage").unwrap(), Some("FOH".into()));
-        assert_eq!(st.set_place("amp", "").unwrap(), Some("FOH".into()));
-        assert_eq!(st.set_place("amp", "").unwrap(), None);
-        let got = st.places().unwrap();
-        assert_eq!(got.places, [place("desk", "Stage"), place("rack", "Stage")]);
-        // A place no device stands in is not offered (a mistyped name goes
-        // with its last device); it keeps its position for when it is back.
-        assert_eq!(got.names, ["Stage"]);
-        assert_eq!(st.set_place("amp", "FOH").unwrap(), None);
-        let got = st.places().unwrap();
-        assert_eq!(got.places[0], place("amp", "FOH"));
-        assert_eq!(got.names, ["FOH", "Stage"]);
+        assert_eq!(st.places().unwrap().names, ["FOH", "Stage"]);
+        // Dragged: amp above desk. Set again with no position, it stays.
+        // Sent to the end, it is last again.
+        st.set_place("amp", "FOH", Some("desk")).unwrap();
+        assert_eq!(all()[..2], [place("amp", "FOH"), place("desk", "FOH")]);
+        st.set_place("amp", "FOH", None).unwrap();
+        assert_eq!(all()[0], place("amp", "FOH"));
+        st.set_place("amp", "FOH", Some("")).unwrap();
+        assert_eq!(all()[..2], [place("desk", "FOH"), place("amp", "FOH")]);
+        // Into another place before one of its devices.
+        assert_eq!(
+            st.set_place("amp", "Stage", Some("rack")).unwrap(),
+            Some("FOH".into())
+        );
+        assert_eq!(
+            all(),
+            [
+                place("desk", "FOH"),
+                place("amp", "Stage"),
+                place("rack", "Stage")
+            ]
+        );
+        // Moved: the place before comes back. A place no device stands in
+        // is not offered (a mistyped name goes with its last device), and
+        // keeps its position for when it is back.
+        assert_eq!(
+            st.set_place("desk", "Stage", None).unwrap(),
+            Some("FOH".into())
+        );
+        assert_eq!(st.set_place("amp", "", None).unwrap(), Some("Stage".into()));
+        assert_eq!(st.set_place("amp", "", None).unwrap(), None);
+        assert_eq!(all(), [place("rack", "Stage"), place("desk", "Stage")]);
+        assert_eq!(st.places().unwrap().names, ["Stage"]);
+        assert_eq!(st.set_place("amp", "FOH", None).unwrap(), None);
+        assert_eq!(all()[0], place("amp", "FOH"));
+        assert_eq!(st.places().unwrap().names, ["FOH", "Stage"]);
     }
 
     #[test]

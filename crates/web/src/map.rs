@@ -1000,8 +1000,16 @@ pub fn layout(g: &Graph) -> Placed {
             order[cols[i]].push(i);
         }
     }
+    // With places: a place's devices stand as the owner put them (the
+    // order `places` came in); only "no place set" is ordered by the map.
+    let rank = |i: usize| {
+        g.places
+            .iter()
+            .position(|(d, _)| *d == g.nodes[i].name)
+            .unwrap_or(usize::MAX)
+    };
     for col in &mut order {
-        col.sort_by_key(|&i| lower(i));
+        col.sort_by_key(|&i| (rank(i), lower(i)));
     }
     let asio_of = |i: usize| g.nodes.iter().position(|n| n.of == Some(i));
     let place = |order: &[Vec<usize>]| -> (Vec<Rect>, f64) {
@@ -1048,7 +1056,7 @@ pub fn layout(g: &Graph) -> Placed {
     // Each column in turn by the mean height of its devices' partners in
     // the other columns: connected devices end up at the same height.
     let turns: Vec<usize> = if placed {
-        (0..xs.len()).collect()
+        (0..xs.len()).filter(|&c| names[c] == NO_PLACE).collect()
     } else {
         vec![1, 2, 0, 3]
     };
@@ -1327,10 +1335,23 @@ pub fn svg_with(g: &Graph, p: &Placed, chosen: Option<&Sel>, show: &Show) -> Str
         ));
     }
     s.push_str("</defs>");
-    for r in &p.areas {
+    // A place's name as the page's script reads it off an area or a box
+    // (`mapdrag.js`): empty for "no place set".
+    let place_at = |col: usize| {
+        p.titles
+            .get(col)
+            .map(|(_, n)| n.as_str())
+            .filter(|n| !p.areas.is_empty() && *n != NO_PLACE)
+            .unwrap_or("")
+    };
+    for (c, r) in p.areas.iter().enumerate() {
         s.push_str(&format!(
-            r#"<rect class="area" data-testid="map-area" x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}" rx="14"/>"#,
-            r.x, r.y, r.w, r.h
+            r#"<rect class="area" data-testid="map-area" data-place="{}" x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}" rx="14"/>"#,
+            esc(place_at(c)),
+            r.x,
+            r.y,
+            r.w,
+            r.h
         ));
     }
     for (x, title) in &p.titles {
@@ -1415,7 +1436,7 @@ pub fn svg_with(g: &Graph, p: &Placed, chosen: Option<&Sel>, show: &Show) -> Str
         });
         let room = if n.badge.is_some() { 17 } else { 24 };
         s.push_str(&format!(
-            r#"<g class="node{kind}{}{}{}" data-testid="map-node" data-node="{}"><title>{}</title><rect x="{:.1}" y="{:.1}" width="{:.0}" height="{:.0}" rx="10"/><text class="name" x="{:.1}" y="{:.1}">{}</text><text class="sub" x="{:.1}" y="{:.1}">{}</text><text class="sub" x="{:.1}" y="{:.1}">{}</text>{badge}{dsync}</g>"#,
+            r#"<g class="node{kind}{}{}{}" data-testid="map-node" data-node="{}" data-place="{}"><title>{}</title><rect x="{:.1}" y="{:.1}" width="{:.0}" height="{:.0}" rx="10"/><text class="name" x="{:.1}" y="{:.1}">{}</text><text class="sub" x="{:.1}" y="{:.1}">{}</text><text class="sub" x="{:.1}" y="{:.1}">{}</text>{badge}{dsync}</g>"#,
             if device == Some(i) {
                 " sel"
             } else if ends.contains(&i) {
@@ -1426,6 +1447,7 @@ pub fn svg_with(g: &Graph, p: &Placed, chosen: Option<&Sel>, show: &Show) -> Str
             if show.problems && calm(i) { " calm" } else { "" },
             if hit(n) { " hit" } else { "" },
             esc(&n.name),
+            esc(place_at(p.cols[i])),
             esc(&n.name),
             r.x,
             r.y,
@@ -1967,7 +1989,21 @@ mod tests {
         for e in &p.edges {
             assert!(e.label.x >= 0.0 && e.label.x + e.label.w <= p.width);
         }
+        // Inside a place the devices stand as the owner put them.
+        let y = |p: &Placed, name: &str| {
+            p.nodes[g.nodes.iter().position(|n| n.name == name).unwrap()].y
+        };
+        assert!(y(&p, "desk") < y(&p, "amp"));
+        let mut turned = g.clone();
+        turned.places.swap(0, 2);
+        let t = layout(&turned);
+        assert!(y(&t, "amp") < y(&t, "desk"));
         let s = svg(&g, &p, None);
+        // The script that drags reads the place off an area and a box.
+        assert!(s.contains(r#"data-testid="map-area" data-place="FOH""#));
+        assert!(s.contains(r#"data-testid="map-area" data-place="""#));
+        assert!(s.contains(r#"data-node="amp" data-place="FOH""#));
+        assert!(s.contains(r#"data-node="spare" data-place="""#));
         assert_eq!(s.matches(r#"data-testid="map-area""#).count(), 3);
         assert!(s.contains(">Stage</text>") && s.contains(">no place set</text>"));
         assert!(s.contains(&format!(r#"viewBox="0 0 {:.0} "#, p.width)));

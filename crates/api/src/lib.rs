@@ -332,6 +332,11 @@ pub struct Places {
 pub struct Place {
     pub device: String,
     pub place: String,
+    /// Only in a `POST`: where in its place the device goes. The device it
+    /// stands before; `""` for the end; `None` leaves a device that is
+    /// already in that place where it is, and puts a new one at the end.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
 }
 
 /// The longest place name kept.
