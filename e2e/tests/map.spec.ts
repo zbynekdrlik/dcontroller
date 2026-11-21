@@ -1,5 +1,8 @@
 import { test, expect, type ConsoleMessage } from "@playwright/test";
-import { DSYNC, nav } from "../env";
+import { DSYNC, nav, root, run } from "../env";
+import { spawn } from "node:child_process";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 // The Map (#122): the schema of what is connected to what, and the chart
 // of the connection the user clicks. The test device receives its own TX
@@ -650,6 +653,81 @@ test("the box of a device that is not on the network is dragged to a place like 
     await subscribe(null);
     await place(OFF, "");
     await place(DEVICE, "");
+  }
+  expect(msgs).toEqual([]);
+});
+
+// #122: the smaller site's PCs were switched off and their boxes went from
+// the Map. A device that leaves the network keeps its box, "not on the
+// network" with when it was last seen, its place and its last lines; the
+// owner forgets one that is gone for good.
+test("a device switched off keeps its box on the map until it is forgotten", async ({ page }) => {
+  test.setTimeout(240_000);
+  const msgs: string[] = [];
+  page.on("console", (m: ConsoleMessage) => {
+    if (m.type() === "error" || m.type() === "warning") msgs.push(`${m.type()}: ${m.text()}`);
+  });
+  page.on("pageerror", (e) => msgs.push(`pageerror: ${e.message}`));
+  const OFF = "dc-e2e-switched";
+  const config = resolve(run, "off-device.toml");
+  const state = resolve(run, "off-state.toml");
+  rmSync(state, { force: true });
+  writeFileSync(config, readFileSync(resolve(root, "e2e/fixtures/off-device.toml"), "utf8") + `state_file = "${state}"\n`);
+  const child = spawn(
+    resolve(root, "target/debug/dstack-dev"),
+    ["--config", config, "--ip", "10.199.0.3", "--clock", "system", "--control", resolve(run, "off-control.sock")],
+    { stdio: "ignore" },
+  );
+  const listed = async () =>
+    (await page.request.get("/api/devices").then((r) => r.json())).devices.some((d: any) => d.name === OFF);
+  const absent = async () =>
+    (await page.request.get("/api/devices").then((r) => r.json())).absent.find((a: any) => a.device.name === OFF) ?? null;
+  try {
+    // On, read (its channels), and written down (every 30 s).
+    await expect
+      .poll(async () => (await page.request.get("/api/devices").then((r) => r.json())).devices.find((d: any) => d.name === OFF)?.channels?.rx?.length ?? 0, { timeout: 60_000 })
+      .toBe(2);
+    expect((await page.request.post("/api/place", { data: { device: OFF, place: "Backstage" } })).status()).toBe(200);
+    await page.waitForTimeout(35_000);
+    // Off.
+    const exited = new Promise((r) => child.once("exit", r));
+    child.kill("SIGTERM");
+    await exited;
+    await expect.poll(listed, { timeout: 90_000, intervals: [2_000] }).toBe(false);
+    const a = await absent();
+    expect(a.device.model).toBe("off-box");
+    expect(a.device.channels.rx.length).toBe(2);
+    expect(a.ago_s).toBeLessThan(150);
+
+    // The Map keeps its box in its place, and its detail says what it was.
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await page.goto("/#map");
+    const map = page.getByTestId("map");
+    const box = map.locator(`[data-testid="map-node"][data-node="${OFF}"]`);
+    await expect(box).toHaveClass(/\bmissing\b/, { timeout: 30_000 });
+    await expect(box).toContainText("not on the network");
+    await expect(box).toContainText(/last seen (just now|\d+ min ago)/);
+    await expect(box).toHaveAttribute("data-place", "Backstage");
+    await box.locator("rect").first().click({ force: true });
+    await expect(page).toHaveURL(new RegExp(`#map/device/${OFF}$`));
+    const detail = page.getByTestId("map-dev-absent");
+    await expect(detail).toContainText("Not on the network");
+    await expect(detail).toContainText("dcontroller-e2e off-box");
+    await expect(page.getByTestId("place-input")).toHaveValue("Backstage");
+    // Forgotten: asked first, then gone from the Map, its place with it.
+    page.once("dialog", (d) => d.accept());
+    await page.getByTestId("map-forget").click();
+    await expect(page).toHaveURL(/#map$/);
+    await expect(box).toHaveCount(0, { timeout: 30_000 });
+    expect(await absent()).toBeNull();
+    expect((await page.request.get("/api/places").then((r) => r.json())).places.some((p: any) => p.device === OFF)).toBe(false);
+    const log = await page.request.get("/api/changes").then((r) => r.json());
+    expect(log.find((e: any) => e.kind === "place" && e.what === "forget" && e.rx_device === OFF)).toMatchObject({ ok: true });
+    // A device on the network is never forgotten.
+    expect((await page.request.post("/api/forget", { data: { device: DEVICE } })).status()).toBe(409);
+  } finally {
+    child.kill("SIGTERM");
+    await page.request.post("/api/forget", { data: { device: OFF } });
   }
   expect(msgs).toEqual([]);
 });

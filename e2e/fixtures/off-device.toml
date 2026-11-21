@@ -1,0 +1,10 @@
+# A Dante device a spec switches on and then off (#122): its box must stay
+# on the Map as "not on the network". state_file is appended by the spec.
+name = "dc-e2e-switched"
+manufacturer = "dcontroller-e2e"
+model = "off-box"
+sample_rate = 48000
+encoding = 24
+latency_ns = 5000000
+rx = ["In L", "In R"]
+tx = ["Out L", "Out R"]

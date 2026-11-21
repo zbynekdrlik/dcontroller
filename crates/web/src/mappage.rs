@@ -52,6 +52,67 @@ async fn send_place(req: &dcontroller_api::Place) -> Result<dcontroller_api::Pla
     res.json().await.map_err(|e| e.to_string())
 }
 
+/// A device that was on the network and is not now (#122): when it was
+/// last seen, what it was, and the way to forget it once it is gone for
+/// good (an explicit, confirmed, logged action).
+#[component]
+fn AbsentDevice(absent: dcontroller_api::Absent) -> impl IntoView {
+    let name = StoredValue::new(absent.device.name.clone());
+    let note = RwSignal::new(String::new());
+    let what = [
+        absent.device.manufacturer.clone(),
+        absent.device.model.clone(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ");
+    let forget = move |_| {
+        let device = name.get_value();
+        let ask = format!(
+            "Forget {device}? Its box, its place and its last subscriptions leave the Map. It comes back when it is on the network again."
+        );
+        if !window().confirm_with_message(&ask).unwrap_or(false) {
+            return;
+        }
+        spawn_local(async move {
+            let req = dcontroller_api::Forget {
+                device: device.clone(),
+            };
+            let res = async {
+                let r = gloo_net::http::Request::post("/api/forget")
+                    .json(&req)
+                    .map_err(|e| e.to_string())?
+                    .send()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if r.ok() {
+                    Ok(())
+                } else {
+                    Err(format!("server answered {}", r.status()))
+                }
+            }
+            .await;
+            match res {
+                Ok(()) => {
+                    note.set(format!("{device} forgotten"));
+                    let _ = window().location().set_hash("#map");
+                }
+                Err(e) => note.set(format!("Not forgotten: {e}")),
+            }
+        });
+    };
+    view! {
+        <div class="panel absent" data-testid="map-dev-absent">
+            <p><b>"Not on the network"</b>{format!(" · last seen {}", map::ago_text(absent.ago_s))}
+                <span class="muted">{format!(" ({})", pages::time_text(absent.last_seen as i64))}</span></p>
+            <p class="muted small">{format!("{what} · its last record: the subscriptions it had then are its lines, not measured")}</p>
+            <button class="act" data-testid="map-forget" on:click=forget>{format!("Forget {}", absent.device.name)}</button>
+            <span class="muted small" data-testid="map-forget-note">{move || note.get()}</span>
+        </div>
+    }
+}
+
 async fn send_place_order(
     req: &dcontroller_api::PlaceOrder,
 ) -> Result<dcontroller_api::Places, String> {
@@ -452,7 +513,7 @@ pub fn MapPage() -> impl IntoView {
             if let Some(hash) = edge.get_attribute("data-edge") {
                 let _ = window().location().set_hash(&hash);
             }
-        } else if let Ok(Some(node)) = target.closest("g.node:not(.asio):not(.missing)")
+        } else if let Ok(Some(node)) = target.closest("g.node:not(.asio)")
             && let Some(name) = node.get_attribute("data-node")
         {
             // A second click on the chosen device lets the whole map back.
@@ -977,9 +1038,19 @@ pub fn MapPage() -> impl IntoView {
                         .cloned(),
                     _ => None,
                 });
-                let Some(dev) = dev else {
+                // Not on the network: its last record, if this server listed
+                // it before (#122).
+                let absent = ctl.devices.with(|d| match d {
+                    Some(Ok(d)) if dev.is_none() => d
+                        .absent
+                        .iter()
+                        .find(|x| hist::same_name(&x.device.name, &name))
+                        .cloned(),
+                    _ => None,
+                });
+                if dev.is_none() && graph.with(|g| map::node_of(g, &name).is_none()) {
                     return ().into_any();
-                };
+                }
                 // Its connections: into it, out of it, inside it.
                 let groups: Vec<(&'static str, &'static str, Vec<Row>)> = graph.with(|g| {
                     let Some(n) = map::node_of(g, &name) else {
@@ -1028,8 +1099,16 @@ pub fn MapPage() -> impl IntoView {
                     {tables}
                     {none.then(|| view! { <p class="muted" data-testid="map-dev-none">"No connection: nothing is subscribed to this device and it is subscribed to nothing."</p> })}
                     <h3 class="sub">"Device"</h3>
-                    <PlaceEdit device=dev.name.clone()/>
-                    <div class="device map-device" data-testid="map-device-body"><DeviceBody dev=dev/></div>
+                    <PlaceEdit device=name.clone()/>
+                    {match (dev, absent) {
+                        (Some(dev), _) => view! {
+                            <div class="device map-device" data-testid="map-device-body"><DeviceBody dev=dev/></div>
+                        }.into_any(),
+                        (None, Some(a)) => view! { <AbsentDevice absent=a/> }.into_any(),
+                        (None, None) => view! {
+                            <p class="muted" data-testid="map-dev-absent">"Not on the network: a device subscribes to it, and this server has never seen it."</p>
+                        }.into_any(),
+                    }}
                 }.into_any()
             }
         }

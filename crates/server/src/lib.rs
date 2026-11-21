@@ -7,6 +7,7 @@ pub mod dante;
 pub mod dsync;
 pub mod flows;
 pub mod history;
+pub mod known;
 pub mod latency;
 pub mod mdns;
 pub mod meters;
@@ -140,7 +141,76 @@ pub struct Shared {
 }
 
 async fn devices(State(s): State<Shared>) -> axum::Json<dcontroller_api::Devices> {
-    axum::Json(dante::snapshot(&s.dante))
+    let mut d = dante::snapshot(&s.dante);
+    // What was listed before and is not now (#122): its box stays on the Map.
+    let listed = d.devices.clone();
+    let store = std::sync::Arc::clone(&s.history);
+    d.absent =
+        tokio::task::spawn_blocking(move || known::absent(&store, &listed, history::unix_now()))
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!(error = %e, "known devices: task failed");
+                Vec::new()
+            });
+    axum::Json(d)
+}
+
+/// `POST /api/forget`: a device that is gone for good leaves the Map, and
+/// its place with it; logged with the changes.
+async fn forget(
+    State(s): State<Shared>,
+    headers: axum::http::HeaderMap,
+    axum::Json(req): axum::Json<dcontroller_api::Forget>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let who = user(&headers);
+    if req.device.is_empty() || req.device.chars().count() > 64 {
+        return Err((StatusCode::BAD_REQUEST, "not a device name".to_owned()));
+    }
+    let listed = dante::snapshot(&s.dante)
+        .devices
+        .iter()
+        .any(|d| d.name.eq_ignore_ascii_case(&req.device));
+    if listed {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "{} is on the network: only a device that is gone is forgotten",
+                req.device
+            ),
+        ));
+    }
+    let name = req.device.clone();
+    tokio::task::spawn_blocking(move || {
+        let done = s.history.forget(&req.device);
+        s.changes.log_made(&dcontroller_api::ChangeEntry {
+            at: u64::try_from(history::unix_now()).unwrap_or(0),
+            user: who,
+            kind: "place".to_owned(),
+            what: "forget".to_owned(),
+            rx_device: req.device.clone(),
+            ok: done.as_ref().is_ok_and(|n| *n),
+            message: match &done {
+                Ok(true) => "forgotten: off the Map until it is on the network again".to_owned(),
+                Ok(false) => "not known: nothing to forget".to_owned(),
+                Err(e) => format!("not forgotten: {e}"),
+            },
+            ..dcontroller_api::ChangeEntry::default()
+        });
+        done
+    })
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "forget: task failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, "task failed".to_owned())
+    })?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+    .and_then(|known| {
+        if known {
+            Ok(StatusCode::NO_CONTENT)
+        } else {
+            Err((StatusCode::NOT_FOUND, format!("{name} is not known")))
+        }
+    })
 }
 
 /// The user Cloudflare Access let in (its header); `local` without Access.
@@ -663,6 +733,7 @@ pub fn app(web_dir: &Path, shared: Shared) -> Router {
         .route("/api/links", get(links))
         .route("/api/places", get(places))
         .route("/api/place", axum::routing::post(place))
+        .route("/api/forget", axum::routing::post(forget))
         .route("/api/place-order", axum::routing::post(place_order))
         .route("/api/usage", get(usage).post(record_use))
         .route("/api/clocks", get(clocks_now))

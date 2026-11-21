@@ -29,5 +29,7 @@ ip link set e2e0 multicast on up
 ip addr add 10.199.0.1/24 dev e2e0
 # A second address for the bridge test device (#108).
 ip addr add 10.199.0.2/24 dev e2e0
+# A third for a device a spec switches on and off (#122).
+ip addr add 10.199.0.3/24 dev e2e0
 ip route add default via 10.199.0.254 dev e2e0 onlink
 exec "$@"

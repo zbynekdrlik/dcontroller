@@ -1112,6 +1112,14 @@ mod tests {
             interface: Some("eth1".into()),
             error: None,
             started_at: 1_700_000_000,
+            absent: vec![Absent {
+                device: Device {
+                    name: "obs-pc".into(),
+                    ..Device::default()
+                },
+                last_seen: 1_700_000_050,
+                ago_s: 60,
+            }],
             devices: vec![Device {
                 name: "stage-box".into(),
                 seen_at: 1_700_000_100,
