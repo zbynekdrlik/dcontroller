@@ -373,7 +373,7 @@ svg.map.has-device .edge:not(.of):not(.sel) { opacity: 0.1; }
 svg.map.has-device .edge.of { opacity: 1; }
 svg.map.has-device .node:not(.sel):not(.rel) { opacity: 0.3; }
 svg.map .area { fill: rgb(255 255 255 / 2.5%); stroke: var(--border); stroke-dasharray: 6 5; }
-/* A box being dragged (`mapdrag.js`): its name at the pointer, the place it
+/* A box being dragged (`drag.rs`): its name at the pointer, the place it
    would land in, the line where it would stand, the "new place" target. */
 svg.map .area.drop { stroke: var(--accent); stroke-dasharray: none; fill: var(--accent-soft); }
 svg.map { user-select: none; }

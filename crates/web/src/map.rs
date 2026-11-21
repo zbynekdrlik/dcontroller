@@ -1411,7 +1411,7 @@ pub fn svg_with(g: &Graph, p: &Placed, chosen: Option<&Sel>, show: &Show) -> Str
     }
     s.push_str("</defs>");
     // A place's name as the page's script reads it off an area or a box
-    // (`mapdrag.js`): empty for "no place set".
+    // (`drag.rs`): empty for "no place set".
     let place_at = |col: usize| {
         p.titles
             .get(col)
@@ -1431,7 +1431,7 @@ pub fn svg_with(g: &Graph, p: &Placed, chosen: Option<&Sel>, show: &Show) -> Str
     }
     for (c, (x, title)) in p.titles.iter().enumerate() {
         // A place's title is its handle: dragged, it moves the place among
-        // the places (`mapdrag.js`).
+        // the places (`drag.rs`).
         let handle = match place_at(c) {
             "" => String::new(),
             name => format!(r#" data-place="{}""#, esc(name)),

@@ -575,8 +575,8 @@ pub fn MapPage() -> impl IntoView {
         }
     };
     let chart_ref = NodeRef::<leptos::html::Div>::new();
-    // A box dragged on the schema (`mapdrag.js`): its place and its
-    // position there are stored, and the map is drawn by what came back.
+    // A box or a place's name dragged on the schema (`drag.rs`): the place
+    // and the position are stored, and the map is drawn by what came back.
     let map_ref = NodeRef::<leptos::html::Div>::new();
     let drag_wired = StoredValue::new(false);
     Effect::new(move |_| {
@@ -587,62 +587,36 @@ pub fn MapPage() -> impl IntoView {
             return;
         }
         drag_wired.set_value(true);
-        let on_place = wasm_bindgen::closure::Closure::<dyn Fn(web_sys::CustomEvent)>::new(
-            move |ev: web_sys::CustomEvent| {
-                let d = ev.detail();
-                let text = |k: &str| {
-                    js_sys::Reflect::get(&d, &wasm_bindgen::JsValue::from_str(k))
-                        .ok()
-                        .and_then(|v| v.as_string())
-                };
-                let (Some(device), Some(place)) = (text("device"), text("place")) else {
-                    return;
-                };
-                let req = dcontroller_api::Place {
-                    device,
-                    place,
-                    before: text("before"),
-                };
-                spawn_local(async move {
-                    match send_place(&req).await {
-                        Ok(p) => {
-                            m.places.set(Some(p));
-                            m.place_draft.set(None);
-                            m.place_note.set(String::new());
-                        }
-                        Err(e) => m.place_note.set(e),
+        let wrap: web_sys::Element = el.unchecked_into();
+        crate::drag::install(wrap, move |d| {
+            spawn_local(async move {
+                let r = match d {
+                    crate::drag::Dropped::Device {
+                        device,
+                        place,
+                        before,
+                    } => {
+                        send_place(&dcontroller_api::Place {
+                            device,
+                            place,
+                            before,
+                        })
+                        .await
                     }
-                });
-            },
-        );
-        // A place's title dragged: the place's position among the places.
-        let on_order = wasm_bindgen::closure::Closure::<dyn Fn(web_sys::CustomEvent)>::new(
-            move |ev: web_sys::CustomEvent| {
-                let d = ev.detail();
-                let text = |k: &str| {
-                    js_sys::Reflect::get(&d, &wasm_bindgen::JsValue::from_str(k))
-                        .ok()
-                        .and_then(|v| v.as_string())
-                };
-                let (Some(place), Some(before)) = (text("place"), text("before")) else {
-                    return;
-                };
-                let req = dcontroller_api::PlaceOrder { place, before };
-                spawn_local(async move {
-                    match send_place_order(&req).await {
-                        Ok(p) => m.places.set(Some(p)),
-                        Err(e) => m.place_note.set(e),
+                    crate::drag::Dropped::Place { place, before } => {
+                        send_place_order(&dcontroller_api::PlaceOrder { place, before }).await
                     }
-                });
-            },
-        );
-        let target: &web_sys::EventTarget = el.unchecked_ref();
-        let _ =
-            target.add_event_listener_with_callback("dc-place", on_place.as_ref().unchecked_ref());
-        let _ = target
-            .add_event_listener_with_callback("dc-place-order", on_order.as_ref().unchecked_ref());
-        on_place.forget();
-        on_order.forget();
+                };
+                match r {
+                    Ok(p) => {
+                        m.places.set(Some(p));
+                        m.place_draft.set(None);
+                        m.place_note.set(String::new());
+                    }
+                    Err(e) => m.place_note.set(e),
+                }
+            });
+        });
     });
     let wired = StoredValue::new(false);
     // The chosen connection's chart, on every new read and every choice.
