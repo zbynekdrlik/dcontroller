@@ -313,6 +313,10 @@ svg.map .node { cursor: pointer; }
 svg.map .node:hover rect { stroke: var(--accent); stroke-width: 2; }
 svg.map .node.asio, svg.map .node.missing { cursor: default; }
 svg.map .node.asio rect, svg.map .node.missing rect { fill: none; stroke-dasharray: 5 4; }
+/* No fill, yet the whole box takes the mouse: a switched-off device is
+   dragged to its place like any other (#122). */
+svg.map .node.missing rect { pointer-events: all; }
+svg.map .node.missing { cursor: grab; }
 svg.map .node.asio:hover rect, svg.map .node.missing:hover rect { stroke: var(--border); stroke-width: 1.2; }
 svg.map .node text { pointer-events: none; fill: var(--text); font-size: 13.5px; font-weight: 650; }
 svg.map .node text.sub { fill: var(--muted); font-size: 11px; font-weight: 400; }
