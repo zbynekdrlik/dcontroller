@@ -418,6 +418,42 @@ impl Store {
         Ok(api::Places { places, names })
     }
 
+    /// Puts `place` before the place `before` among the places (empty:
+    /// last). Gives the order of the places in use after it.
+    pub fn order_place(&self, place: &str, before: &str) -> Result<Vec<String>, String> {
+        {
+            let mut db = self.conn();
+            let tx = db.transaction().map_err(|e| e.to_string())?;
+            let mut names: Vec<String> = {
+                let mut q = tx
+                    .prepare("SELECT name FROM place_name ORDER BY pos")
+                    .map_err(|e| e.to_string())?;
+                q.query_map([], |r| r.get(0))
+                    .map_err(|e| e.to_string())?
+                    .collect::<Result<Vec<String>, _>>()
+                    .map_err(|e| e.to_string())?
+            };
+            if !names.iter().any(|n| n == place) {
+                return Err(format!("no such place: {place}"));
+            }
+            names.retain(|n| n != place);
+            let at = names
+                .iter()
+                .position(|n| n == before)
+                .unwrap_or(names.len());
+            names.insert(at, place.to_owned());
+            for (i, n) in names.iter().enumerate() {
+                tx.execute(
+                    "UPDATE place_name SET pos = ?2 WHERE name = ?1",
+                    params![n, i as i64 + 1],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            tx.commit().map_err(|e| e.to_string())?;
+        }
+        Ok(self.places()?.names)
+    }
+
     /// Puts `device` in `place` (empty: in none), before the device
     /// `ahead` there (`Some("")`: at the end; `None`: where it is when it
     /// is in that place already, else at the end). Gives the place before.
@@ -1745,6 +1781,13 @@ mod tests {
         assert_eq!(st.set_place("amp", "FOH", None).unwrap(), None);
         assert_eq!(all()[0], place("amp", "FOH"));
         assert_eq!(st.places().unwrap().names, ["FOH", "Stage"]);
+        // The places put in another order: Stage first; its devices lead.
+        assert_eq!(st.order_place("Stage", "FOH").unwrap(), ["Stage", "FOH"]);
+        assert_eq!(all()[0].place, "Stage");
+        assert_eq!(all().last().unwrap(), &place("amp", "FOH"));
+        // Last again; a place that does not exist is refused.
+        assert_eq!(st.order_place("Stage", "").unwrap(), ["FOH", "Stage"]);
+        assert!(st.order_place("Attic", "").is_err());
     }
 
     #[test]

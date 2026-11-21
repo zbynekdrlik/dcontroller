@@ -457,7 +457,7 @@ test("a device is dragged on the map: to a new place, into another place, up and
   });
   page.on("pageerror", (e) => msgs.push(`pageerror: ${e.message}`));
   const clear = async () => {
-    for (const device of [DEVICE, BRIDGE]) {
+    for (const device of [DEVICE, BRIDGE, "cam-e2e"]) {
       expect((await page.request.post("/api/place", { data: { device, place: "" } })).status()).toBe(200);
     }
   };
@@ -531,6 +531,37 @@ test("a device is dragged on the map: to a new place, into another place, up and
     await page.reload();
     await expect(node(DEVICE)).toBeVisible({ timeout: 40_000 });
     await expect.poll(async () => (await box(node(BRIDGE))).y < (await box(node(DEVICE))).y).toBe(true);
+
+    // The places themselves: a place is taken by its name and put before
+    // another. A second place first, by the field's route.
+    expect((await page.request.post("/api/place", { data: { device: "cam-e2e", place: "FOH" } })).status()).toBe(200);
+    const titles = map.locator(".col-title");
+    // Set past the page: it reads the places on its 10 s poll.
+    await expect(titles).toHaveText(["Stage", "FOH", "no place set"], { timeout: 30_000 });
+    const dragPlace = async (name: string, x: () => Promise<number>) => {
+      const h = (await map.locator(`.col-title[data-place="${name}"]`).boundingBox())!;
+      await page.mouse.move(h.x + h.width / 2, h.y + h.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(h.x + h.width / 2 + 30, h.y + h.height / 2 + 12, { steps: 4 });
+      await expect(page.locator(".map-drag-ghost")).toHaveText(name);
+      // No device is being placed: no "new place" target.
+      await expect(page.getByTestId("map-new-place")).toHaveCount(0);
+      await page.mouse.move(await x(), h.y + 60, { steps: 8 });
+      await page.mouse.up();
+    };
+    await dragPlace("FOH", async () => (await area("Stage").boundingBox())!.x + 10);
+    await expect(titles).toHaveText(["FOH", "Stage", "no place set"]);
+    expect((await page.request.get("/api/places").then((r) => r.json())).names).toEqual(["FOH", "Stage"]);
+    // "no place set" has no handle and stays last: FOH dropped at the far
+    // right stands before it.
+    await expect(map.locator(".col-title:not([data-place])")).toHaveText(["no place set"]);
+    await dragPlace("FOH", async () => (await area("").boundingBox())!.x + 100);
+    await expect(titles).toHaveText(["Stage", "FOH", "no place set"]);
+    const order = (await page.request.get("/api/changes").then((r) => r.json())).find((e: any) => e.kind === "place" && e.what === "order");
+    expect(order).toMatchObject({ ok: true, rx_label: "FOH", name_asked: "FOH last", name_after: "Stage · FOH" });
+    expect((await page.request.post("/api/place-order", { data: { place: "Attic", before: "" } })).status()).toBe(400);
+    expect((await page.request.post("/api/place", { data: { device: "cam-e2e", place: "" } })).status()).toBe(200);
+    await expect(titles).toHaveText(["Stage", "no place set"], { timeout: 30_000 });
 
     // Let go beside every area: nothing changes.
     await drag(DEVICE, async () => ({ x: 20, y: 880 }));
