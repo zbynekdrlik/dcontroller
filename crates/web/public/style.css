@@ -377,6 +377,8 @@ svg.map .area { fill: rgb(255 255 255 / 2.5%); stroke: var(--border); stroke-das
    would land in, the line where it would stand, the "new place" target. */
 svg.map .area.drop { stroke: var(--accent); stroke-dasharray: none; fill: var(--accent-soft); }
 svg.map { user-select: none; }
+svg.map .col-title[data-place] { cursor: grab; }
+svg.map .col-title[data-place]:hover { fill: var(--text); }
 body.map-dragging { cursor: grabbing; user-select: none; }
 .map-drag-ghost { position: fixed; z-index: 40; pointer-events: none; padding: 0.35rem 0.7rem; font-weight: 650; font-size: 0.88rem;
   background: var(--surface-3); border: 1px solid var(--accent); border-radius: var(--radius-s); box-shadow: 0 8px 24px rgb(0 0 0 / 50%); }

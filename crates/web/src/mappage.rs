@@ -52,6 +52,25 @@ async fn send_place(req: &dcontroller_api::Place) -> Result<dcontroller_api::Pla
     res.json().await.map_err(|e| e.to_string())
 }
 
+async fn send_place_order(
+    req: &dcontroller_api::PlaceOrder,
+) -> Result<dcontroller_api::Places, String> {
+    let res = gloo_net::http::Request::post("/api/place-order")
+        .json(req)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.ok() {
+        let why = res.text().await.unwrap_or_default();
+        return Err(format!(
+            "not stored: server answered {} {why}",
+            res.status()
+        ));
+    }
+    res.json().await.map_err(|e| e.to_string())
+}
+
 /// A device's place on the Map (#122): named here, stored on the box and
 /// logged with the changes. Devices of one place stand in one area.
 #[component]
@@ -535,10 +554,34 @@ pub fn MapPage() -> impl IntoView {
                 });
             },
         );
+        // A place's title dragged: the place's position among the places.
+        let on_order = wasm_bindgen::closure::Closure::<dyn Fn(web_sys::CustomEvent)>::new(
+            move |ev: web_sys::CustomEvent| {
+                let d = ev.detail();
+                let text = |k: &str| {
+                    js_sys::Reflect::get(&d, &wasm_bindgen::JsValue::from_str(k))
+                        .ok()
+                        .and_then(|v| v.as_string())
+                };
+                let (Some(place), Some(before)) = (text("place"), text("before")) else {
+                    return;
+                };
+                let req = dcontroller_api::PlaceOrder { place, before };
+                spawn_local(async move {
+                    match send_place_order(&req).await {
+                        Ok(p) => m.places.set(Some(p)),
+                        Err(e) => m.place_note.set(e),
+                    }
+                });
+            },
+        );
         let target: &web_sys::EventTarget = el.unchecked_ref();
         let _ =
             target.add_event_listener_with_callback("dc-place", on_place.as_ref().unchecked_ref());
+        let _ = target
+            .add_event_listener_with_callback("dc-place-order", on_order.as_ref().unchecked_ref());
         on_place.forget();
+        on_order.forget();
     });
     let wired = StoredValue::new(false);
     // The chosen connection's chart, on every new read and every choice.
@@ -1259,6 +1302,7 @@ pub fn MapPage() -> impl IntoView {
                 <span>"number on a line: the receiver's latency for that connection"</span>
                 <span>"click a device: only its connections stay bright; click it again for all"</span>
                 <span>"drag a device: to another place, to a new one, or up and down in its place"</span>
+                <span>"drag a place's name: the place moves among the places"</span>
             </div>
         </section>
         <section class="panel" data-testid="map-detail"

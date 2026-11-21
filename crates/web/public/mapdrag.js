@@ -2,6 +2,8 @@
 // place, onto "new place", onto "no place set", or up and down inside its
 // place. Works on the drawn SVG and reports the drop as a `dc-place` event
 // on the map's wrapper ({device, place, before}); the page stores it.
+// A place's title is dragged the same way to move the place among the
+// places (`dc-place-order`, {place, before}).
 // Mouse only: a finger on the schema scrolls the page.
 (function () {
   "use strict";
@@ -38,7 +40,30 @@
     return null;
   }
 
+  // A place being moved: the place it would stand before ("" for last),
+  // and the line that shows it.
+  function slot(d, x) {
+    const areas = Array.from(d.wrap.querySelectorAll("svg.map rect.area"))
+      .map((a) => ({ place: a.getAttribute("data-place") || "", r: a.getBoundingClientRect() }))
+      .filter((a) => a.place !== d.place)
+      .sort((a, b) => a.r.left - b.r.left);
+    if (!areas.length) return null;
+    // "no place set" stays last: a place goes before it at the most.
+    const named = areas.filter((a) => a.place !== "");
+    const next = named.find((a) => (a.r.left + a.r.right) / 2 > x);
+    const last = named[named.length - 1];
+    const ref = next || last || areas[0];
+    const left = next ? next.r.left - 14 : last ? last.r.right + 11 : ref.r.left - 14;
+    return { kind: "slot", before: next ? next.place : "", line: { left, top: ref.r.top, height: ref.r.height } };
+  }
+
   function show(d, t) {
+    if (d.kind === "place") {
+      d.line.style.cssText = t
+        ? `display:block;left:${t.line.left}px;top:${t.line.top}px;width:3px;height:${t.line.height}px`
+        : "display:none";
+      return;
+    }
     d.wrap.querySelectorAll("svg.map rect.area.drop").forEach((a) => a.classList.remove("drop"));
     d.zone.classList.toggle("drop", !!t && t.kind === "new");
     // In "no place set" the order is the program's: no line there.
@@ -52,15 +77,16 @@
 
   function start(d) {
     d.on = true;
-    d.ghost = el("map-drag-ghost", d.name);
+    d.ghost = el("map-drag-ghost", d.name || d.place);
     d.line = el("map-drag-line");
+    document.body.classList.add("map-dragging");
+    if (d.kind === "place") return;
     d.zone = el("map-drag-new", "+ new place");
     d.zone.setAttribute("data-testid", "map-new-place");
     const w = d.wrap.getBoundingClientRect();
     const top = Math.max(w.top, 8);
     const height = Math.max(Math.min(w.bottom, window.innerHeight - 8) - top, 60);
     d.zone.style.cssText = `left:${w.right - 150}px;top:${top}px;height:${height}px`;
-    document.body.classList.add("map-dragging");
   }
 
   function end(d) {
@@ -71,10 +97,13 @@
 
   document.addEventListener("pointerdown", (e) => {
     if (e.button !== 0 || e.pointerType !== "mouse" || !(e.target instanceof Element)) return;
-    const node = e.target.closest("svg.map g.node:not(.asio)");
-    const wrap = node && node.closest("[data-drag]");
+    const title = e.target.closest("svg.map text.col-title[data-place]");
+    const node = title ? null : e.target.closest("svg.map g.node:not(.asio)");
+    const wrap = (title || node) && (title || node).closest("[data-drag]");
     if (!wrap) return;
-    drag = { name: node.getAttribute("data-node"), wrap, x: e.clientX, y: e.clientY, on: false };
+    drag = title
+      ? { kind: "place", place: title.getAttribute("data-place"), wrap, x: e.clientX, y: e.clientY, on: false }
+      : { kind: "device", name: node.getAttribute("data-node"), wrap, x: e.clientX, y: e.clientY, on: false };
   });
 
   document.addEventListener("pointermove", (e) => {
@@ -87,19 +116,24 @@
     e.preventDefault();
     d.ghost.style.left = `${e.clientX + 12}px`;
     d.ghost.style.top = `${e.clientY + 12}px`;
-    show(d, target(d, e.clientX, e.clientY));
+    show(d, d.kind === "place" ? slot(d, e.clientX) : target(d, e.clientX, e.clientY));
   });
 
   const drop = (e) => {
     const d = drag;
     drag = null;
     if (!d || !d.on) return;
-    const t = e.type === "pointerup" ? target(d, e.clientX, e.clientY) : null;
+    const up = e.type === "pointerup";
+    const t = !up ? null : d.kind === "place" ? slot(d, e.clientX) : target(d, e.clientX, e.clientY);
     end(d);
     // The click that ends a drag is not a choice of that device.
     suppress = true;
     setTimeout(() => (suppress = false), 0);
     if (!t) return;
+    if (t.kind === "slot") {
+      d.wrap.dispatchEvent(new CustomEvent("dc-place-order", { detail: { place: d.place, before: t.before } }));
+      return;
+    }
     let detail = null;
     if (t.kind === "new") {
       const name = (window.prompt(`A new place for ${d.name}: its name`) || "").trim().slice(0, 40);

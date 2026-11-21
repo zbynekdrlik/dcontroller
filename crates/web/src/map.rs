@@ -1202,8 +1202,10 @@ pub fn layout(g: &Graph) -> Placed {
     let mut labels: Vec<Option<Rect>> = vec![None; paths.len()];
     for k in by_width {
         let (_, spots, lw) = &paths[k];
+        // A label stays on the schema: an arc at the edge has its own
+        // beside it, not half past the edge.
         let boxed = |(x, y): (f64, f64)| Rect {
-            x: x - lw / 2.0,
+            x: (x - lw / 2.0).clamp(4.0, (width - lw - 4.0).max(4.0)),
             y: y - LABEL_H / 2.0,
             w: *lw,
             h: LABEL_H,
@@ -1354,9 +1356,15 @@ pub fn svg_with(g: &Graph, p: &Placed, chosen: Option<&Sel>, show: &Show) -> Str
             r.h
         ));
     }
-    for (x, title) in &p.titles {
+    for (c, (x, title)) in p.titles.iter().enumerate() {
+        // A place's title is its handle: dragged, it moves the place among
+        // the places (`mapdrag.js`).
+        let handle = match place_at(c) {
+            "" => String::new(),
+            name => format!(r#" data-place="{}""#, esc(name)),
+        };
         s.push_str(&format!(
-            r#"<text class="col-title" x="{x}" y="22">{}</text>"#,
+            r#"<text class="col-title"{handle} x="{x}" y="22">{}</text>"#,
             esc(title)
         ));
     }
@@ -2004,6 +2012,9 @@ mod tests {
         assert!(s.contains(r#"data-testid="map-area" data-place="""#));
         assert!(s.contains(r#"data-node="amp" data-place="FOH""#));
         assert!(s.contains(r#"data-node="spare" data-place="""#));
+        // A place's title is the handle to move it; "no place set" has none.
+        assert!(s.contains(r#"<text class="col-title" data-place="Stage""#));
+        assert!(s.contains(r#"<text class="col-title" x="#));
         assert_eq!(s.matches(r#"data-testid="map-area""#).count(), 3);
         assert!(s.contains(">Stage</text>") && s.contains(">no place set</text>"));
         assert!(s.contains(&format!(r#"viewBox="0 0 {:.0} "#, p.width)));

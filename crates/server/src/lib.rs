@@ -566,6 +566,53 @@ async fn place(
     })
 }
 
+/// `POST /api/place-order`: puts a place before another among the places,
+/// and logs it with the changes.
+async fn place_order(
+    State(s): State<Shared>,
+    headers: axum::http::HeaderMap,
+    axum::Json(req): axum::Json<dcontroller_api::PlaceOrder>,
+) -> Result<axum::Json<dcontroller_api::Places>, (StatusCode, String)> {
+    let who = user(&headers);
+    let long = |t: &str| t.chars().count() > dcontroller_api::PLACE_LEN;
+    if req.place.is_empty() || long(&req.place) || long(&req.before) {
+        return Err((StatusCode::BAD_REQUEST, "not a place's name".to_owned()));
+    }
+    tokio::task::spawn_blocking(move || {
+        let done = s.history.order_place(&req.place, &req.before);
+        s.changes.log_made(&dcontroller_api::ChangeEntry {
+            at: u64::try_from(history::unix_now()).unwrap_or(0),
+            user: who,
+            kind: "place".to_owned(),
+            what: "order".to_owned(),
+            rx_label: req.place.clone(),
+            name_asked: Some(if req.before.is_empty() {
+                format!("{} last", req.place)
+            } else {
+                format!("{} before {}", req.place, req.before)
+            }),
+            name_after: done.as_ref().ok().map(|n| n.join(" · ")),
+            ok: done.is_ok(),
+            message: match &done {
+                Ok(_) => "order of the places on the Map set".to_owned(),
+                Err(e) => format!("not stored: {e}"),
+            },
+            ..dcontroller_api::ChangeEntry::default()
+        });
+        done.and_then(|_| s.history.places())
+    })
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "place order: task failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, "task failed".to_owned())
+    })?
+    .map(axum::Json)
+    .map_err(|e| {
+        tracing::warn!(error = %e, "place order: not stored");
+        (StatusCode::BAD_REQUEST, e)
+    })
+}
+
 async fn changes(
     State(s): State<Shared>,
 ) -> Result<axum::Json<Vec<dcontroller_api::ChangeEntry>>, StatusCode> {
@@ -616,6 +663,7 @@ pub fn app(web_dir: &Path, shared: Shared) -> Router {
         .route("/api/links", get(links))
         .route("/api/places", get(places))
         .route("/api/place", axum::routing::post(place))
+        .route("/api/place-order", axum::routing::post(place_order))
         .route("/api/usage", get(usage).post(record_use))
         .route("/api/clocks", get(clocks_now))
         .route("/api/meters/{device}", get(meter_report))

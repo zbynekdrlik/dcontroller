@@ -991,6 +991,7 @@ fn change_target(e: &ChangeEntry) -> String {
             e.rx_channel, e.rx_device
         ),
         ("multicast", _) => format!("new multicast flow @ {}", e.rx_device),
+        ("place", "order") => format!("order of the places on the Map: {}", e.rx_label),
         ("place", _) => format!("place on the Map @ {}", e.rx_device),
         ("status", "mdns") => format!("mDNS sender {} ({})", e.rx_label, e.rx_device),
         ("status", "mdns-browser") => {

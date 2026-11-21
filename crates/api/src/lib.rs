@@ -339,6 +339,15 @@ pub struct Place {
     pub before: Option<String>,
 }
 
+/// `POST /api/place-order`: puts a place before another among the places
+/// (`before` empty: last).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlaceOrder {
+    pub place: String,
+    pub before: String,
+}
+
 /// The longest place name kept.
 pub const PLACE_LEN: usize = 40;
 
