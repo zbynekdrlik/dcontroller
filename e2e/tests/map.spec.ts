@@ -357,6 +357,8 @@ test("a device gets a place: the map draws the places as areas, the change is lo
   const map = page.getByTestId("map");
   const node = (name: string) => map.locator(`[data-testid="map-node"][data-node="${name}"]`);
   await expect(node(DEVICE)).toBeVisible({ timeout: 40_000 });
+  // The video nodes come with the server's first good read of their list.
+  await expect(node("cam-e2e")).toBeVisible({ timeout: 90_000 });
   try {
     // No place yet: the columns, no area.
     await expect(map.locator('[data-testid="map-area"]')).toHaveCount(0);
@@ -440,6 +442,107 @@ test("a device gets a place: the map draws the places as areas, the change is lo
     await expect(node(DEVICE)).toBeVisible({ timeout: 40_000 });
     await expect(map.locator('[data-testid="map-area"]')).toHaveCount(0);
     await expect(map.locator(".col-title").first()).toContainText(/sends|receives/);
+  } finally {
+    await clear();
+  }
+  expect(msgs).toEqual([]);
+});
+
+// #122, dragging: the owner moves a box with the mouse instead of typing a
+// place for each device, and orders the boxes of a place himself.
+test("a device is dragged on the map: to a new place, into another place, up and down in it, and out of every place", async ({ page }) => {
+  const msgs: string[] = [];
+  page.on("console", (m: ConsoleMessage) => {
+    if (m.type() === "error" || m.type() === "warning") msgs.push(`${m.type()}: ${m.text()}`);
+  });
+  page.on("pageerror", (e) => msgs.push(`pageerror: ${e.message}`));
+  const clear = async () => {
+    for (const device of [DEVICE, BRIDGE]) {
+      expect((await page.request.post("/api/place", { data: { device, place: "" } })).status()).toBe(200);
+    }
+  };
+  const stored = async () =>
+    (await page.request.get("/api/places").then((r) => r.json())).places.map((p: any) => `${p.device}@${p.place}`);
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await clear();
+  await page.goto("/#map");
+  const map = page.getByTestId("map");
+  const node = (name: string) => map.locator(`[data-testid="map-node"][data-node="${name}"]`);
+  const area = (place: string) => map.locator(`[data-testid="map-area"][data-place="${place}"]`);
+  // A box's place on the screen; the schema is drawn again on a change,
+  // so a box may be gone for a moment.
+  const box = async (l: ReturnType<typeof node>) => {
+    for (let i = 0; i < 50; i++) {
+      const b = await l.locator("rect").first().boundingBox().catch(() => null);
+      if (b) return b;
+      await page.waitForTimeout(100);
+    }
+    throw new Error("the box is not on the map");
+  };
+  await expect(node(DEVICE)).toBeVisible({ timeout: 40_000 });
+  await expect(node(BRIDGE)).toBeVisible({ timeout: 40_000 });
+  await expect(node("cam-e2e")).toBeVisible({ timeout: 90_000 });
+  // Takes the box of `name` and lets it go at the point `to` gives once the
+  // drag has begun (the "new place" target is there only while dragging).
+  const drag = async (name: string, to: () => Promise<{ x: number; y: number }>) => {
+    const b = await box(node(name));
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(b.x + b.width / 2 + 30, b.y + b.height / 2 + 10, { steps: 4 });
+    await expect(page.getByTestId("map-new-place")).toBeVisible();
+    await expect(page.locator(".map-drag-ghost")).toHaveText(name);
+    const p = await to();
+    await page.mouse.move(p.x, p.y, { steps: 8 });
+    await page.mouse.up();
+    await expect(page.getByTestId("map-new-place")).toHaveCount(0);
+  };
+  const middle = (r: { x: number; y: number; width: number; height: number }) => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
+  try {
+    // No place yet: the box goes to "new place", which asks its name once.
+    page.once("dialog", (d) => d.accept("  Stage "));
+    await drag(DEVICE, async () => middle((await page.getByTestId("map-new-place").boundingBox())!));
+    await expect.poll(stored).toEqual([`${DEVICE}@Stage`]);
+    await expect(map.locator(".col-title")).toHaveText(["Stage", "no place set"]);
+    // A drag is not a click: no device was chosen.
+    await expect(page).toHaveURL(/#map$/);
+
+    // Into that place, under the device there.
+    await drag(BRIDGE, async () => {
+      const a = (await area("Stage").boundingBox())!;
+      const d = await box(node(DEVICE));
+      return { x: a.x + a.width / 2, y: d.y + d.height + 30 };
+    });
+    await expect.poll(stored).toEqual([`${DEVICE}@Stage`, `${BRIDGE}@Stage`]);
+    await expect(map.locator('[data-testid="map-area"]')).toHaveCount(2);
+    await expect.poll(async () => (await box(node(DEVICE))).y < (await box(node(BRIDGE))).y).toBe(true);
+    // Its ASIO side came along, under it.
+    expect((await box(node("SoundGrid"))).y).toBeGreaterThan((await box(node(BRIDGE))).y);
+
+    // Up: above the first one, and the map stands so.
+    await drag(BRIDGE, async () => {
+      const a = (await area("Stage").boundingBox())!;
+      const d = await box(node(DEVICE));
+      return { x: a.x + a.width / 2, y: d.y + 6 };
+    });
+    await expect.poll(stored).toEqual([`${BRIDGE}@Stage`, `${DEVICE}@Stage`]);
+    await expect.poll(async () => (await box(node(BRIDGE))).y < (await box(node(DEVICE))).y).toBe(true);
+    await page.screenshot({ path: "test-results/map-drag.png" });
+    // It holds after a reload.
+    await page.reload();
+    await expect(node(DEVICE)).toBeVisible({ timeout: 40_000 });
+    await expect.poll(async () => (await box(node(BRIDGE))).y < (await box(node(DEVICE))).y).toBe(true);
+
+    // Let go beside every area: nothing changes.
+    await drag(DEVICE, async () => ({ x: 20, y: 880 }));
+    await page.waitForTimeout(500);
+    expect(await stored()).toEqual([`${BRIDGE}@Stage`, `${DEVICE}@Stage`]);
+
+    // Out: onto "no place set".
+    await drag(DEVICE, async () => middle((await area("").boundingBox())!));
+    await expect.poll(stored).toEqual([`${BRIDGE}@Stage`]);
+    // Each drop is in the changes log.
+    const log = await page.request.get("/api/changes").then((r) => r.json());
+    expect(log.filter((e: any) => e.kind === "place" && e.rx_device === DEVICE && e.ok).length).toBeGreaterThanOrEqual(2);
   } finally {
     await clear();
   }

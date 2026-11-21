@@ -91,6 +91,7 @@ fn PlaceEdit(
         let req = dcontroller_api::Place {
             device: dev.get_value(),
             place: text.get_untracked().trim().to_owned(),
+            before: None,
         };
         spawn_local(async move {
             match send_place(&req).await {
@@ -494,6 +495,51 @@ pub fn MapPage() -> impl IntoView {
         }
     };
     let chart_ref = NodeRef::<leptos::html::Div>::new();
+    // A box dragged on the schema (`mapdrag.js`): its place and its
+    // position there are stored, and the map is drawn by what came back.
+    let map_ref = NodeRef::<leptos::html::Div>::new();
+    let drag_wired = StoredValue::new(false);
+    Effect::new(move |_| {
+        let Some(el) = map_ref.get() else {
+            return;
+        };
+        if drag_wired.get_value() {
+            return;
+        }
+        drag_wired.set_value(true);
+        let on_place = wasm_bindgen::closure::Closure::<dyn Fn(web_sys::CustomEvent)>::new(
+            move |ev: web_sys::CustomEvent| {
+                let d = ev.detail();
+                let text = |k: &str| {
+                    js_sys::Reflect::get(&d, &wasm_bindgen::JsValue::from_str(k))
+                        .ok()
+                        .and_then(|v| v.as_string())
+                };
+                let (Some(device), Some(place)) = (text("device"), text("place")) else {
+                    return;
+                };
+                let req = dcontroller_api::Place {
+                    device,
+                    place,
+                    before: text("before"),
+                };
+                spawn_local(async move {
+                    match send_place(&req).await {
+                        Ok(p) => {
+                            m.places.set(Some(p));
+                            m.place_draft.set(None);
+                            m.place_note.set(String::new());
+                        }
+                        Err(e) => m.place_note.set(e),
+                    }
+                });
+            },
+        );
+        let target: &web_sys::EventTarget = el.unchecked_ref();
+        let _ =
+            target.add_event_listener_with_callback("dc-place", on_place.as_ref().unchecked_ref());
+        on_place.forget();
+    });
     let wired = StoredValue::new(false);
     // The chosen connection's chart, on every new read and every choice.
     let has_chart = Memo::new(move |_| match shown.get() {
@@ -1201,7 +1247,7 @@ pub fn MapPage() -> impl IntoView {
         </section>
         <section class="panel" data-testid="map-panel"
             style=move || if m.view.get() == MapView::Schema { "" } else { "display:none" }>
-            <div class="map-wrap" data-testid="map" on:click=click
+            <div class="map-wrap" data-testid="map" data-drag="1" node_ref=map_ref on:click=click
                 on:mouseover=move |ev| focus(ev, true) on:mouseout=move |ev| focus(ev, false)
                 inner_html=drawing></div>
             <div class="legend">
@@ -1212,6 +1258,7 @@ pub fn MapPage() -> impl IntoView {
                 <span><i class="unknown"></i>"not measured"</span>
                 <span>"number on a line: the receiver's latency for that connection"</span>
                 <span>"click a device: only its connections stay bright; click it again for all"</span>
+                <span>"drag a device: to another place, to a new one, or up and down in its place"</span>
             </div>
         </section>
         <section class="panel" data-testid="map-detail"

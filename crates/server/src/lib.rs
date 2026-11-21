@@ -483,6 +483,13 @@ pub fn validate_place(req: &dcontroller_api::Place) -> Result<(), String> {
     if req.device.is_empty() || req.device.chars().count() > 64 || bad(&req.device) {
         return Err("not a device name".to_owned());
     }
+    if req
+        .before
+        .as_ref()
+        .is_some_and(|b| b.chars().count() > 64 || bad(b))
+    {
+        return Err("not a device name to stand before".to_owned());
+    }
     if req.place != req.place.trim() || bad(&req.place) {
         return Err("a place is plain text with no space at its ends".to_owned());
     }
@@ -525,7 +532,9 @@ async fn place(
         (StatusCode::BAD_REQUEST, e)
     })?;
     tokio::task::spawn_blocking(move || {
-        let done = s.history.set_place(&req.device, &req.place);
+        let done = s
+            .history
+            .set_place(&req.device, &req.place, req.before.as_deref());
         let asked = (!req.place.is_empty()).then(|| req.place.clone());
         s.changes.log_made(&dcontroller_api::ChangeEntry {
             at: u64::try_from(history::unix_now()).unwrap_or(0),
