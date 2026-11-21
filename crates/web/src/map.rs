@@ -265,6 +265,19 @@ pub struct Show {
     pub find: String,
 }
 
+/// How long ago a device was last seen, in words.
+pub fn ago_text(s: u64) -> String {
+    match s {
+        0..60 => "just now".to_owned(),
+        60..3600 => format!("{} min ago", s / 60),
+        3600..86_400 => format!("{} h ago", s / 3600),
+        _ => match s / 86_400 {
+            1 => "1 day ago".to_owned(),
+            n => format!("{n} days ago"),
+        },
+    }
+}
+
 /// `n` with a space between thousands.
 pub fn num(n: u64) -> String {
     let digits = n.to_string();
@@ -511,7 +524,36 @@ pub fn build(d: &Devices, links: Option<&Links>, span: Span) -> Graph {
             .iter()
             .position(|n| n.kind != NodeKind::Asio && n.name.eq_ignore_ascii_case(name))
     };
-    for (to, dev) in d.devices.iter().enumerate() {
+    // A device that was listed and is not now keeps its box (#122): it was
+    // switched off, and the owner still needs to see it and its place.
+    let mut gone: Vec<(usize, &dcontroller_api::Device)> = Vec::new();
+    for a in &d.absent {
+        if find(&g, &a.device.name).is_some() {
+            continue;
+        }
+        g.nodes.push(Node {
+            name: a.device.name.clone(),
+            kind: NodeKind::Missing,
+            lines: [
+                "not on the network".to_owned(),
+                format!("last seen {}", ago_text(a.ago_s)),
+            ],
+            badge: None,
+            dsync: None,
+            of: None,
+            tx: a.device.channels.as_ref().map_or(1, |c| c.tx.len()),
+            rx: a.device.channels.as_ref().map_or(0, |c| c.rx.len()),
+        });
+        gone.push((g.nodes.len() - 1, &a.device));
+    }
+    let receivers = d
+        .devices
+        .iter()
+        .enumerate()
+        .map(|(i, dev)| (i, dev, false))
+        .chain(gone.into_iter().map(|(i, dev)| (i, dev, true)))
+        .collect::<Vec<_>>();
+    for (to, dev, off) in receivers {
         let Some(ch) = dev.channels.as_ref() else {
             continue;
         };
@@ -547,7 +589,9 @@ pub fn build(d: &Devices, links: Option<&Links>, span: Span) -> Graph {
                     g.nodes.len() - 1
                 }
             };
-            let sum = summary_of(links, &source, &dev.name);
+            // A receiver that is off measures nothing: its lines are its
+            // last subscriptions, not measured.
+            let sum = summary_of(links, &source, &dev.name).filter(|_| !off);
             let set = dev
                 .settings
                 .as_ref()
@@ -774,9 +818,11 @@ pub fn edge_of<'a>(g: &'a Graph, sel: &Sel) -> Option<&'a Edge> {
 
 /// The device's box `name` names (no ASIO side, no missing source).
 pub fn node_of(g: &Graph, name: &str) -> Option<usize> {
-    g.nodes
-        .iter()
-        .position(|n| n.kind == NodeKind::Device && n.name.eq_ignore_ascii_case(name))
+    // A device that is not on the network is chosen too (#122): its place
+    // and its last lines are shown, and it can be forgotten.
+    g.nodes.iter().position(|n| {
+        matches!(n.kind, NodeKind::Device | NodeKind::Missing) && n.name.eq_ignore_ascii_case(name)
+    })
 }
 
 /// Whether the network has what `sel` names.
@@ -1823,6 +1869,47 @@ mod tests {
     }
 
     #[test]
+    fn a_switched_off_device_keeps_its_box_and_its_last_lines() {
+        // #122: the PCs of a site were switched off and their boxes went
+        // from the map. A receiver nothing subscribes to left no trace.
+        let mut d = net();
+        let mut off = dev("obs-pc", 0, &[Some("player"), Some("player")]);
+        off.manufacturer = Some("OBS".into());
+        d.absent = vec![dcontroller_api::Absent {
+            device: off,
+            last_seen: 1000,
+            ago_s: 2 * 3600 + 60,
+        }];
+        let g = build(&d, Some(&links()), Span::H1);
+        let i = node_of(&g, "obs-pc").expect("its box stays");
+        assert_eq!(g.nodes[i].kind, NodeKind::Missing);
+        assert_eq!(
+            g.nodes[i].lines,
+            [
+                "not on the network".to_owned(),
+                "last seen 2 h ago".to_owned()
+            ]
+        );
+        // Its last subscriptions, one line per source, not measured.
+        let e = edge(&g, "player", "obs-pc");
+        assert_eq!(e.state, State::Unknown);
+        assert!(e.title.contains("2 channels"));
+        // A source it subscribed to that is gone too is one box, not two.
+        d.absent[0].device = dev("obs-pc", 0, &[Some("gone")]);
+        let g = build(&d, None, Span::H1);
+        assert_eq!(g.nodes.iter().filter(|n| n.name == "gone").count(), 1);
+        // An absent device that is listed again is the listed one.
+        d.absent[0].device.name = "player".into();
+        let g = build(&d, None, Span::H1);
+        let p = node_of(&g, "player").unwrap();
+        assert_eq!(g.nodes[p].kind, NodeKind::Device);
+        assert_eq!(g.nodes.iter().filter(|n| n.name == "player").count(), 1);
+        assert_eq!(ago_text(59), "just now");
+        assert_eq!(ago_text(5 * 60), "5 min ago");
+        assert_eq!(ago_text(3 * 86_400), "3 days ago");
+    }
+
+    #[test]
     fn the_graph_has_a_line_per_subscribed_pair_with_its_figures() {
         let l = links();
         let g = build(&net(), Some(&l), Span::H1);
@@ -2217,7 +2304,9 @@ mod tests {
                 name: "SoundGrid".into()
             }
         ));
-        assert!(!has(
+        // A device not on the network is chosen too (#122): its place, its
+        // last lines, and the way to forget it.
+        assert!(has(
             &g,
             &Sel::Device {
                 name: "gone".into()

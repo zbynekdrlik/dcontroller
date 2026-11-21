@@ -97,6 +97,10 @@ const MIGRATIONS: &[&str] = &[
      CREATE TABLE place_name (name TEXT PRIMARY KEY, pos INTEGER NOT NULL) WITHOUT ROWID;",
     // 10: a device's position inside its place, as the owner dragged it.
     "ALTER TABLE place ADD COLUMN ord INTEGER NOT NULL DEFAULT 0;",
+    // 11: every device this server has listed (#122): its last record and
+    // when it was last listed, so a device switched off keeps its box.
+    "CREATE TABLE known (name TEXT PRIMARY KEY COLLATE NOCASE, last_seen INTEGER NOT NULL,
+         record TEXT NOT NULL) WITHOUT ROWID;",
 ];
 
 /// How long the record of use is kept, and how far back it is counted.
@@ -416,6 +420,72 @@ impl Store {
             .collect::<Result<Vec<String>, _>>()
             .map_err(|e| e.to_string())?;
         Ok(api::Places { places, names })
+    }
+
+    /// Writes down the devices listed at `now`. A device's record is kept
+    /// from its last complete read: an unread one only moves `last_seen`.
+    pub fn remember(&self, now: i64, listed: &[api::Device]) -> Result<(), String> {
+        let mut db = self.conn();
+        let tx = db.transaction().map_err(|e| e.to_string())?;
+        for d in listed {
+            let record = serde_json::to_string(d).map_err(|e| e.to_string())?;
+            if d.channels.is_some() {
+                tx.execute(
+                    "INSERT INTO known (name, last_seen, record) VALUES (?1, ?2, ?3)
+                     ON CONFLICT (name) DO UPDATE SET name = excluded.name,
+                         last_seen = excluded.last_seen, record = excluded.record",
+                    params![d.name, now, record],
+                )
+            } else {
+                tx.execute(
+                    "INSERT INTO known (name, last_seen, record) VALUES (?1, ?2, ?3)
+                     ON CONFLICT (name) DO UPDATE SET last_seen = excluded.last_seen",
+                    params![d.name, now, record],
+                )
+            }
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())
+    }
+
+    /// Every device remembered: its last record and when it was last listed.
+    pub fn known(&self) -> Result<Vec<(api::Device, i64)>, String> {
+        let db = self.conn();
+        let mut q = db
+            .prepare("SELECT name, last_seen, record FROM known ORDER BY name")
+            .map_err(|e| e.to_string())?;
+        let rows = q
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (name, at, record) = row.map_err(|e| e.to_string())?;
+            match serde_json::from_str::<api::Device>(&record) {
+                Ok(d) => out.push((d, at)),
+                Err(e) => warn!(device = %name, error = %e, "known device: record skipped"),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Forgets a device and takes its place away. Whether it was known.
+    pub fn forget(&self, name: &str) -> Result<bool, String> {
+        let db = self.conn();
+        let n = db
+            .execute("DELETE FROM known WHERE name = ?1", params![name])
+            .map_err(|e| e.to_string())?;
+        db.execute(
+            "DELETE FROM place WHERE device = ?1 COLLATE NOCASE",
+            params![name],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(n > 0)
     }
 
     /// Puts `place` before the place `before` among the places (empty:
@@ -1736,6 +1806,39 @@ mod tests {
             channels: vec!["In 1".into()],
             sources: vec!["desk".into()],
         }
+    }
+
+    #[test]
+    fn a_device_listed_once_is_remembered_with_its_last_complete_record() {
+        let st = Store::memory().unwrap();
+        let dev = |name: &str, read: bool| api::Device {
+            name: name.into(),
+            model: Some("Box".into()),
+            channels: read.then(api::Channels::default),
+            ..api::Device::default()
+        };
+        st.remember(100, &[dev("desk", true), dev("obs-pc", true)])
+            .unwrap();
+        // Listed again, not read yet: the record stays, the time moves.
+        st.remember(200, &[dev("OBS-PC", false)]).unwrap();
+        let k = st.known().unwrap();
+        assert_eq!(k.len(), 2);
+        assert_eq!((k[1].0.name.as_str(), k[1].1), ("obs-pc", 200));
+        assert!(k[1].0.channels.is_some());
+        // Off the network: absent, with how long ago.
+        let listed = [dev("desk", true)];
+        let a = crate::known::absent(&st, &listed, 260);
+        assert_eq!(a.len(), 1);
+        assert_eq!(
+            (a[0].device.name.as_str(), a[0].last_seen, a[0].ago_s),
+            ("obs-pc", 200, 60)
+        );
+        // Forgotten, with its place.
+        st.set_place("obs-pc", "FOH", None).unwrap();
+        assert!(st.forget("OBS-PC").unwrap());
+        assert!(!st.forget("obs-pc").unwrap());
+        assert!(crate::known::absent(&st, &listed, 260).is_empty());
+        assert!(st.places().unwrap().places.is_empty());
     }
 
     #[test]

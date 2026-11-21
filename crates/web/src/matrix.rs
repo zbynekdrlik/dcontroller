@@ -515,6 +515,7 @@ mod tests {
     fn site() -> Devices {
         Devices {
             started_at: 0,
+            absent: Vec::new(),
             enabled: true,
             interface: Some("eth1".into()),
             error: None,

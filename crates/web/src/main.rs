@@ -3024,6 +3024,7 @@ mod tests {
             interface: Some("eth1".into()),
             error: error.map(Into::into),
             devices: vec![Device::default(); n],
+            absent: Vec::new(),
         }
     }
 
