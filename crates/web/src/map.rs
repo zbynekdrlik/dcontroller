@@ -241,6 +241,26 @@ pub fn ms(us: u32) -> String {
     format!("{:.2} ms", f64::from(us) / 1000.0)
 }
 
+/// A latency as a line of the map carries it: no trailing zeros
+/// (`5 ms`, `0.25 ms`, `8.36 ms`), so the label stays short (#122).
+pub fn ms_short(us: u32) -> String {
+    trimmed(f64::from(us) / 1000.0)
+}
+
+fn trimmed(ms: f64) -> String {
+    let s = format!("{ms:.2}");
+    format!("{} ms", s.trim_end_matches('0').trim_end_matches('.'))
+}
+
+/// What the owner switched on over the schema (#122).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Show {
+    /// Only the connections in trouble stay bright.
+    pub problems: bool,
+    /// A device looked for by name, lower case; empty for none.
+    pub find: String,
+}
+
 /// `n` with a space between thousands.
 pub fn num(n: u64) -> String {
     let digits = n.to_string();
@@ -406,9 +426,7 @@ pub fn with_video(g: &mut Graph, v: &dcontroller_api::VideoReport, span: Span) {
         let to = node(g, &c.sink);
         let state = video_state(c, span);
         let (lost, dup, skip) = video_window(c, span);
-        let label = c
-            .latency_ms
-            .map_or_else(|| "–".to_owned(), |l| format!("{l:.1} ms"));
+        let label = c.latency_ms.map_or_else(|| "–".to_owned(), trimmed);
         g.edges.push(Edge {
             sel: Sel::Video { id: c.id.clone() },
             from,
@@ -523,7 +541,7 @@ pub fn build(d: &Devices, links: Option<&Links>, span: Span) -> Graph {
                 .map(|s| s.latency_us)
                 .filter(|&l| l > 0)
                 .or(set)
-                .map_or_else(|| "–".to_owned(), ms);
+                .map_or_else(|| "–".to_owned(), ms_short);
             let chans = if channels == 1 {
                 "1 channel".to_owned()
             } else {
@@ -603,7 +621,7 @@ pub fn build(d: &Devices, links: Option<&Links>, span: Span) -> Graph {
                 from: if dante { asio } else { dev },
                 to: if dante { dev } else { asio },
                 state: if under > 0 { State::Bad } else { State::Ok },
-                label: ms(us),
+                label: ms_short(us),
                 lost: (under > 0).then(|| {
                     format!(
                         "{} underrun{}",
@@ -1152,13 +1170,28 @@ fn short(name: &str, max: usize) -> String {
     }
 }
 
-/// More connections than this and a line shows its number only when it
-/// has a problem, is chosen or is pointed at: 34 labels on a mesh hide it.
+/// More connections than this and the lines are drawn thinner. Every line
+/// keeps its latency (owner, 21.11.2026); "Problems only" dims the good ones.
 pub const QUIET_OVER: usize = 12;
 
 /// The schema as SVG: a box per node (`data-node`), a line per connection
 /// (`data-edge`: its hash), `chosen` standing out with its two ends.
+#[cfg(test)]
 pub fn svg(g: &Graph, p: &Placed, chosen: Option<&Sel>) -> String {
+    svg_with(g, p, chosen, &Show::default())
+}
+
+/// The schema with what the owner switched on: only the problems bright,
+/// a device looked for marked.
+pub fn svg_with(g: &Graph, p: &Placed, chosen: Option<&Sel>, show: &Show) -> String {
+    let good = |e: &Edge| matches!(e.state, State::Ok | State::Unknown);
+    // A device with no connection in trouble is calm.
+    let calm = |i: usize| {
+        !g.edges
+            .iter()
+            .any(|e| !good(e) && (e.from == i || e.to == i))
+    };
+    let hit = |n: &Node| !show.find.is_empty() && n.name.to_lowercase().contains(&show.find);
     let on = |e: &Edge| chosen.is_some_and(|c| c.same(&e.sel));
     // A chosen device: its box, and its connections brought forward.
     let device = chosen.and_then(|c| match c {
@@ -1167,10 +1200,11 @@ pub fn svg(g: &Graph, p: &Placed, chosen: Option<&Sel>) -> String {
     });
     let dense = g.edges.len() > QUIET_OVER;
     let mut s = format!(
-        r#"<svg class="map{}{}{}" viewBox="0 0 {WIDTH} {:.0}" role="img" aria-label="Devices and their connections">"#,
+        r#"<svg class="map{}{}{}{}" viewBox="0 0 {WIDTH} {:.0}" role="img" aria-label="Devices and their connections">"#,
         if chosen.is_some() { " has-sel" } else { "" },
         if device.is_some() { " has-device" } else { "" },
         if dense { " dense" } else { "" },
+        if show.problems { " problems" } else { "" },
         p.height
     );
     s.push_str("<defs>");
@@ -1220,7 +1254,7 @@ pub fn svg(g: &Graph, p: &Placed, chosen: Option<&Sel>) -> String {
             r#"<g class="edge {class}{}{}{}{}" data-testid="map-edge" data-edge="{}" data-from="{}" data-to="{}" data-state="{class}"><path class="line" d="{}" marker-end="url(#map-arrow-{class})"/><g class="lbl"><rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.0}" rx="10"/><text x="{:.1}" y="{:.1}">{}{lost}</text></g><path class="hit" d="{}"><title>{}</title></path></g>"#,
             if on(e) { " sel" } else { "" },
             if of(e) { " of" } else { "" },
-            if dense && matches!(e.state, State::Ok | State::Unknown) {
+            if show.problems && good(e) {
                 " quiet"
             } else {
                 ""
@@ -1274,7 +1308,7 @@ pub fn svg(g: &Graph, p: &Placed, chosen: Option<&Sel>) -> String {
         });
         let room = if n.badge.is_some() { 17 } else { 24 };
         s.push_str(&format!(
-            r#"<g class="node{kind}{}" data-testid="map-node" data-node="{}"><title>{}</title><rect x="{:.1}" y="{:.1}" width="{:.0}" height="{:.0}" rx="10"/><text class="name" x="{:.1}" y="{:.1}">{}</text><text class="sub" x="{:.1}" y="{:.1}">{}</text><text class="sub" x="{:.1}" y="{:.1}">{}</text>{badge}{dsync}</g>"#,
+            r#"<g class="node{kind}{}{}{}" data-testid="map-node" data-node="{}"><title>{}</title><rect x="{:.1}" y="{:.1}" width="{:.0}" height="{:.0}" rx="10"/><text class="name" x="{:.1}" y="{:.1}">{}</text><text class="sub" x="{:.1}" y="{:.1}">{}</text><text class="sub" x="{:.1}" y="{:.1}">{}</text>{badge}{dsync}</g>"#,
             if device == Some(i) {
                 " sel"
             } else if ends.contains(&i) {
@@ -1282,6 +1316,8 @@ pub fn svg(g: &Graph, p: &Placed, chosen: Option<&Sel>) -> String {
             } else {
                 ""
             },
+            if show.problems && calm(i) { " calm" } else { "" },
+            if hit(n) { " hit" } else { "" },
             esc(&n.name),
             esc(&n.name),
             r.x,
@@ -1366,7 +1402,7 @@ mod tests {
         };
         assert_eq!(
             (e("a").state, e("a").label.as_str(), e("a").lost.as_deref()),
-            (State::Bad, "41.0 ms", Some("2 lost"))
+            (State::Bad, "41 ms", Some("2 lost"))
         );
         assert_eq!(e("b").state, State::Warn);
         assert_eq!(g.nodes[e("b").to].kind, NodeKind::Device);
@@ -1659,9 +1695,9 @@ mod tests {
                 to_dante: true
             }
         );
-        assert_eq!((up.label.as_str(), up.state), ("7.30 ms", State::Ok));
+        assert_eq!((up.label.as_str(), up.state), ("7.3 ms", State::Ok));
         let down = edge(&g, "bridge", "SoundGrid");
-        assert_eq!((down.label.as_str(), down.state), ("7.50 ms", State::Bad));
+        assert_eq!((down.label.as_str(), down.state), ("7.5 ms", State::Bad));
         assert_eq!(down.lost.as_deref(), Some("2 underruns"));
         assert_eq!(g.edges.len(), 9);
         // All of them, the worst first; and the network's hour in one line.
@@ -1739,7 +1775,7 @@ mod tests {
     }
 
     #[test]
-    fn a_dense_network_keeps_quiet_about_its_good_lines() {
+    fn problems_only_dims_the_good_lines_and_the_calm_devices() {
         // 14 receivers of one source: more lines than a schema can label.
         let mut devices = vec![dev("src", 2, &[])];
         for i in 0..14 {
@@ -1760,11 +1796,30 @@ mod tests {
         assert_eq!(g.edges.len(), 14);
         let s = svg(&g, &layout(&g), None);
         assert!(s.starts_with(r#"<svg class="map dense" "#));
-        // The one with late packets keeps its number; the good and the
-        // unmeasured ones show theirs when pointed at.
+        // Every line is drawn whole until the owner asks for the problems.
+        assert!(!s.contains(" quiet") && !s.contains(" calm") && !s.contains(" hit"));
+        let show = Show {
+            problems: true,
+            find: "RX0".to_lowercase(),
+        };
+        let s = svg_with(&g, &layout(&g), None, &show);
+        assert!(s.starts_with(r#"<svg class="map dense problems" "#));
         assert!(s.contains(r#"class="edge bad" data-testid"#));
         assert_eq!(s.matches(r#"class="edge ok quiet""#).count(), 1);
         assert_eq!(s.matches(r#"class="edge unknown quiet""#).count(), 12);
+        // The source and the receiver losing audio stay; 13 devices are calm.
+        assert_eq!(s.matches(" calm").count(), 13);
+        // rx00 to rx09 carry the name looked for.
+        assert_eq!(s.matches(" hit\"").count(), 10);
+    }
+
+    #[test]
+    fn a_line_carries_its_latency_without_trailing_zeros() {
+        assert_eq!(ms_short(5000), "5 ms");
+        assert_eq!(ms_short(250), "0.25 ms");
+        assert_eq!(ms_short(8360), "8.36 ms");
+        assert_eq!(ms_short(10_000), "10 ms");
+        assert_eq!(ms_short(1500), "1.5 ms");
     }
 
     #[test]

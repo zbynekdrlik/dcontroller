@@ -108,6 +108,8 @@ fn App() -> impl IntoView {
         video: RwSignal::new(None),
         video_sel: RwSignal::new(None),
         video_hist: RwSignal::new(None),
+        problems: RwSignal::new(false),
+        find: RwSignal::new(String::new()),
     };
     provide_context(mp);
     // The routing matrix takes each connection's state from the same read.
@@ -142,10 +144,13 @@ fn App() -> impl IntoView {
                 }
                 let c = map::Sel::from_hash(&hash);
                 if mp.chosen.get_untracked() != c {
-                    let picked = c.is_some();
+                    // A chosen connection brings its chart into view (#142).
+                    // A chosen device does not: its click is there to show
+                    // its connections on the schema (owner, 21.11.2026).
+                    let picked = c
+                        .as_ref()
+                        .is_some_and(|c| !matches!(c, map::Sel::Device { .. }));
                     mp.chosen.set(c);
-                    // A choice brings its detail and chart into view (#142):
-                    // under a tall schema they were a screen below.
                     if picked {
                         set_timeout(
                             || {
@@ -428,26 +433,35 @@ fn App() -> impl IntoView {
         Some(Err(_)) => "server not reachable".to_owned(),
         None => "connecting…".to_owned(),
     };
+    // The menu is closed until asked for: the page has the whole width (#122).
+    let menu = RwSignal::new(false);
     view! {
-        <div class="app">
-        <aside class="side">
+        <div class=move || if menu.get() { "app menu-open" } else { "app" }>
+        <div class="scrim" data-testid="menu-scrim" on:click=move |_| menu.set(false)></div>
+        <aside class="side" data-testid="menu" aria-hidden=move || (!menu.get()).to_string()>
             <div class="brand">{logo()}<span>"dcontroller"</span></div>
             <nav class="nav">
                 {View::ALL.into_iter().map(|v| view! {
                     <a href=v.hash() data-testid=format!("tab-{}", v.slug())
                         class=move || if view_now.get() == v { "nav-item on" } else { "nav-item" }
-                        on:click=move |_| view_now.set(v)>
+                        on:click=move |_| { view_now.set(v); menu.set(false); }>
                         {icon(v)}<span>{v.title()}</span>
                     </a>
                 }).collect_view()}
             </nav>
             <div class="side-foot">
                 <span class="iface" data-testid="iface">{iface}</span>
-                <span class="version" data-testid="version">{VERSION}</span>
             </div>
         </aside>
         <main class="main">
-            <header class="page-head"><h1>{move || view_now.get().title()}</h1></header>
+            <header class="page-head">
+                <button class="burger" data-testid="menu-button" aria-label="Menu"
+                    aria-expanded=move || menu.get().to_string()
+                    on:click=move |_| menu.update(|m| *m = !*m)><i></i></button>
+                <h1>{move || view_now.get().title()}</h1>
+                <span class="grow"></span>
+                <span class="version" data-testid="version">{VERSION}</span>
+            </header>
             {move || md.0.with(|m| m.as_ref().and_then(mdns::alarm)).map(|line| view! {
                 <p class="alarm" role="alert" data-testid="mdns-alarm">{line}</p>
             })}

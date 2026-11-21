@@ -1,5 +1,5 @@
 import { test, expect, type ConsoleMessage } from "@playwright/test";
-import { DSYNC } from "../env";
+import { DSYNC, nav } from "../env";
 
 // The Map (#122): the schema of what is connected to what, and the chart
 // of the connection the user clicks. The test device receives its own TX
@@ -46,7 +46,7 @@ test("the map is the start page: every device a box, every connection a line, a 
   const line = map.locator(`[data-testid="map-edge"][data-from="${DEVICE}"][data-to="${DEVICE}"]`);
   await expect(line).toHaveCount(1);
   await expect(line).not.toHaveAttribute("data-state", "unknown", { timeout: 40_000 });
-  await expect(line.locator(".lbl text")).toContainText("10.00 ms");
+  await expect(line.locator(".lbl text")).toContainText("10 ms");
   // #124: a dstack device's box carries its own dsync clock next to the
   // Dante PTP word, as the device says it (/api/clocks).
   await expect(map.locator(`[data-testid="map-node"][data-node="${DEVICE}"] [data-testid="map-node-dsync"]`)).toHaveText(
@@ -183,7 +183,7 @@ test("the map is the start page: every device a box, every connection a line, a 
 
   // The bridge's way to Dante is a connection too: its hold time, its chart.
   const up = map.locator('[data-testid="map-edge"][data-from="SoundGrid"]');
-  await expect(up.locator(".lbl text")).toContainText("7.30 ms");
+  await expect(up.locator(".lbl text")).toContainText("7.3 ms");
   await up.locator(".lbl").click({ force: true });
   await expect(page).toHaveURL(new RegExp(`#map/bridge/${BRIDGE}/to-dante$`));
   await expect(page.getByTestId("map-title")).toHaveText("SoundGrid → Dante");
@@ -192,7 +192,7 @@ test("the map is the start page: every device a box, every connection a line, a 
   await expect(chart.locator(".u-legend")).toContainText("SoundGrid → Dante");
   expect(await chart.evaluate((el) => (el as any)._dcData.sources.length)).toBe(1);
   const down = map.locator('[data-testid="map-edge"][data-to="SoundGrid"]');
-  await expect(down.locator(".lbl text")).toContainText("7.50 ms");
+  await expect(down.locator(".lbl text")).toContainText("7.5 ms");
   await page.screenshot({ path: "test-results/map.png", fullPage: true });
 
   // The choice survives a reload.
@@ -216,7 +216,7 @@ test("the map is the start page: every device a box, every connection a line, a 
   const incoming = page.getByTestId("map-dev-in").getByTestId("map-dev-row");
   await expect(incoming).toHaveCount(1);
   await expect(incoming).toContainText(`from ${DEVICE}`);
-  await expect(incoming).toContainText("10.00 ms");
+  await expect(incoming).toContainText("10 ms");
   await expect(incoming.locator("svg.spark path.line")).toHaveAttribute("d", /^M/);
   await expect(page.getByTestId("map-dev-out").getByTestId("map-dev-row")).toHaveCount(1);
   // Everything today's device card holds, by the same code.
@@ -242,12 +242,100 @@ test("the map is the start page: every device a box, every connection a line, a 
   const inside = page.getByTestId("map-dev-bridge").getByTestId("map-dev-row");
   await expect(inside).toHaveCount(2);
   await expect(inside.first()).toContainText("SoundGrid → Dante");
-  await expect(inside.first()).toContainText("7.30 ms");
+  await expect(inside.first()).toContainText("7.3 ms");
   // The device's link from a connection's panel leads here too.
   await inside.first().click();
   await expect(page.getByTestId("map-title")).toHaveText("SoundGrid → Dante");
   await page.getByTestId("map-actions").getByRole("link", { name: `Device ${BRIDGE}` }).click();
   await expect(page).toHaveURL(new RegExp(`#map/device/${BRIDGE}$`));
+  expect(msgs).toEqual([]);
+});
+
+// #122, the Map at scale: the page has the whole screen (the menu behind a
+// burger, the tiles one thin strip), and the schema answers a click on a
+// device, "Problems only" and a name looked for.
+test("the map has the screen: a burger menu, a status strip, a device's click dims the rest, problems only, find a device", async ({ page }) => {
+  const msgs: string[] = [];
+  page.on("console", (m: ConsoleMessage) => {
+    if (m.type() === "error" || m.type() === "warning") msgs.push(`${m.type()}: ${m.text()}`);
+  });
+  page.on("pageerror", (e) => msgs.push(`pageerror: ${e.message}`));
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await page.goto("/");
+  const map = page.getByTestId("map");
+  const node = (name: string) => map.locator(`[data-testid="map-node"][data-node="${name}"]`);
+  await expect(node(DEVICE)).toBeVisible({ timeout: 40_000 });
+  await expect(node(BRIDGE)).toBeVisible({ timeout: 40_000 });
+
+  // The menu is closed and the page starts at the screen's edge.
+  const menu = page.getByTestId("menu");
+  await expect(menu).toBeHidden();
+  expect(await page.locator(".main").evaluate((e) => e.getBoundingClientRect().left)).toBe(0);
+  await expect(page.getByTestId("version")).toBeVisible();
+  await page.getByTestId("menu-button").click();
+  await expect(menu).toBeVisible();
+  await expect(page.getByTestId("iface")).toBeVisible();
+  await page.getByTestId("tab-clock").click();
+  await expect(page.locator(".page-head h1")).toHaveText("Clock");
+  await expect(menu).toBeHidden();
+  // A click beside the open menu closes it.
+  await page.getByTestId("menu-button").click();
+  await expect(menu).toBeVisible();
+  await page.getByTestId("menu-scrim").click({ position: { x: 900, y: 400 } });
+  await expect(menu).toBeHidden();
+  await nav(page, "map");
+  await expect(node(DEVICE)).toBeVisible();
+
+  // The status strip: one thin row, level with the title; the small text
+  // of an item shows when it is pointed at.
+  const strip = (await page.getByTestId("map-tiles-top").boundingBox())!;
+  const title = (await page.locator(".page-head h1").boundingBox())!;
+  expect(strip.height).toBeLessThanOrEqual(36);
+  expect(Math.abs(strip.y + strip.height / 2 - (title.y + title.height / 2))).toBeLessThan(6);
+  const conn = page.getByTestId("tile-connections");
+  await expect(conn.locator(".tile-sub")).toBeHidden();
+  await conn.hover();
+  await expect(conn.locator(".tile-sub")).toBeVisible();
+  // The schema starts right under it and ends on the screen.
+  const drawn = (await map.locator("svg.map").boundingBox())!;
+  expect(drawn.y).toBeLessThan(130);
+  expect(drawn.y + drawn.height).toBeLessThanOrEqual(900);
+
+  // A click on a device: the others step back, the page stays where it is.
+  await node(DEVICE).click();
+  await expect(page).toHaveURL(new RegExp(`#map/device/${DEVICE}$`));
+  await expect(map.locator("svg.map")).toHaveClass(/\bhas-device\b/);
+  await expect(node(BRIDGE)).toHaveCSS("opacity", "0.3");
+  await expect(node(DEVICE)).toHaveCSS("opacity", "1");
+  await expect(page.getByTestId("map-title")).toHaveText(DEVICE);
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  // A second click lets the whole map back.
+  await node(DEVICE).click();
+  await expect(page).toHaveURL(/#map$/);
+  await expect(node(BRIDGE)).toHaveCSS("opacity", "1");
+
+  // Problems only: every good or unmeasured line steps back, the others stay.
+  const edges = map.locator('[data-testid="map-edge"]');
+  const states = await edges.evaluateAll((es) => es.map((e) => e.getAttribute("data-state")));
+  expect(states.length).toBeGreaterThanOrEqual(3);
+  await expect(map.locator(".quiet")).toHaveCount(0);
+  await page.getByTestId("map-problems").click();
+  await expect(page.getByTestId("map-problems")).toHaveAttribute("aria-pressed", "true");
+  await expect(map.locator("svg.map")).toHaveClass(/\bproblems\b/);
+  const good = states.filter((s) => s === "ok" || s === "unknown").length;
+  await expect(map.locator('[data-testid="map-edge"].quiet')).toHaveCount(good);
+  if (good > 0) await expect(map.locator('[data-testid="map-edge"].quiet').first()).toHaveCSS("opacity", "0.1");
+  await page.getByTestId("map-problems").click();
+  await expect(map.locator(".quiet")).toHaveCount(0);
+
+  // A name looked for marks its device and no other.
+  await page.getByTestId("map-find").fill("E2E-BRIDGE");
+  await expect(node(BRIDGE)).toHaveClass(/\bhit\b/);
+  await expect(node(DEVICE)).not.toHaveClass(/\bhit\b/);
+  await page.getByTestId("map-find").fill("");
+  await expect(map.locator(".node.hit")).toHaveCount(0);
+  await page.screenshot({ path: "test-results/map-scale.png", fullPage: true });
   expect(msgs).toEqual([]);
 });
 

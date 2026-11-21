@@ -43,9 +43,20 @@ h1, h2, h3 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
 .status.err { color: var(--bad); }
 
 /* Shell: a sidebar and the page. */
-.app { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh; }
-.side { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; gap: 1.2rem;
-  padding: 1.1rem 0.8rem; background: var(--surface); border-right: 1px solid var(--border); }
+.app { min-height: 100vh; }
+/* The menu waits off the screen; the burger in the page head brings it. */
+.side { position: fixed; inset: 0 auto 0 0; width: 232px; z-index: 20; display: flex; flex-direction: column; gap: 1.2rem;
+  padding: 1.1rem 0.8rem; background: var(--surface); border-right: 1px solid var(--border);
+  transform: translateX(-100%); visibility: hidden; transition: transform 0.15s ease, visibility 0.15s; }
+.app.menu-open .side { transform: none; visibility: visible; box-shadow: 0 0 40px rgb(0 0 0 / 60%); }
+.scrim { display: none; position: fixed; inset: 0; z-index: 19; background: rgb(0 0 0 / 45%); }
+.app.menu-open .scrim { display: block; }
+.burger { width: 34px; height: 34px; flex: none; display: grid; place-items: center; cursor: pointer; align-self: center;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-s); color: var(--text); }
+.burger:hover { border-color: var(--accent); }
+.burger i, .burger i::before, .burger i::after { display: block; width: 16px; height: 2px; background: currentColor; border-radius: 2px; position: relative; content: ""; }
+.burger i::before { position: absolute; top: -5px; }
+.burger i::after { position: absolute; top: 5px; }
 .brand { display: flex; align-items: center; gap: 0.6rem; font-weight: 700; font-size: 1.05rem; padding: 0 0.4rem; }
 .logo { width: 28px; height: 28px; flex: none; }
 .nav { display: flex; flex-direction: column; gap: 2px; }
@@ -57,40 +68,36 @@ h1, h2, h3 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
 .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 0.25rem; padding: 0 0.4rem; font-size: 0.78rem; }
 .iface { color: var(--muted); }
 .version { font-family: var(--mono); font-size: 0.75rem; color: var(--warn); word-break: break-all; }
-.main { padding: 1.4rem 1.8rem 3rem; min-width: 0; }
-.page-head { display: flex; align-items: baseline; gap: 1rem; margin-bottom: 1.1rem; }
+.main { padding: 0.8rem 1.2rem 3rem; min-width: 0; position: relative; }
+.page-head { display: flex; align-items: center; gap: 0.8rem; margin-bottom: 0.7rem; min-height: 34px; }
 .page-head h1 { font-size: 1.5rem; }
-@media (max-width: 900px) {
-  .app { grid-template-columns: 1fr; }
-  .side { position: sticky; z-index: 5; height: auto; flex-direction: row; align-items: center; gap: 0.6rem;
-    padding: 0.5rem 0.8rem; border-right: 0; border-bottom: 1px solid var(--border); overflow-x: auto; }
-  .brand span { display: none; }
-  .nav { flex-direction: row; }
-  .nav-item { padding: 0.45rem 0.6rem; white-space: nowrap; }
-  .nav-item.on { box-shadow: inset 0 -2px 0 var(--accent); }
-  .side-foot { display: none; }
-  .main { padding: 1rem; }
+.page-head .grow { flex: 1 1 auto; }
+@media (max-width: 900px) { .main { padding: 0.7rem 0.8rem 2rem; } }
 }
 
 /* Panels and tiles. */
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.1rem; margin-bottom: 1.2rem; min-width: 0; }
 .panel-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 1rem; margin-bottom: 0.8rem; }
 .panel-head h2 { font-size: 1.05rem; }
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.9rem; margin-bottom: 1.2rem; }
-/* A desktop holds every tile in one row, as mockup v2 (#142): a seventh
-   tile (a bridge's) no longer wraps to a row of its own. */
-@media (min-width: 1200px) { .tiles { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); } }
-.tile { display: flex; flex-direction: column; gap: 0.2rem; padding: 0.9rem 1rem; text-decoration: none;
-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); position: relative; overflow: hidden; }
-.tile::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--ok); }
+/* The Map's status strip (#122): one thin row beside the burger and the
+   title; a dot, the name and the figure; the small text when pointed at. */
+.tiles { position: absolute; top: 0.8rem; left: 9.2rem; right: 12.5rem; height: 34px; display: flex; align-items: center; gap: 2px;
+  padding: 0 4px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-s); }
+.tile { display: flex; align-items: center; gap: 0.45rem; padding: 3px 9px; min-width: 0; flex: 0 1 auto; text-decoration: none;
+  border-radius: 6px; white-space: nowrap; position: relative; font-size: 0.86rem; }
+.tile::before { content: ""; width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--ok); }
 .tile.warn::before { background: var(--warn); }
 .tile.bad::before { background: var(--bad); }
-.tile:hover { border-color: var(--surface-3); background: var(--surface-2); }
-.tile-title { color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; }
-.tile-value { font-size: 1.6rem; font-weight: 700; letter-spacing: -0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile:hover, .tile:focus-visible { background: var(--surface-3); }
+.tile-title { color: var(--muted); }
+.tile-value, .tile-value.long { font-weight: 650; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 .tile.bad .tile-value { color: var(--bad); }
-.tile-value.long { font-size: 1.05rem; white-space: normal; overflow-wrap: anywhere; line-height: 1.25; padding: 0.3rem 0; }
-.tile-sub { color: var(--muted); font-size: 0.82rem; }
+.tile.warn .tile-value { color: var(--warn); }
+.tile-sub { display: none; position: absolute; left: 0; top: 32px; z-index: 8; width: 300px; white-space: normal; padding: 8px 10px;
+  background: var(--surface-3); border: 1px solid var(--border); border-radius: var(--radius-s); color: var(--text); font-size: 0.82rem;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 50%); }
+.tile:hover .tile-sub, .tile:focus-visible .tile-sub { display: block; }
+@media (max-width: 1100px) { .tiles { position: static; height: auto; flex-wrap: wrap; margin-bottom: 0.7rem; } }
 
 /* Chips, segmented buttons, live dot. */
 .chip { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.12rem 0.55rem; border-radius: 999px;
@@ -298,7 +305,8 @@ details.bridge-details > summary { cursor: pointer; color: var(--muted); margin:
 /* The map (#122): the schema of devices and connections, and the chosen
    connection's figures. */
 .map-wrap { overflow-x: auto; }
-svg.map { width: 100%; min-width: 860px; display: block; }
+/* The schema takes the width; a tall one stops at the screen's height. */
+svg.map { width: 100%; min-width: 860px; max-height: calc(100vh - 150px); display: block; }
 svg.map .col-title { fill: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
 svg.map .node rect { fill: var(--surface-2); stroke: var(--border); stroke-width: 1.2; }
 svg.map .node { cursor: pointer; }
@@ -350,12 +358,23 @@ svg.map.has-sel .node.rel rect { stroke: var(--accent); }
 .act:hover { border-color: var(--accent); }
 svg.map.dense .edge path.line { stroke-width: 1.6; }
 svg.map.dense .edge:hover path.line, svg.map.dense .edge.sel path.line { stroke-width: 4; }
-svg.map .edge.quiet .lbl { display: none; }
-/* A dense map keeps its good lines faint at rest, so the ones in trouble
-   stand out (#142); a pointed, chosen or focused line comes back. */
-svg.map.dense .edge.quiet { opacity: 0.35; }
-svg.map.dense .edge.quiet:hover, svg.map.dense .edge.quiet.sel { opacity: 1; }
-svg.map .edge.quiet:hover .lbl, svg.map .edge.quiet.sel .lbl, svg.map .edge.quiet.focus .lbl { display: inline; }
+/* "Problems only" (#122): the good lines and the calm devices step back;
+   a pointed or chosen one comes back. */
+svg.map.problems .edge.quiet { opacity: 0.1; }
+svg.map.problems .edge.quiet:hover, svg.map.problems .edge.quiet.sel, svg.map.problems .edge.quiet.focus { opacity: 1; }
+svg.map .node.calm { opacity: 0.3; }
+svg.map .node.calm:hover, svg.map .node.calm.sel, svg.map .node.calm.rel { opacity: 1; }
+/* A chosen device: only its connections and their other ends stay bright. */
+svg.map.has-device .edge:not(.of):not(.sel) { opacity: 0.1; }
+svg.map.has-device .edge.of { opacity: 1; }
+svg.map.has-device .node:not(.sel):not(.rel) { opacity: 0.3; }
+svg.map .node.hit rect { stroke: var(--warn); stroke-width: 2.6; }
+.bar-group { display: inline-flex; align-items: center; gap: 0.5rem; }
+input.find { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-s); color: var(--text);
+  font: inherit; font-size: 0.82rem; padding: 0.28rem 0.6rem; width: 10rem; }
+input.find:focus { outline: none; border-color: var(--accent); }
+.seg.solo { border: 1px solid var(--border); background: var(--surface); }
+.seg.solo.on { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
 svg.map.focus-on .edge:not(.focus):not(.sel) { opacity: 0.12; }
 svg.map.focus-on .edge.focus { opacity: 1; }
 svg.map.focus-on .edge.focus path.line { stroke-width: 3.2; }
@@ -378,20 +397,14 @@ table.grid tr.sel td { background: var(--accent-soft); }
 .mono { font-family: var(--mono); font-size: 0.82rem; }
 table.changes td:first-child { white-space: nowrap; }
 
-/* A phone (#123): the health tiles two to a row and small, ranges and
+/* A phone (#123): the status strip wrapped, ranges and
    views in one line that scrolls, wide tables scrolling inside their box. */
 .seg { white-space: nowrap; }
 .seg-group { max-width: 100%; overflow-x: auto; }
 @media (max-width: 44rem) {
-  .tiles { grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 0.8rem; }
-  .tile { padding: 0.5rem 0.65rem; }
-  .tile-title { font-size: 0.68rem; }
-  .tile-value { font-size: 1.15rem; }
-  .tile-value.long { font-size: 0.9rem; }
-  /* Two lines of a tile's line on a phone, so every tile fits the first
-     screen; the whole line is its title, and the tile leads to the page. */
-  .tile-sub { font-size: 0.74rem; display: -webkit-box; -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+  /* The status strip wraps on a phone; an item's small text is its
+     title there (no pointer to hold over it), and the item leads on. */
+  .tile-sub { display: none !important; }
   .figs { grid-template-columns: 1fr 1fr; }
   .fig .v { font-size: 1.15rem; }
   .panel { padding: 0.7rem 0.75rem; }

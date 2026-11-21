@@ -23,6 +23,10 @@ pub struct MapCtl {
     /// The video connection shown (its id) and its reads over the range.
     pub video_sel: RwSignal<Option<String>>,
     pub video_hist: RwSignal<Option<Result<dcontroller_api::VideoHistory, String>>>,
+    /// Only the connections in trouble stay bright (#122).
+    pub problems: RwSignal<bool>,
+    /// A device looked for by name (#122).
+    pub find: RwSignal<String>,
 }
 
 /// The map's three views of the same network.
@@ -293,7 +297,13 @@ pub fn MapPage() -> impl IntoView {
             h.device.set(device);
         }
     });
-    let drawing = move || graph.with(|g| map::svg(g, &map::layout(g), shown.get().as_ref()));
+    let drawing = move || {
+        let show = map::Show {
+            problems: m.problems.get(),
+            find: m.find.get().trim().to_lowercase(),
+        };
+        graph.with(|g| map::svg_with(g, &map::layout(g), shown.get().as_ref(), &show))
+    };
     let click = move |ev: leptos::ev::MouseEvent| {
         let Some(target) = ev
             .target()
@@ -308,9 +318,18 @@ pub fn MapPage() -> impl IntoView {
         } else if let Ok(Some(node)) = target.closest("g.node:not(.asio):not(.missing)")
             && let Some(name) = node.get_attribute("data-node")
         {
-            let _ = window()
-                .location()
-                .set_hash(&map::Sel::Device { name }.hash());
+            // A second click on the chosen device lets the whole map back.
+            let again =
+                matches!(m.chosen.get_untracked(), Some(map::Sel::Device { name: n }) if n == name);
+            let hash = if again {
+                "#map".to_owned()
+            } else {
+                map::Sel::Device { name }.hash()
+            };
+            let _ = window().location().set_hash(&hash);
+        } else if matches!(m.chosen.get_untracked(), Some(map::Sel::Device { .. })) {
+            // A click beside the boxes and lines does the same.
+            let _ = window().location().set_hash("#map");
         }
     };
     // Pointing at a device brings its connections forward, with their
@@ -1033,6 +1052,16 @@ pub fn MapPage() -> impl IntoView {
                         on:click=move |_| m.span.set(s)>{s.label()}</button>
                 }).collect_view()}
             </div>
+            <span class="bar-group" style=move || if m.view.get() == MapView::Schema { "" } else { "display:none" }>
+                <input class="find" type="search" data-testid="map-find" placeholder="find a device"
+                    aria-label="Find a device on the map"
+                    prop:value=move || m.find.get()
+                    on:input=move |ev| m.find.set(event_target_value(&ev))/>
+                <button data-testid="map-problems" title="Dim the connections with no problem"
+                    aria-pressed=move || m.problems.get().to_string()
+                    class=move || if m.problems.get() { "seg solo on" } else { "seg solo" }
+                    on:click=move |_| m.problems.update(|p| *p = !*p)>"Problems only"</button>
+            </span>
             <span class="status" data-testid="status">{status}</span>
         </div>
         <section class="panel" data-testid="map-links-panel"
@@ -1055,7 +1084,7 @@ pub fn MapPage() -> impl IntoView {
                 <span>"colours speak of the window on the right of the tabs: 1 h, 3 h or 24 h"</span>
                 <span><i class="unknown"></i>"not measured"</span>
                 <span>"number on a line: the receiver's latency for that connection"</span>
-                <span>"point at a device: its connections stand out"</span>
+                <span>"click a device: only its connections stay bright; click it again for all"</span>
             </div>
         </section>
         <section class="panel" data-testid="map-detail"

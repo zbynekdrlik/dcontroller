@@ -1,4 +1,5 @@
 import { test, expect, type ConsoleMessage } from "@playwright/test";
+import { nav } from "../env";
 
 // The device global-setup.ts runs: dstack's own Dante device binary. It
 // answers a meter subscription with a frame a second (silence: -126 dBFS).
@@ -12,7 +13,7 @@ test("the meters tab subscribes to the chosen device and shows its channel level
   page.on("pageerror", (e) => msgs.push(`pageerror: ${e.message}`));
 
   await page.goto("/");
-  await page.getByTestId("tab-meters").click();
+  await nav(page, "meters");
   const pick = page.locator(`[data-testid="mtr-device"][data-name="${DEVICE}"]`);
   await expect(pick).toBeVisible({ timeout: 30_000 });
   // No device chosen: every device's loudest channel each way (#123), not

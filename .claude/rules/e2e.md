@@ -15,3 +15,5 @@ paths:
 - A size check (a phone layout's height) waits for every part it measures, e.g. the mDNS tile that comes on its own poll; CI's font is wider than a dev box's, so text wraps more there.
 - A Map line or Links row comes from the subscriptions at once; its figures (`/api/links`) come once the recorder has seconds of the hour, and the page reads them on its own 10 s poll: poll the API for the figure, then give the page's cell a 30 s timeout.
 - The suite's server can start before global-setup's stand-ins (dsync nodes, the video node list): a reader's first read fails and is stored as such. Poll the API until the stand-in's answer is there; never assert on the first stored point.
+- The menu is behind a burger (#122): a spec changes page with `nav(page, "clock")` from `e2e/env.ts`, never a bare click on `tab-…` (it is off the screen until the burger opens it).
+- On the Map `.hit` is also every line's wide click path (`path.hit`): a device looked for is `.node.hit`.

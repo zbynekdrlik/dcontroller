@@ -1,4 +1,5 @@
 import { test, expect, type ConsoleMessage, type Page } from "@playwright/test";
+import { nav } from "../env";
 
 // The device global-setup.ts runs (dstack's own Dante device): ours to
 // change. RX "Stage R" starts unsubscribed; every test leaves it so.
@@ -61,7 +62,7 @@ test.describe("subscription changes", () => {
     expect((await stageR(page)).source).toEqual({ channel: "Mix R", device: DEVICE });
 
     // The changes tab lists it: who, which channel, before and after.
-    await page.getByTestId("tab-changes").click();
+    await nav(page, "changes");
     const row = page.locator('[data-testid="change-row"]:not([data-kind="status"])').first();
     await expect(row).toContainText("local");
     await expect(row).toContainText(`Stage R @ ${DEVICE}`);
@@ -69,7 +70,7 @@ test.describe("subscription changes", () => {
     await expect(row).toContainText("nothing");
 
     // A click on the subscribed cross-point offers its removal.
-    await page.getByTestId("tab-routing").click();
+    await nav(page, "routing");
     await expect(cell).toHaveText("●");
     await cell.click();
     await expect(page.getByTestId("confirm-text")).toHaveText(

@@ -1,5 +1,5 @@
 import { test, expect, type ConsoleMessage } from "@playwright/test";
-import { DSYNC } from "../env";
+import { DSYNC, nav } from "../env";
 
 // The device global-setup.ts runs: dstack's own Dante device binary. It has
 // no PTP clock of its own and answers no clock status, so its row says so.
@@ -13,7 +13,7 @@ test("the clock tab lists every device's clock status as the server read it", as
   page.on("pageerror", (e) => msgs.push(`pageerror: ${e.message}`));
 
   await page.goto("/");
-  await page.getByTestId("tab-clock").click();
+  await nav(page, "clock");
   await expect(page).toHaveURL(/#clock$/);
   const row = page.locator(`[data-testid="clock-row"][data-name="${DEVICE}"]`);
   // Discovery, the first read and a clock ask that waits out its 1 s.

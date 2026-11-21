@@ -1,4 +1,5 @@
 import { test, expect, type ConsoleMessage } from "@playwright/test";
+import { nav } from "../env";
 
 // The device global-setup.ts runs: dstack's own Dante device binary. It
 // answers the network info with the interface it runs on.
@@ -15,7 +16,7 @@ test("the network tab lists every device's interfaces as the server read them", 
   page.on("pageerror", (e) => msgs.push(`pageerror: ${e.message}`));
 
   await page.goto("/");
-  await page.getByTestId("tab-network").click();
+  await nav(page, "network");
   await expect(page).toHaveURL(/#network$/);
   const row = page.locator(`[data-testid="network-row"][data-name="${DEVICE}"]`);
   await expect(row.getByTestId("network-primary")).toBeVisible({ timeout: 30_000 });

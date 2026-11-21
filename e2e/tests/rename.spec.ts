@@ -1,4 +1,5 @@
 import { test, expect, type ConsoleMessage, type Page } from "@playwright/test";
+import { nav } from "../env";
 
 // The device global-setup.ts runs (dstack's own Dante device): ours to
 // change. Every test puts the names back.
@@ -53,13 +54,13 @@ test.describe("renames", () => {
     await expect(matrix.locator(`[data-testid="rx-channel-head"][data-name="${DEVICE}/Guest Mic"]`)).toBeVisible();
     expect((await labels(page)).rx[2]).toBe("Guest Mic");
 
-    await page.getByTestId("tab-changes").click();
+    await nav(page, "changes");
     const row = page.locator('[data-testid="change-row"]:not([data-kind="status"])').first();
     await expect(row).toContainText(`rename RX 3 @ ${DEVICE}`);
     await expect(row).toContainText("Spare 3");
     await expect(row).toContainText("Guest Mic");
 
-    await page.getByTestId("tab-routing").click();
+    await nav(page, "routing");
     await matrix.locator(`[data-testid="rx-channel-head"][data-name="${DEVICE}/Guest Mic"]`).click();
     await rename(page, "Spare 3");
     expect((await labels(page)).rx[2]).toBe("Spare 3");

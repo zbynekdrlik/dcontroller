@@ -1,4 +1,5 @@
 import { test, expect, type ConsoleMessage } from "@playwright/test";
+import { nav } from "../env";
 
 // The device global-setup.ts runs: RX "Stage L" takes its own TX "Mix L".
 const DEVICE = "dc-e2e-device";
@@ -189,12 +190,12 @@ test.describe("routing matrix", () => {
 
   test("tabs switch between routing and the map and keep the view in the URL", async ({ page }) => {
     await page.goto("/#routing");
-    await page.getByTestId("tab-map").click();
+    await nav(page, "map");
     await expect(page).toHaveURL(/#map$/);
     await expect(page.locator(`[data-testid="map-node"][data-node="${DEVICE}"]`)).toBeVisible({ timeout: 30_000 });
     await page.reload();
     await expect(page.getByTestId("tab-map")).toHaveClass(/\bon\b/);
-    await page.getByTestId("tab-routing").click();
+    await nav(page, "routing");
     await expect(page.getByTestId("matrix")).toBeVisible();
     expect(console_msgs).toEqual([]);
   });

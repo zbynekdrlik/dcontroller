@@ -42,3 +42,10 @@ export const VIDEO = {
   obs: "obs-e2e",
   conn: "jxs:cam-e2e->obs-e2e:JXS cam-e2e src",
 } as const;
+
+/// Opens the menu behind the burger and goes to a page (#122: the menu is
+/// closed until asked for).
+export async function nav(page: import("@playwright/test").Page, slug: string) {
+  await page.getByTestId("menu-button").click();
+  await page.getByTestId(`tab-${slug}`).click();
+}

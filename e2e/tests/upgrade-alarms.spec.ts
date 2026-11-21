@@ -3,7 +3,7 @@ import { createSocket, type Socket } from "node:dgram";
 import { readFileSync } from "node:fs";
 import { connect } from "node:net";
 import { resolve } from "node:path";
-import { routed, run } from "../env";
+import { routed, run, nav } from "../env";
 
 // dcontroller #93 (dstack v0.6.145): the server's mDNS meter names two more
 // things it relays as alarms. A dstack peer below the network floor
@@ -116,7 +116,7 @@ test("a dstack peer and a local client below the network floor and a 96 s Dante 
     expect(api.floor).toBe("0.6.58");
     expect(api.below_floor).toContainEqual({ kind: "peer", name: PEER, address: routed.ip, version: "0.6.20" });
 
-    await page.getByTestId("tab-changes").click();
+    await nav(page, "changes");
     await expect(floor).toBeVisible();
     const started = page
       .locator('[data-testid="change-row"][data-kind="status"]')
@@ -142,7 +142,7 @@ test("a dstack peer and a local client below the network floor and a 96 s Dante 
     await expect(floor).toContainText(`local client of dc-e2e-device at ${routed.ip} (dstack 0.6.20)`);
     const api2 = await page.evaluate(() => fetch("/api/mdns").then((r) => r.json()));
     expect(api2.below_floor).toContainEqual({ kind: "client", name: "dc-e2e-device", address: routed.ip, version: "0.6.20" });
-    await page.getByTestId("tab-changes").click();
+    await nav(page, "changes");
     const client = page
       .locator('[data-testid="change-row"][data-kind="status"]')
       .filter({ hasText: `dstack client of dc-e2e-device at ${routed.ip}` })
@@ -151,7 +151,7 @@ test("a dstack peer and a local client below the network floor and a 96 s Dante 
     await expect(client.first()).toHaveClass(/err/);
 
     // The browser: named the minute after its fourth query (288 s).
-    await page.getByTestId("tab-network").click();
+    await nav(page, "network");
     const browser = page.getByTestId("browser-alarm");
     await expect(browser).toBeVisible({ timeout: 400_000 });
     await expect(browser).toContainText(`Dante browsed on a 96 s cycle by ${routed.ip} (`);
@@ -162,7 +162,7 @@ test("a dstack peer and a local client below the network floor and a 96 s Dante 
     expect(period).toBeGreaterThanOrEqual(94);
     expect(period).toBeLessThanOrEqual(98);
 
-    await page.getByTestId("tab-changes").click();
+    await nav(page, "changes");
     const browsing = page
       .locator('[data-testid="change-row"][data-kind="status"]')
       .filter({ hasText: `96 s browser ${routed.ip}` })
