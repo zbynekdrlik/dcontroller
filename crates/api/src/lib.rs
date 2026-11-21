@@ -321,7 +321,8 @@ pub struct ChangeEntry {
 #[serde(default)]
 pub struct Places {
     pub places: Vec<Place>,
-    /// Every place ever named, in that order: what the page offers.
+    /// The places in use, in the order of their first use: what the page
+    /// offers.
     pub names: Vec<String>,
 }
 

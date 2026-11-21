@@ -403,7 +403,9 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
         let mut q = db
-            .prepare("SELECT name FROM place_name ORDER BY pos")
+            .prepare(
+                "SELECT name FROM place_name WHERE name IN (SELECT place FROM place) ORDER BY pos",
+            )
             .map_err(|e| e.to_string())?;
         let names = q
             .query_map([], |r| r.get(0))
@@ -1682,9 +1684,13 @@ mod tests {
         assert_eq!(st.set_place("amp", "").unwrap(), None);
         let got = st.places().unwrap();
         assert_eq!(got.places, [place("desk", "Stage"), place("rack", "Stage")]);
-        assert_eq!(got.names, ["FOH", "Stage"]);
+        // A place no device stands in is not offered (a mistyped name goes
+        // with its last device); it keeps its position for when it is back.
+        assert_eq!(got.names, ["Stage"]);
         assert_eq!(st.set_place("amp", "FOH").unwrap(), None);
-        assert_eq!(st.places().unwrap().places[0], place("amp", "FOH"));
+        let got = st.places().unwrap();
+        assert_eq!(got.places[0], place("amp", "FOH"));
+        assert_eq!(got.names, ["FOH", "Stage"]);
     }
 
     #[test]
