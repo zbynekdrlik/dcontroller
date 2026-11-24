@@ -18,6 +18,7 @@ use leptos::task::spawn_local;
 mod changes;
 mod clock;
 mod devlist;
+mod drag;
 mod flows;
 mod hist;
 mod lat;
