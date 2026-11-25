@@ -6,8 +6,9 @@
 //! is each PC's local control socket. mDNS goes to the 224.0.0.251 group,
 //! which every host on the VLAN receives, so the server runs dstack's own
 //! meter (`discover::senders::Meter`, passive: it sends nothing) on its
-//! Dante address and reads its last closed minute. One thread looks every
-//! [`LOOK_EVERY`]: it opens the meter once discovery has our address, keeps
+//! Dante address, from the process's one mDNS daemon (dstack #442), and
+//! reads its last closed minute. One thread looks every [`LOOK_EVERY`]:
+//! it opens the meter once discovery has our address, keeps
 //! the minute for `GET /api/mdns`, and logs a `status` change when a source
 //! goes over [`CAP_PER_S`] and when it is back under.
 //!
@@ -26,6 +27,7 @@ use std::time::Duration;
 
 use dcontroller_api as api;
 use dstack::NETWORK_FLOOR;
+use dstack::announce::mdns::Mdns;
 use dstack::discover::senders::browsers::Browser;
 use dstack::discover::senders::{CAP_PER_S, Meter, Minute, Rate};
 use dstack::network_floor::Below;
@@ -367,7 +369,10 @@ fn watch_error(watch: &Watch, error: String) {
 }
 
 fn run(dante: &Shared, watch: &Watch, sink: &ChangeSink, stop: &AtomicBool) {
-    let mut meter: Option<(Ipv4Addr, Arc<Meter>)> = None;
+    // The meter reads the process's one mDNS daemon socket (dstack #442);
+    // the daemon `Arc` is held as long as the meter, since its last
+    // holder's drop shuts the daemon down.
+    let mut meter: Option<(Ipv4Addr, Arc<Meter>, Arc<Mdns>)> = None;
     let mut alarmed = Alarmed::default();
     let mut seen: Option<Minute> = None;
     let mut failed: Option<String> = None;
@@ -380,10 +385,15 @@ fn run(dante: &Shared, watch: &Watch, sink: &ChangeSink, stop: &AtomicBool) {
                 }
                 watch_error(watch, "no Dante address (discovery does not run)".into());
             }
-            Some(ip) if meter.as_ref().is_none_or(|(at, _)| *at != ip) => match Meter::shared(ip) {
-                Ok(m) => {
+            Some(ip) if meter.as_ref().is_none_or(|(at, _, _)| *at != ip) => match Mdns::shared(ip)
+                .and_then(|d| {
+                    d.meter()
+                        .map(|m| (m, d))
+                        .ok_or_else(|| "the mDNS daemon has no meter".to_string())
+                }) {
+                Ok((m, d)) => {
                     info!(address = %ip, "mDNS meter: counting mDNS senders on the Dante leg (passive)");
-                    meter = Some((ip, m));
+                    meter = Some((ip, m, d));
                     failed = None;
                     watch.set(|v| {
                         v.running = true;
@@ -401,7 +411,7 @@ fn run(dante: &Shared, watch: &Watch, sink: &ChangeSink, stop: &AtomicBool) {
             },
             Some(_) => {}
         }
-        if let Some((_, meter)) = meter.as_ref()
+        if let Some((_, meter, _)) = meter.as_ref()
             && let Some(m) = meter.last()
             && seen.as_ref() != Some(&m)
         {
