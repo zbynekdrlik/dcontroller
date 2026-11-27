@@ -460,6 +460,31 @@ mod tests {
         assert_eq!(dante.lost, 5);
     }
 
+    /// A cambox's read as camera-box 1.8.19 serves it (cam2, 27.11.2026):
+    /// its NDI output has no sink, given as `null`, not left out.
+    const CAM: &str = r#"{"capture_corrupted":0,"capture_dropped":0,"capture_frames":176768,
+        "capture_lost":169,"connections":[{"counters_since":"2026-11-27T18:58:29Z",
+        "direction":"out","frames_duplicated":195,"frames_sent":176937,"frames_skipped":26,
+        "id":"ndi:cam2->usb","kind":"ndi","latency_ms":null,"sink":null,"sink_input":null,
+        "source":"cam2","stream_name":"usb"},{"bpp":4,"connected":true,
+        "counters_since":"2026-11-27T18:58:30Z","direction":"out","frames_sent":88467,
+        "id":"jxs:cam2->10.77.9.202:7002","kind":"jxs","latency_ms":15.969,
+        "sink":"10.77.9.202:7002","sink_input":null,"source":"cam2","stream_name":null}],
+        "counters_since":"2026-11-27T18:58:29Z","kind":"cambox","node":"cam2",
+        "read_at":"2026-11-27T19:47:42Z","run_id":"7ccc8e30:8366881",
+        "run_start":"2026-11-27T18:58:29Z","schema":1,"version":"1.8.19"}"#;
+
+    #[test]
+    fn a_cambox_read_with_null_fields_parses() {
+        let n = parse_node(CAM).unwrap();
+        let ndi = &n.connections[0];
+        assert_eq!((ndi.sink.as_str(), ndi.sink_input.as_str()), ("", ""));
+        assert_eq!(Counters::of(&n.run_id, ndi).skipped, 26);
+        let jxs = &n.connections[1];
+        assert_eq!(jxs.sink, "10.77.9.202:7002");
+        assert_eq!(jxs.latency_ms, Some(15.969));
+    }
+
     #[test]
     fn a_reads_frames_are_what_it_added_and_a_restart_counts_from_zero() {
         let c = |run: &str, since: &str, lost, dup, skip, conc| Counters {
