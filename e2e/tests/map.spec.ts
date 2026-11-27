@@ -444,7 +444,7 @@ test("a device gets a place: the map draws the places as areas, the change is lo
     // A video node has no detail of its own: a connection it ends holds
     // the field for each of its two ends.
     const video = await page.request.get("/api/video").then((r) => r.json());
-    const conn = video.connections.find((c: any) => c.source === "cam-e2e");
+    const conn = video.connections.find((c: any) => c.source === "cam-e2e" && c.direction === "in");
     await page.goto(`/#map/video/${encodeURIComponent(conn.id)}`);
     const cam = page.locator('[data-testid="place-edit"][data-device="cam-e2e"]');
     await expect(cam).toContainText("Place of cam-e2e on the Map", { timeout: 40_000 });

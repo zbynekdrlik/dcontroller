@@ -420,9 +420,22 @@ pub fn video_window(c: &dcontroller_api::VideoConn, span: Span) -> (u64, u64, u6
     }
 }
 
+/// Where a video connection comes from: its source, or for an input
+/// without a named source the input's name (else its kind).
+pub fn video_from(c: &dcontroller_api::VideoConn) -> &str {
+    [&c.source, &c.sink_input, &c.kind]
+        .into_iter()
+        .find(|s| !s.is_empty())
+        .map_or("video", String::as_str)
+}
+
 /// The video network into the graph (#124 phase 1): a box per video node
 /// that is no Dante device already (one name, one box), a line per video
-/// connection, coloured by the window as a Dante line.
+/// connection its receiver reports (`in`, as a Dante line is the
+/// receiver's), coloured by the window as a Dante line. A sender's `out`
+/// connection is the same flow seen from the other end, no line of its
+/// own; an input without a named source starts at a box named after the
+/// input.
 pub fn with_video(g: &mut Graph, v: &dcontroller_api::VideoReport, span: Span) {
     let node = |g: &mut Graph, name: &str| -> usize {
         if let Some(i) = g
@@ -449,8 +462,8 @@ pub fn with_video(g: &mut Graph, v: &dcontroller_api::VideoReport, span: Span) {
         });
         g.nodes.len() - 1
     };
-    for c in &v.connections {
-        let from = node(g, &c.source);
+    for c in v.connections.iter().filter(|c| c.direction == "in") {
+        let from = node(g, video_from(c));
         let to = node(g, &c.sink);
         let state = video_state(c, span);
         let (lost, dup, skip) = video_window(c, span);
@@ -464,7 +477,7 @@ pub fn with_video(g: &mut Graph, v: &dcontroller_api::VideoReport, span: Span) {
             lost: (lost > 0).then(|| format!("{lost} lost")),
             title: format!(
                 "{} → {} · {} {} · latency {label} · frames lost {lost}, duplicated {dup}, skipped {skip} in the last {}",
-                c.source,
+                video_from(c),
                 c.sink,
                 c.kind,
                 c.sink_input,
