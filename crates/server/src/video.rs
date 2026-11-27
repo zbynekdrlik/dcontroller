@@ -425,6 +425,33 @@ mod tests {
         assert!(parse_node("not json").is_err());
     }
 
+    /// An OBS box's read as camera-box serves it (strih-snv, 27.11.2026):
+    /// a JPEG XS input names its loss in lost slices, a Dante input in
+    /// receive holes; neither carries `frames_lost`.
+    const OBS: &str = r#"{"schema": 1, "node": "strih-snv", "kind": "obs",
+        "read_at": "2026-11-27T15:10:30+01:00", "run_start": "2026-11-27T11:17:16+01:00",
+        "run_id": "2026-11-27 11-17-16.txt",
+        "connections": [
+          {"id": "jxs:strih-snv:JXS cam2 src", "sink": "strih-snv", "sink_input": "JXS cam2 src",
+           "kind": "jxs", "direction": "in", "counters_since": "2026-11-27T11:17:22.633+01:00",
+           "source": "cam2", "jxs_frames": 419601, "jxs_lost_slices": 61, "jxs_concealed": 1,
+           "received": 419567, "underruns": 100, "relocks": 0, "latency_ms": 36,
+           "frames_received": 419567, "frames_duplicated": 100, "slices_lost": 61,
+           "slices_concealed": 1},
+          {"id": "dante:strih-snv:mix", "sink": "strih-snv", "sink_input": "mix",
+           "kind": "dante", "direction": "in", "counters_since": "2026-11-27T11:17:22.700+01:00",
+           "rx_packets": 1000, "rx_gaps": 2, "rx_holes": 5, "rx_loss": 0.5}]}"#;
+
+    #[test]
+    fn an_obs_read_counts_lost_slices_and_dante_holes_as_lost() {
+        let n = parse_node(OBS).unwrap();
+        let jxs = Counters::of(&n.run_id, &n.connections[0]);
+        assert_eq!((jxs.lost, jxs.duplicated, jxs.concealed), (61, 100, 1));
+        assert_eq!(n.connections[0].latency_ms, Some(36.0));
+        let dante = Counters::of(&n.run_id, &n.connections[1]);
+        assert_eq!(dante.lost, 5);
+    }
+
     #[test]
     fn a_reads_frames_are_what_it_added_and_a_restart_counts_from_zero() {
         let c = |run: &str, since: &str, lost, dup, skip, conc| Counters {
