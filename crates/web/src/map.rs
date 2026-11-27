@@ -1552,6 +1552,47 @@ pub fn svg_with(g: &Graph, p: &Placed, chosen: Option<&Sel>, show: &Show) -> Str
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_video_line_is_the_receivers_view_and_an_unnamed_source_is_named_by_its_input() {
+        use dcontroller_api::{VideoConn, VideoReport};
+        let mut g = build(&net(), None, Span::H1);
+        let conn = |id: &str, source: &str, sink: &str, input: &str, dir: &str| VideoConn {
+            id: id.into(),
+            node: "strih".into(),
+            source: source.into(),
+            sink: sink.into(),
+            sink_input: input.into(),
+            kind: "jxs".into(),
+            direction: dir.into(),
+            latency_ms: Some(36.0),
+            ..VideoConn::default()
+        };
+        let v = VideoReport {
+            connections: vec![
+                conn("in", "cam2", "strih", "JXS cam2 src", "in"),
+                // The same flow as the camera sends it, and the camera's NDI.
+                conn("cam-out", "cam2", "10.0.0.2:7002", "", "out"),
+                conn("ndi-out", "cam2", "", "", "out"),
+                // An input without a named source (the CG over NDI).
+                conn("cg", "", "strih", "CG-obs", "in"),
+            ],
+            ..VideoReport::default()
+        };
+        let before = g.nodes.len();
+        with_video(&mut g, &v, Span::H1);
+        let names: Vec<&str> = g.nodes[before..].iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, ["cam2", "strih", "CG-obs"]);
+        let ids: Vec<String> = g
+            .edges
+            .iter()
+            .filter_map(|e| match &e.sel {
+                Sel::Video { id } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, ["in", "cg"]);
+    }
+
+    #[test]
     fn video_connections_are_lines_of_their_own_kind_coloured_by_frames_lost() {
         use dcontroller_api::{VideoConn, VideoNode, VideoReport};
         let mut g = build(&net(), None, Span::H1);
