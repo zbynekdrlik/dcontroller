@@ -5,6 +5,8 @@
 //! schema 1): every connection's counters are cumulative since its
 //! `counters_since` within the node's `run_id`; the reader stores what each
 //! read added, so a restart or a reconnect counts its new values from zero.
+//! A loss is lost frames, lost JPEG XS slices and Dante receive holes;
+//! concealed slices count as lost too.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -58,6 +60,12 @@ pub struct ConnRead {
     pub latency_ms: Option<f64>,
     #[serde(default)]
     pub frames_lost: u64,
+    /// JPEG XS slices lost on the way (camera-box's OBS reads).
+    #[serde(default)]
+    pub slices_lost: u64,
+    /// Dante receive holes (camera-box's OBS reads).
+    #[serde(default)]
+    pub rx_holes: u64,
     #[serde(default)]
     pub frames_duplicated: u64,
     #[serde(default)]
@@ -120,7 +128,7 @@ impl Counters {
         Counters {
             run_id: run_id.to_owned(),
             since: c.counters_since.clone(),
-            lost: c.frames_lost,
+            lost: c.frames_lost + c.slices_lost + c.rx_holes,
             duplicated: c.frames_duplicated,
             skipped: c.frames_skipped,
             concealed: c.slices_concealed,
