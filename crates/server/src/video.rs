@@ -42,19 +42,25 @@ struct Discovery {
     nodes: Vec<Listed>,
 }
 
+/// A text field; `null` reads as empty, as a missing field does
+/// (camera-box gives an NDI output's `sink` as `null`).
+fn text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
+}
+
 /// One connection as a node's read gives it.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct ConnRead {
     pub id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "text")]
     pub source: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "text")]
     pub sink: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "text")]
     pub sink_input: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "text")]
     pub kind: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "text")]
     pub direction: String,
     #[serde(default)]
     pub latency_ms: Option<f64>,
@@ -72,7 +78,7 @@ pub struct ConnRead {
     pub frames_skipped: u64,
     #[serde(default)]
     pub slices_concealed: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "text")]
     pub counters_since: String,
 }
 
@@ -81,7 +87,7 @@ pub struct ConnRead {
 pub struct NodeRead {
     #[serde(default)]
     pub schema: Option<u64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "text")]
     pub run_id: String,
     #[serde(default)]
     pub connections: Vec<ConnRead>,
