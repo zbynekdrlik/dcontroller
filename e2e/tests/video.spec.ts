@@ -15,14 +15,20 @@ test("a video connection is a line of its own on the Map, red with frames lost, 
 
   // The server reads the list and the nodes and keeps what each read added.
   const video = async () => (await page.request.get("/api/video")).json();
-  await expect.poll(async () => (await video()).connections[0]?.lost_1h ?? 0, { timeout: 100_000, intervals: [2_000] }).toBeGreaterThan(0);
+  const obsIn = (v: any) => v.connections.find((c: any) => c.id === VIDEO.conn);
+  await expect.poll(async () => obsIn(await video())?.lost_1h ?? 0, { timeout: 100_000, intervals: [2_000] }).toBeGreaterThan(0);
   const v = await video();
   expect(v.discovery_error).toBeNull();
   expect(v.nodes.map((n: any) => [n.name, n.kind, n.error])).toEqual([
     [VIDEO.cam, "cambox", null],
     [VIDEO.obs, "obs", null],
   ]);
-  const c = v.connections[0];
+  const c = obsIn(v);
+  // The cambox's outputs are read too (one with a null sink).
+  expect(v.connections.filter((x: any) => x.node === VIDEO.cam).map((x: any) => [x.direction, x.sink])).toEqual([
+    ["out", "10.199.0.9:7002"],
+    ["out", ""],
+  ]);
   expect(c).toMatchObject({ id: VIDEO.conn, node: VIDEO.obs, source: VIDEO.cam, sink: VIDEO.obs, kind: "jxs", direction: "in" });
   expect(c.latency_ms).toBeGreaterThanOrEqual(40);
   expect(c.spark).toHaveLength(60);
@@ -37,6 +43,11 @@ test("a video connection is a line of its own on the Map, red with frames lost, 
   await expect(line).toHaveClass(/\bvideo\b/);
   await expect(line).toHaveAttribute("data-state", "bad");
   await expect(line.locator(".lbl text")).toContainText(" lost");
+  // A line is the receiver's view: the cambox's outputs draw no line and no
+  // box of their own (none named after an address or after nothing).
+  await expect(map.locator('[data-testid="map-edge"][data-edge^="#map/video/"]')).toHaveCount(1);
+  await expect(map.locator('[data-testid="map-node"][data-node="10.199.0.9:7002"]')).toHaveCount(0);
+  await expect(map.locator('[data-testid="map-node"][data-node=""]')).toHaveCount(0);
 
   // A click: its detail and its chart.
   await line.locator(".lbl").click({ force: true });

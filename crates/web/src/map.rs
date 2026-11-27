@@ -420,9 +420,22 @@ pub fn video_window(c: &dcontroller_api::VideoConn, span: Span) -> (u64, u64, u6
     }
 }
 
+/// Where a video connection comes from: its source, or for an input
+/// without a named source the input's name (else its kind).
+pub fn video_from(c: &dcontroller_api::VideoConn) -> &str {
+    [&c.source, &c.sink_input, &c.kind]
+        .into_iter()
+        .find(|s| !s.is_empty())
+        .map_or("video", String::as_str)
+}
+
 /// The video network into the graph (#124 phase 1): a box per video node
 /// that is no Dante device already (one name, one box), a line per video
-/// connection, coloured by the window as a Dante line.
+/// connection its receiver reports (`in`, as a Dante line is the
+/// receiver's), coloured by the window as a Dante line. A sender's `out`
+/// connection is the same flow seen from the other end, no line of its
+/// own; an input without a named source starts at a box named after the
+/// input.
 pub fn with_video(g: &mut Graph, v: &dcontroller_api::VideoReport, span: Span) {
     let node = |g: &mut Graph, name: &str| -> usize {
         if let Some(i) = g
@@ -449,8 +462,8 @@ pub fn with_video(g: &mut Graph, v: &dcontroller_api::VideoReport, span: Span) {
         });
         g.nodes.len() - 1
     };
-    for c in &v.connections {
-        let from = node(g, &c.source);
+    for c in v.connections.iter().filter(|c| c.direction == "in") {
+        let from = node(g, video_from(c));
         let to = node(g, &c.sink);
         let state = video_state(c, span);
         let (lost, dup, skip) = video_window(c, span);
@@ -464,7 +477,7 @@ pub fn with_video(g: &mut Graph, v: &dcontroller_api::VideoReport, span: Span) {
             lost: (lost > 0).then(|| format!("{lost} lost")),
             title: format!(
                 "{} → {} · {} {} · latency {label} · frames lost {lost}, duplicated {dup}, skipped {skip} in the last {}",
-                c.source,
+                video_from(c),
                 c.sink,
                 c.kind,
                 c.sink_input,
@@ -1551,6 +1564,47 @@ pub fn svg_with(g: &Graph, p: &Placed, chosen: Option<&Sel>, show: &Show) -> Str
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_video_line_is_the_receivers_view_and_an_unnamed_source_is_named_by_its_input() {
+        use dcontroller_api::{VideoConn, VideoReport};
+        let mut g = build(&net(), None, Span::H1);
+        let conn = |id: &str, source: &str, sink: &str, input: &str, dir: &str| VideoConn {
+            id: id.into(),
+            node: "strih".into(),
+            source: source.into(),
+            sink: sink.into(),
+            sink_input: input.into(),
+            kind: "jxs".into(),
+            direction: dir.into(),
+            latency_ms: Some(36.0),
+            ..VideoConn::default()
+        };
+        let v = VideoReport {
+            connections: vec![
+                conn("in", "cam2", "strih", "JXS cam2 src", "in"),
+                // The same flow as the camera sends it, and the camera's NDI.
+                conn("cam-out", "cam2", "10.0.0.2:7002", "", "out"),
+                conn("ndi-out", "cam2", "", "", "out"),
+                // An input without a named source (the CG over NDI).
+                conn("cg", "", "strih", "CG-obs", "in"),
+            ],
+            ..VideoReport::default()
+        };
+        let before = g.nodes.len();
+        with_video(&mut g, &v, Span::H1);
+        let names: Vec<&str> = g.nodes[before..].iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, ["cam2", "strih", "CG-obs"]);
+        let ids: Vec<String> = g
+            .edges
+            .iter()
+            .filter_map(|e| match &e.sel {
+                Sel::Video { id } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, ["in", "cg"]);
+    }
+
     #[test]
     fn video_connections_are_lines_of_their_own_kind_coloured_by_frames_lost() {
         use dcontroller_api::{VideoConn, VideoNode, VideoReport};

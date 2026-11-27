@@ -43,7 +43,22 @@ function startVideo(): Promise<Server[]> {
   );
   const nodes = listen(VIDEO.nodes, (url) => {
     const head = { schema: 1, read_at: new Date().toISOString(), run_start: "2026-11-20T00:00:00Z", run_id: "e2e:1" };
-    if (url === "/cam.json") return { ...head, node: VIDEO.cam, kind: "cambox", connections: [] };
+    // A cambox's read as camera-box 1.8.19 serves it: its outputs, the same
+    // flows their receivers report, and an NDI output whose sink is null.
+    if (url === "/cam.json")
+      return {
+        ...head,
+        node: VIDEO.cam,
+        kind: "cambox",
+        capture_frames: 1000,
+        capture_lost: 0,
+        capture_dropped: 0,
+        capture_corrupted: 0,
+        connections: [
+          { id: `ndi:${VIDEO.cam}->usb`, kind: "ndi", direction: "out", source: VIDEO.cam, sink: null, sink_input: null, stream_name: "usb", latency_ms: null, frames_sent: 1000, frames_skipped: 0, frames_duplicated: 0, counters_since: "2026-11-20T00:00:01Z" },
+          { id: `jxs:${VIDEO.cam}->10.199.0.9:7002`, kind: "jxs", direction: "out", source: VIDEO.cam, sink: "10.199.0.9:7002", sink_input: null, stream_name: null, latency_ms: 16, frames_sent: 1000, counters_since: "2026-11-20T00:00:01Z" },
+        ],
+      };
     if (url !== "/obs.json") return null;
     reads += 1;
     return {

@@ -676,8 +676,8 @@ pub fn MapPage() -> impl IntoView {
             }
             (Some(map::Sel::Video { id }), _, _) => {
                 if let Some(Ok(v)) = video {
-                    let name =
-                        video_of(m, &id).map_or(id, |c| format!("{} → {}", c.source, c.sink));
+                    let name = video_of(m, &id)
+                        .map_or(id, |c| format!("{} → {}", map::video_from(&c), c.sink));
                     pages::draw_chart(el.unchecked_ref(), &hist::video_chart_json(&v, &name, 300));
                 }
             }
@@ -689,7 +689,7 @@ pub fn MapPage() -> impl IntoView {
             map::Sel::Link { from, to } => format!("{from} → {to}"),
             map::Sel::Device { name } => name,
             map::Sel::Video { id } => {
-                video_of(m, &id).map_or(id, |c| format!("{} → {}", c.source, c.sink))
+                video_of(m, &id).map_or(id, |c| format!("{} → {}", map::video_from(&c), c.sink))
             }
             map::Sel::Bridge { device, to_dante } => {
                 let name = graph.with(|g| {
@@ -963,7 +963,7 @@ pub fn MapPage() -> impl IntoView {
                 .into_any()
             }
             map::Sel::Video { id } => {
-                let ends = video_of(m, &id).map(|c| (c.source, c.sink));
+                let ends = video_of(m, &id).map(|c| (map::video_from(&c).to_owned(), c.sink));
                 // A video node has no detail of its own: its place is set
                 // here, from a connection it is an end of (#122).
                 let fields = ends.clone().map(|(a, b)| {
