@@ -23,6 +23,8 @@ pub struct MapCtl {
     /// The video connection shown (its id) and its reads over the range.
     pub video_sel: RwSignal<Option<String>>,
     pub video_hist: RwSignal<Option<Result<dcontroller_api::VideoHistory, String>>>,
+    /// The network the schema and the Links table show (#124).
+    pub layer: RwSignal<map::Layer>,
     /// Only the connections in trouble stay bright (#122).
     pub problems: RwSignal<bool>,
     /// A device looked for by name (#122).
@@ -427,7 +429,8 @@ pub fn MapPage() -> impl IntoView {
     let h = expect_context::<Hist>();
     let m = expect_context::<MapCtl>();
     let crate::Clk(clk) = expect_context::<crate::Clk>();
-    let graph = Memo::new(move |_| match ctl.devices.get() {
+    // The whole rig: the health tiles and a chosen thing's detail.
+    let all = Memo::new(move |_| match ctl.devices.get() {
         Some(Ok(d)) => {
             let mut g = m
                 .links
@@ -458,15 +461,31 @@ pub fn MapPage() -> impl IntoView {
         }
         _ => map::Graph::default(),
     });
+    // What the schema and the Links table show: one layer (#124).
+    let graph = Memo::new(move |_| all.with(|g| map::only(g, m.layer.get())));
+    // A thing chosen that only the other network has (a link, the back
+    // button) switches the view to it; the switch's own click lets go of it
+    // first, so this never undoes the click.
+    Effect::new(move |_| {
+        let Some(c) = m.chosen.get() else {
+            return;
+        };
+        let now = m.layer.get_untracked();
+        let other = match now {
+            map::Layer::Audio => map::Layer::Video,
+            map::Layer::Video => map::Layer::Audio,
+        };
+        let flip =
+            all.with(|g| !map::has(&map::only(g, now), &c) && map::has(&map::only(g, other), &c));
+        if flip {
+            m.layer.set(other);
+        }
+    });
     // The connection that shows: the chosen one while the network has it,
     // else the worst.
     let shown = Memo::new(move |_| {
-        graph.with(|g| {
-            m.chosen
-                .get()
-                .filter(|c| map::has(g, c))
-                .or_else(|| map::worst(g).map(|e| e.sel.clone()))
-        })
+        let chosen = all.with(|g| m.chosen.get().filter(|c| map::has(g, c)));
+        chosen.or_else(|| graph.with(|g| map::worst(g).map(|e| e.sel.clone())))
     });
     // A video connection's history comes from its own read (#124).
     Effect::new(move |_| {
@@ -692,7 +711,7 @@ pub fn MapPage() -> impl IntoView {
                 video_of(m, &id).map_or(id, |c| format!("{} → {}", map::video_from(&c), c.sink))
             }
             map::Sel::Bridge { device, to_dante } => {
-                let name = graph.with(|g| {
+                let name = all.with(|g| {
                     map::edge_of(
                         g,
                         &map::Sel::Bridge {
@@ -713,7 +732,7 @@ pub fn MapPage() -> impl IntoView {
     };
     let state = move || {
         let s = shown.get()?;
-        let st = graph.with(|g| map::edge_of(g, &s).map(|e| e.state))?;
+        let st = all.with(|g| map::edge_of(g, &s).map(|e| e.state))?;
         let (class, text) = chip(st, kind_of(&s));
         Some(view! { <span class=class data-testid="map-state">{text}</span> })
     };
@@ -764,7 +783,7 @@ pub fn MapPage() -> impl IntoView {
                     )
                 },
             ),
-            map::Sel::Device { name } => graph.with(|g| {
+            map::Sel::Device { name } => all.with(|g| {
                 map::node_of(g, &name).map_or_else(String::new, |n| {
                     let node = &g.nodes[n];
                     let clock = node
@@ -781,8 +800,8 @@ pub fn MapPage() -> impl IntoView {
         })
         };
     let chosen_by = move || {
-        let auto = shown.get().is_some()
-            && !graph.with(|g| m.chosen.get().is_some_and(|c| map::has(g, &c)));
+        let auto =
+            shown.get().is_some() && !all.with(|g| m.chosen.get().is_some_and(|c| map::has(g, &c)));
         auto.then(|| view! { <span class="muted small" data-testid="map-auto">"the worst connection now · click a line for another"</span> })
     };
     // The figures over the chosen range, then the last hour and day.
@@ -920,7 +939,7 @@ pub fn MapPage() -> impl IntoView {
                 // The receiver's other connections, each with its hour (#142,
                 // as mockup v2): from one connection to the next without
                 // going back to the schema.
-                let others: Vec<Row> = graph.with(|g| {
+                let others: Vec<Row> = all.with(|g| {
                     let Some(n) = map::node_of(g, &to) else {
                         return Vec::new();
                     };
@@ -1022,11 +1041,11 @@ pub fn MapPage() -> impl IntoView {
                         .cloned(),
                     _ => None,
                 });
-                if dev.is_none() && graph.with(|g| map::node_of(g, &name).is_none()) {
+                if dev.is_none() && all.with(|g| map::node_of(g, &name).is_none()) {
                     return ().into_any();
                 }
                 // Its connections: into it, out of it, inside it.
-                let groups: Vec<(&'static str, &'static str, Vec<Row>)> = graph.with(|g| {
+                let groups: Vec<(&'static str, &'static str, Vec<Row>)> = all.with(|g| {
                     let Some(n) = map::node_of(g, &name) else {
                         return Vec::new();
                     };
@@ -1096,7 +1115,7 @@ pub fn MapPage() -> impl IntoView {
         let clocks = expect_context::<Clk>().0.get();
         let [devices, subs, clock, network] =
             pages::device_tiles(&d, clocks.as_ref().and_then(|c| c.as_ref().ok()));
-        let (hl, worst) = graph.with(|g| (map::health(g), map::worst(g).map(|e| e.sel.hash())));
+        let (hl, worst) = all.with(|g| (map::health(g), map::worst(g).map(|e| e.sel.hash())));
         let (class, sub) = if let Some((name, n)) = hl.lost.first() {
             let more = match hl.lost.len() {
                 1 => String::new(),
@@ -1239,7 +1258,7 @@ pub fn MapPage() -> impl IntoView {
                     devlist::Joined::At(t) => format!("joined {}", pages::time_text(t as i64)),
                 };
                 // Its connections: how many, and the worst one's state.
-                let (count, worst) = graph.with(|g| {
+                let (count, worst) = all.with(|g| {
                     map::node_of(g, &dev.name).map_or((0, None), |n| {
                         let all: Vec<&map::Edge> = map::edges_of(g, n).into_iter().flatten().collect();
                         let worst = all.iter().map(|e| (e.state, kind_of(&e.sel))).max();
@@ -1305,6 +1324,26 @@ pub fn MapPage() -> impl IntoView {
                 on:click=move |_| m.view.set(view)>{label}</button>
         }
     };
+    // A connection of the other network shown when the switch moves would
+    // switch it back: the worst of the new one shows instead.
+    let layer = move |l: map::Layer, label: &'static str, id: &'static str| {
+        let pick = move |_| {
+            let gone = m
+                .chosen
+                .get_untracked()
+                .is_some_and(|c| all.with_untracked(|g| !map::has(&map::only(g, l), &c)));
+            if gone {
+                m.chosen.set(None);
+                let _ = window().location().set_hash("#map");
+            }
+            m.layer.set(l);
+        };
+        view! {
+            <button data-testid=id aria-pressed=move || (m.layer.get() == l).to_string()
+                class=move || if m.layer.get() == l { "seg on" } else { "seg" }
+                on:click=pick>{label}</button>
+        }
+    };
     view! {
         {tiles_top}
         <div class="bar">
@@ -1312,6 +1351,12 @@ pub fn MapPage() -> impl IntoView {
                 {tab(MapView::Schema, "Schema", "map-view-schema")}
                 {tab(MapView::Links, "Links", "map-view-links")}
                 {tab(MapView::Devices, "Devices", "map-view-devices")}
+            </div>
+            // Audio or video (#124): one network at a time.
+            <div class="seg-group" data-testid="map-layer" title="Which network the schema and the list show"
+                style=move || if m.view.get() == MapView::Devices { "display:none" } else { "" }>
+                {layer(map::Layer::Audio, "Audio", "map-layer-audio")}
+                {layer(map::Layer::Video, "Video", "map-layer-video")}
             </div>
             // What the colours speak of: the last hour, 3 hours or day.
             <div class="seg-group" data-testid="map-span" title="The window the colours of the connections speak of">
@@ -1349,7 +1394,10 @@ pub fn MapPage() -> impl IntoView {
             <div class="legend">
                 <span><i class="ok"></i>"no late packets"</span>
                 <span><i class="warn"></i>"peak close to the latency"</span>
-                <span><i class="bad"></i>{move || format!("late packets (underruns for a bridge) in the last {}: audio lost", m.span.get().words())}</span>
+                <span><i class="bad"></i>{move || match m.layer.get() {
+                    map::Layer::Audio => format!("late packets (underruns for a bridge) in the last {}: audio lost", m.span.get().words()),
+                    map::Layer::Video => format!("frames lost in the last {}", m.span.get().words()),
+                }}</span>
                 <span>"colours speak of the window on the right of the tabs: 5 min, 1 h, 3 h or 24 h"</span>
                 <span><i class="unknown"></i>"not measured"</span>
                 <span>"number on a line: the receiver's latency for that connection"</span>

@@ -35,10 +35,22 @@ test("a video connection is a line of its own on the Map, red with frames lost, 
   const h = await (await page.request.get(`/api/video/${encodeURIComponent(VIDEO.conn)}`)).json();
   expect(h.points.reduce((a: number, p: any) => a + p.lost, 0)).toBe(c.lost_1h);
 
-  // On the Map: its two boxes and a dashed line, red.
+  // The Map opens on the audio network: no video box, no video line.
   await page.goto("/#map");
   const map = page.getByTestId("map");
+  await expect(page.getByTestId("map-layer-audio")).toHaveAttribute("aria-pressed", "true");
+  await expect(map.locator('[data-testid="map-node"]').first()).toBeVisible({ timeout: 40_000 });
+  await expect(map.locator(`[data-testid="map-node"][data-node="${VIDEO.cam}"]`)).toHaveCount(0);
+  await expect(map.locator('[data-testid="map-edge"][data-edge^="#map/video/"]')).toHaveCount(0);
+  // The health tile still counts the video connection: it speaks of the whole rig.
+  await expect(page.getByTestId("tile-connections").locator(".tile-value")).toHaveText(/\/ 2$/);
+
+  // The Video switch: its two boxes and a dashed line, red; no Dante line.
+  await page.getByTestId("map-layer-video").click();
+  await expect(page.getByTestId("map-layer-video")).toHaveAttribute("aria-pressed", "true");
   await expect(map.locator(`[data-testid="map-node"][data-node="${VIDEO.cam}"]`)).toHaveClass(/\bvideo\b/, { timeout: 30_000 });
+  await expect(map.locator('[data-testid="map-edge"][data-edge^="#map/link/"]')).toHaveCount(0);
+  await expect(page.locator(".legend")).toContainText("frames lost in the last");
   const line = map.locator(`[data-testid="map-edge"][data-edge="#map/video/${encodeURIComponent(VIDEO.conn).replace(/[!'()*]/g, (x) => "%" + x.charCodeAt(0).toString(16).toUpperCase())}"]`);
   await expect(line).toHaveClass(/\bvideo\b/);
   await expect(line).toHaveAttribute("data-state", "bad");
@@ -63,15 +75,22 @@ test("a video connection is a line of its own on the Map, red with frames lost, 
   // The ranges read it again.
   await page.locator('[data-testid="map-range"][data-range="300"]').click();
   await expect(chart.locator("canvas")).toBeVisible();
-  // The choice survives a reload.
+  // The choice survives a reload, and its link opens the video network.
   await page.reload();
   await expect(page.getByTestId("map-title")).toHaveText(`${VIDEO.cam} → ${VIDEO.obs}`, { timeout: 30_000 });
+  await expect(page.getByTestId("map-layer-video")).toHaveAttribute("aria-pressed", "true");
 
-  // In the Links table with the Dante connections, worst first.
+  // The Links table follows the switch: the video connections only.
   await page.getByTestId("map-view-links").click();
   const row = page.locator(`[data-testid="map-links"] [data-edge^="#map/video/"]`);
   await expect(row).toHaveCount(1);
   await expect(row).toContainText(`${VIDEO.cam} → ${VIDEO.obs}`);
   await expect(row).toContainText("frames lost in the last hour");
+  await expect(page.locator('[data-testid="map-links"] [data-edge^="#map/link/"]')).toHaveCount(0);
+  // Back to audio: the video connection shown lets go, the Dante ones are back.
+  await page.getByTestId("map-layer-audio").click();
+  await expect(page).toHaveURL(/#map$/);
+  await expect(row).toHaveCount(0);
+  await expect(page.locator('[data-testid="map-links"] [data-edge^="#map/link/"]').first()).toBeVisible();
   expect(msgs).toEqual([]);
 });
