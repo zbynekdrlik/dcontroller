@@ -60,10 +60,10 @@ function startVideo(): Promise<Server[]> {
           direction: "in",
           latency_ms: 40 + (reads % 3),
           frames_received: reads * 500,
-          frames_lost: Math.max(0, reads - 3),
           frames_duplicated: 0,
           frames_skipped: 0,
-          slices_lost: 0,
+          // camera-box's OBS read names a JPEG XS loss in lost slices.
+          slices_lost: Math.max(0, reads - 3),
           slices_concealed: 0,
           relocks: 0,
           decoder_opens: 1,
