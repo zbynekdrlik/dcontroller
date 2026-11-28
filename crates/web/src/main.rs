@@ -106,6 +106,12 @@ fn App() -> impl IntoView {
             },
         ),
         span: RwSignal::new(map::Span::default()),
+        // A link to a video connection opens the video network (#124).
+        layer: RwSignal::new(
+            map::Sel::from_hash(&window().location().hash().unwrap_or_default())
+                .and_then(|c| map::Layer::of(&c))
+                .unwrap_or_default(),
+        ),
         video: RwSignal::new(None),
         video_sel: RwSignal::new(None),
         video_hist: RwSignal::new(None),
@@ -154,6 +160,11 @@ fn App() -> impl IntoView {
                     let picked = c
                         .as_ref()
                         .is_some_and(|c| !matches!(c, map::Sel::Device { .. }));
+                    if let Some(l) = c.as_ref().and_then(map::Layer::of)
+                        && mp.layer.get_untracked() != l
+                    {
+                        mp.layer.set(l);
+                    }
                     mp.chosen.set(c);
                     if picked {
                         set_timeout(

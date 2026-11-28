@@ -488,6 +488,76 @@ pub fn with_video(g: &mut Graph, v: &dcontroller_api::VideoReport, span: Span) {
     }
 }
 
+/// Which network the Map shows (#124): the Dante audio network or the
+/// video one. Both on one schema are too many lines to read.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Layer {
+    #[default]
+    Audio,
+    Video,
+}
+
+impl Layer {
+    /// The layer a connection belongs to; `None` for a device, which can
+    /// stand in either.
+    pub fn of(sel: &Sel) -> Option<Layer> {
+        match sel {
+            Sel::Link { .. } | Sel::Bridge { .. } => Some(Layer::Audio),
+            Sel::Video { .. } => Some(Layer::Video),
+            Sel::Device { .. } => None,
+        }
+    }
+}
+
+/// `g` with only `layer`'s connections. Audio keeps every box but the
+/// video nodes (a device with no connection still stands); Video keeps the
+/// video nodes and the boxes a video line ends at, a Dante device among
+/// them.
+pub fn only(g: &Graph, layer: Layer) -> Graph {
+    let video = |e: &Edge| matches!(e.sel, Sel::Video { .. });
+    let keep_edge = |e: &Edge| video(e) == (layer == Layer::Video);
+    let keep: Vec<bool> = g
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| match layer {
+            Layer::Audio => n.kind != NodeKind::Video,
+            Layer::Video => {
+                n.kind == NodeKind::Video
+                    || g.edges
+                        .iter()
+                        .any(|e| video(e) && (e.from == i || e.to == i))
+            }
+        })
+        .collect();
+    let mut at = vec![usize::MAX; g.nodes.len()];
+    let mut nodes = Vec::new();
+    for (i, n) in g.nodes.iter().enumerate() {
+        if keep[i] && n.of.is_none_or(|b| keep[b]) {
+            at[i] = nodes.len();
+            nodes.push(n.clone());
+        }
+    }
+    for n in &mut nodes {
+        n.of = n.of.map(|b| at[b]);
+    }
+    let edges = g
+        .edges
+        .iter()
+        .filter(|e| keep_edge(e) && at[e.from] != usize::MAX && at[e.to] != usize::MAX)
+        .map(|e| Edge {
+            from: at[e.from],
+            to: at[e.to],
+            ..e.clone()
+        })
+        .collect();
+    Graph {
+        nodes,
+        edges,
+        places: g.places.clone(),
+    }
+}
+
 /// The summary of the connection `from` into `to`, the names' case aside.
 pub fn summary_of<'a>(links: Option<&'a Links>, from: &str, to: &str) -> Option<&'a LinkSummary> {
     links?
@@ -1564,6 +1634,74 @@ pub fn svg_with(g: &Graph, p: &Placed, chosen: Option<&Sel>, show: &Show) -> Str
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_audio_and_the_video_layer_each_keep_their_own_connections() {
+        use dcontroller_api::{VideoConn, VideoReport};
+        let mut g = build(&net(), None, Span::H1);
+        let audio_edges = g.edges.len();
+        let audio_nodes: Vec<String> = g.nodes.iter().map(|n| n.name.clone()).collect();
+        assert!(audio_edges > 0);
+        // A camera into a Dante device's PC, and one into a video-only box.
+        let first = g
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Device)
+            .unwrap()
+            .name
+            .clone();
+        let conn = |id: &str, source: &str, sink: &str| VideoConn {
+            id: id.into(),
+            node: "strih".into(),
+            source: source.into(),
+            sink: sink.into(),
+            kind: "jxs".into(),
+            direction: "in".into(),
+            ..VideoConn::default()
+        };
+        let v = VideoReport {
+            connections: vec![conn("a", "cam1", &first), conn("b", "cam2", "strih")],
+            ..VideoReport::default()
+        };
+        with_video(&mut g, &v, Span::H1);
+        g.places = vec![(first.clone(), "FOH".into())];
+
+        let a = only(&g, Layer::Audio);
+        assert_eq!(a.edges.len(), audio_edges);
+        assert!(a.edges.iter().all(|e| !matches!(e.sel, Sel::Video { .. })));
+        let names: Vec<String> = a.nodes.iter().map(|n| n.name.clone()).collect();
+        assert_eq!(names, audio_nodes);
+        // A bridge's ASIO side still points at its bridge.
+        for n in a.nodes.iter().filter(|n| n.kind == NodeKind::Asio) {
+            assert_eq!(a.nodes[n.of.unwrap()].kind, NodeKind::Device);
+        }
+
+        let v = only(&g, Layer::Video);
+        let mut names: Vec<&str> = v.nodes.iter().map(|n| n.name.as_str()).collect();
+        names.sort_unstable();
+        let mut want = vec!["cam1", "cam2", "strih", first.as_str()];
+        want.sort_unstable();
+        assert_eq!(names, want);
+        let ends: Vec<(&str, &str)> = v
+            .edges
+            .iter()
+            .map(|e| (v.nodes[e.from].name.as_str(), v.nodes[e.to].name.as_str()))
+            .collect();
+        assert_eq!(ends, [("cam1", first.as_str()), ("cam2", "strih")]);
+        assert_eq!(v.places, g.places);
+        assert_eq!(
+            Layer::of(&Sel::Video { id: "a".into() }),
+            Some(Layer::Video)
+        );
+        assert_eq!(
+            Layer::of(&Sel::Link {
+                from: "x".into(),
+                to: "y".into()
+            }),
+            Some(Layer::Audio)
+        );
+        assert_eq!(Layer::of(&Sel::Device { name: "x".into() }), None);
+    }
+
     #[test]
     fn a_video_line_is_the_receivers_view_and_an_unnamed_source_is_named_by_its_input() {
         use dcontroller_api::{VideoConn, VideoReport};

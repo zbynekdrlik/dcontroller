@@ -107,7 +107,8 @@ test("the map is the start page: every device a box, every connection a line, a 
   await page.getByTestId("map-view-links").click();
   await expect(page.getByTestId("map-panel")).toBeHidden();
   const rows = page.getByTestId("map-links").getByTestId("map-dev-row");
-  await expect(rows).toHaveCount(4);
+  // The audio view's (#124): the video connection is on the Video one.
+  await expect(rows).toHaveCount(3);
   await expect(page.getByTestId("map-links")).toContainText(`${DEVICE} → ${DEVICE}`);
   await expect(page.getByTestId("map-links")).toContainText("SoundGrid → Dante");
   await rows.filter({ hasText: "Dante → SoundGrid" }).click();
@@ -382,14 +383,24 @@ test("a device gets a place: the map draws the places as areas, the change is lo
       expect((await page.request.post("/api/place", { data: { device, place: "" } })).status()).toBe(200);
     }
   };
+  // A source that is not on the network: a box of the audio view (the Map's
+  // default, #124) that stays in "no place set" (the camera was one).
+  const LOOSE = "dc-e2e-loose";
+  const loose = (source: { channel: string; device: string } | null) =>
+    page.request.post("/api/subscription", { data: { rx_device: DEVICE, rx_channel: 3, source } });
   await page.setViewportSize({ width: 1600, height: 900 });
   await page.goto(`/#map/device/${DEVICE}`);
   const map = page.getByTestId("map");
   const node = (name: string) => map.locator(`[data-testid="map-node"][data-node="${name}"]`);
   await expect(node(DEVICE)).toBeVisible({ timeout: 40_000 });
-  // The video nodes come with the server's first good read of their list.
-  await expect(node("cam-e2e")).toBeVisible({ timeout: 90_000 });
+  // The video nodes come with the server's first good read of their list
+  // (they stand on the Video view, #124).
+  await expect
+    .poll(async () => (await page.request.get("/api/video").then((r) => r.json())).nodes.some((n: any) => n.name === "cam-e2e" && !n.error), { timeout: 90_000 })
+    .toBe(true);
   try {
+    expect((await loose({ channel: "Mic", device: LOOSE })).status()).toBe(200);
+    await expect(node(LOOSE)).toHaveClass(/\bmissing\b/, { timeout: 40_000 });
     // No place yet: the columns, no area.
     await expect(map.locator('[data-testid="map-area"]')).toHaveCount(0);
     await expect(map.locator(".col-title").first()).toContainText(/sends|receives/);
@@ -452,6 +463,9 @@ test("a device gets a place: the map draws the places as areas, the change is lo
     await cam.getByTestId("place-input").fill("Stage");
     await cam.getByTestId("place-save").click();
     await expect(cam.getByTestId("place-note")).toHaveText("cam-e2e: in Stage");
+    // The link to a video connection opened the Video view: the camera
+    // stands in Stage there.
+    await expect(page.getByTestId("map-layer-video")).toHaveAttribute("aria-pressed", "true");
     await expect.poll(() => inside("cam-e2e", 0)).toBe(true);
     expect((await page.request.post("/api/place", { data: { device: "cam-e2e", place: "" } })).status()).toBe(200);
     // A place no device stands in is no longer offered.
@@ -460,9 +474,11 @@ test("a device gets a place: the map draws the places as areas, the change is lo
     await page.request.post("/api/place", { data: { device: "cam-e2e", place: "" } });
     expect((await page.request.get("/api/places").then((r) => r.json())).names).toEqual(["Stage", "FOH"]);
 
-    // Emptied: no place, and with none left the columns are back.
+    // Emptied: no place, and with none left the columns are back. The
+    // link to a Dante device takes the Map back to the audio view.
     await page.goto(`/#map/device/${BRIDGE}`);
     await expect(page.getByTestId("place-input")).toHaveValue("FOH", { timeout: 40_000 });
+    await expect(page.getByTestId("map-layer-audio")).toHaveAttribute("aria-pressed", "true");
     await page.getByTestId("place-input").fill("");
     await page.getByTestId("place-save").click();
     await expect(page.getByTestId("place-note")).toHaveText(`${BRIDGE}: no place`);
@@ -474,6 +490,7 @@ test("a device gets a place: the map draws the places as areas, the change is lo
     await expect(map.locator(".col-title").first()).toContainText(/sends|receives/);
   } finally {
     await clear();
+    await loose(null);
   }
   expect(msgs).toEqual([]);
 });
@@ -511,7 +528,12 @@ test("a device is dragged on the map: to a new place, into another place, up and
   };
   await expect(node(DEVICE)).toBeVisible({ timeout: 40_000 });
   await expect(node(BRIDGE)).toBeVisible({ timeout: 40_000 });
-  await expect(node("cam-e2e")).toBeVisible({ timeout: 90_000 });
+  // Two sources that are not on the network: boxes of the audio view (the
+  // Map's default, #124) for a second place and for "no place set".
+  const ELSE = "dc-e2e-elsewhere";
+  const LOOSE = "dc-e2e-loose";
+  const subscribe = (rx_channel: number, source: { channel: string; device: string } | null) =>
+    page.request.post("/api/subscription", { data: { rx_device: DEVICE, rx_channel, source } });
   // Takes the box of `name` and lets it go at the point `to` gives once the
   // drag has begun (the "new place" target is there only while dragging).
   const drag = async (name: string, to: () => Promise<{ x: number; y: number }>) => {
@@ -528,6 +550,10 @@ test("a device is dragged on the map: to a new place, into another place, up and
   };
   const middle = (r: { x: number; y: number; width: number; height: number }) => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
   try {
+    expect((await subscribe(2, { channel: "Mic", device: ELSE })).status()).toBe(200);
+    expect((await subscribe(3, { channel: "Mic", device: LOOSE })).status()).toBe(200);
+    await expect(node(ELSE)).toHaveClass(/\bmissing\b/, { timeout: 40_000 });
+    await expect(node(LOOSE)).toHaveClass(/\bmissing\b/, { timeout: 40_000 });
     // No place yet: the box goes to "new place", which asks its name once.
     page.once("dialog", (d) => d.accept("  Stage "));
     await drag(DEVICE, async () => middle((await page.getByTestId("map-new-place").boundingBox())!));
@@ -564,7 +590,7 @@ test("a device is dragged on the map: to a new place, into another place, up and
 
     // The places themselves: a place is taken by its name and put before
     // another. A second place first, by the field's route.
-    expect((await page.request.post("/api/place", { data: { device: "cam-e2e", place: "FOH" } })).status()).toBe(200);
+    expect((await page.request.post("/api/place", { data: { device: ELSE, place: "FOH" } })).status()).toBe(200);
     const titles = map.locator(".col-title");
     // Set past the page: it reads the places on its 10 s poll.
     await expect(titles).toHaveText(["Stage", "FOH", "no place set"], { timeout: 30_000 });
@@ -590,7 +616,7 @@ test("a device is dragged on the map: to a new place, into another place, up and
     const order = (await page.request.get("/api/changes").then((r) => r.json())).find((e: any) => e.kind === "place" && e.what === "order");
     expect(order).toMatchObject({ ok: true, rx_label: "FOH", name_asked: "FOH last", name_after: "Stage · FOH" });
     expect((await page.request.post("/api/place-order", { data: { place: "Attic", before: "" } })).status()).toBe(400);
-    expect((await page.request.post("/api/place", { data: { device: "cam-e2e", place: "" } })).status()).toBe(200);
+    expect((await page.request.post("/api/place", { data: { device: ELSE, place: "" } })).status()).toBe(200);
     await expect(titles).toHaveText(["Stage", "no place set"], { timeout: 30_000 });
 
     // Let go beside every area: nothing changes.
@@ -606,6 +632,9 @@ test("a device is dragged on the map: to a new place, into another place, up and
     expect(log.filter((e: any) => e.kind === "place" && e.rx_device === DEVICE && e.ok).length).toBeGreaterThanOrEqual(2);
   } finally {
     await clear();
+    await page.request.post("/api/place", { data: { device: ELSE, place: "" } });
+    await subscribe(2, null);
+    await subscribe(3, null);
   }
   expect(msgs).toEqual([]);
 });
